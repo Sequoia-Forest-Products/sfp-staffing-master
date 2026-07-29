@@ -1333,33 +1333,53 @@ function parseExcelBuffer(buffer){
 
       if(rows.length===0)return[];
 
+      // Find header columns by matching keys
+      const firstRow=rows[0];
+      const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
+      const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
+      const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
+      const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
+      const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
+
+      if(!empNumKey||!dateKey){
+        console.warn('XLSX: Could not find columns. Keys:',Object.keys(firstRow));
+        throw new Error('Missing required columns');
+      }
+
       const result=[];
       rows.forEach(row=>{
-        const empNumVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'))?.[1];
-        const dateVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('date'))?.[1];
-        const regVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('regular'))?.[1];
-        const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
-        const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
+        const empNumVal=String(row[empNumKey]||'').trim();
+        const dateVal=String(row[dateKey]||'').trim();
+        const regVal=parseFloat(row[regKey])||0;
+        const otVal=parseFloat(row[otKey])||0;
+        const commVal=String(row[commKey]||'').trim();
 
-        const empNum=String(empNumVal).trim();
-        if(!empNum||!dateVal)return;
+        if(!empNumVal||!dateVal)return;
 
         result.push({
-          employee_number:empNum,
-          work_date:String(dateVal).trim(),
-          regular_hours:parseFloat(regVal)||0,
-          ot_hours:parseFloat(otVal)||0,
-          supervisor_comment:String(commVal||'').trim()
+          employee_number:empNumVal,
+          work_date:dateVal,
+          regular_hours:regVal,
+          ot_hours:otVal,
+          supervisor_comment:commVal
         });
       });
 
-      return result;
+      if(result.length>0)return result;
+      throw new Error('No valid data rows found');
     }
-  }catch(e){console.warn('XLSX parsing failed:',e);}
+  }catch(e){
+    console.warn('XLSX parsing failed:',e.message);
+  }
 
   // Fallback to CSV parsing
-  const text=new TextDecoder().decode(buffer);
-  return parseCSVText(text);
+  try{
+    const text=new TextDecoder().decode(buffer);
+    return parseCSVText(text);
+  }catch(csvErr){
+    console.error('CSV fallback failed:',csvErr);
+    throw new Error('Could not parse file - try exporting as CSV from Excel');
+  }
 }
 
 function parseCSVText(text){
@@ -1732,33 +1752,53 @@ function parseExcelBuffer(buffer){
 
       if(rows.length===0)return[];
 
+      // Find header columns by matching keys
+      const firstRow=rows[0];
+      const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
+      const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
+      const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
+      const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
+      const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
+
+      if(!empNumKey||!dateKey){
+        console.warn('XLSX: Could not find columns. Keys:',Object.keys(firstRow));
+        throw new Error('Missing required columns');
+      }
+
       const result=[];
       rows.forEach(row=>{
-        const empNumVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'))?.[1];
-        const dateVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('date'))?.[1];
-        const regVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('regular'))?.[1];
-        const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
-        const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
+        const empNumVal=String(row[empNumKey]||'').trim();
+        const dateVal=String(row[dateKey]||'').trim();
+        const regVal=parseFloat(row[regKey])||0;
+        const otVal=parseFloat(row[otKey])||0;
+        const commVal=String(row[commKey]||'').trim();
 
-        const empNum=String(empNumVal).trim();
-        if(!empNum||!dateVal)return;
+        if(!empNumVal||!dateVal)return;
 
         result.push({
-          employee_number:empNum,
-          work_date:String(dateVal).trim(),
-          regular_hours:parseFloat(regVal)||0,
-          ot_hours:parseFloat(otVal)||0,
-          supervisor_comment:String(commVal||'').trim()
+          employee_number:empNumVal,
+          work_date:dateVal,
+          regular_hours:regVal,
+          ot_hours:otVal,
+          supervisor_comment:commVal
         });
       });
 
-      return result;
+      if(result.length>0)return result;
+      throw new Error('No valid data rows found');
     }
-  }catch(e){console.warn('XLSX parsing failed:',e);}
+  }catch(e){
+    console.warn('XLSX parsing failed:',e.message);
+  }
 
   // Fallback to CSV parsing
-  const text=new TextDecoder().decode(buffer);
-  return parseCSVText(text);
+  try{
+    const text=new TextDecoder().decode(buffer);
+    return parseCSVText(text);
+  }catch(csvErr){
+    console.error('CSV fallback failed:',csvErr);
+    throw new Error('Could not parse file - try exporting as CSV from Excel');
+  }
 }
 
 function parseCSVText(text){
