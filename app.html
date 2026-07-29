@@ -1341,8 +1341,8 @@ function parseExcelBuffer(buffer){
         const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
         const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
 
-        const empNum=parseInt(empNumVal);
-        if(isNaN(empNum)||!dateVal)return;
+        const empNum=String(empNumVal).trim();
+        if(!empNum||!dateVal)return;
 
         result.push({
           employee_number:empNum,
@@ -1406,7 +1406,7 @@ function showOTFilePreview(rows){
   });
 
   const unmatched=Object.keys(grouped).filter(en=>{
-    return !state.employees.find(e=>e.empNum==parseInt(en));
+    return !state.employees.find(e=>e.empNum==en);
   });
 
   const html=`
@@ -1740,8 +1740,8 @@ function parseExcelBuffer(buffer){
         const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
         const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
 
-        const empNum=parseInt(empNumVal);
-        if(isNaN(empNum)||!dateVal)return;
+        const empNum=String(empNumVal).trim();
+        if(!empNum||!dateVal)return;
 
         result.push({
           employee_number:empNum,
@@ -1805,7 +1805,7 @@ function showOTFilePreview(rows){
   });
 
   const unmatched=Object.keys(grouped).filter(en=>{
-    return !state.employees.find(e=>e.empNum==parseInt(en));
+    return !state.employees.find(e=>e.empNum==en);
   });
 
   const html=`

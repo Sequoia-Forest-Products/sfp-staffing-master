@@ -1,7 +1,7 @@
 -- Schema changes for OT Report feature
 
--- Step 1: Add employee_number column to employees table
-ALTER TABLE employees ADD COLUMN employee_number INTEGER UNIQUE;
+-- Step 1: Add employee_number column to employees table (as TEXT to preserve format)
+ALTER TABLE employees ADD COLUMN employee_number TEXT UNIQUE;
 
 -- Step 2: Create weekly_hours table
 CREATE TABLE weekly_hours (
