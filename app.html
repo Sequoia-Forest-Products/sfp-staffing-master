@@ -191,6 +191,7 @@
       <button class="sfp-tab" onclick="switchTab('economics',this)">Staffing Economics</button>
       <button class="sfp-tab" onclick="switchTab('overtime',this)">Overtime</button>
       <button class="sfp-tab" onclick="switchTab('points',this)">Points Tracker</button>
+      <button class="sfp-tab" onclick="switchTab('otreport',this)">OT Report</button>
     </div>
   </div>
 </header>
@@ -220,16 +221,18 @@ function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).r
 
 async function loadData(){
   try{
-    const [empRes, econRes, otRes, ptRes] = await Promise.all([
+    const [empRes, econRes, otRes, ptRes, whRes] = await Promise.all([
       fetch('/api/data?table=employees'),
       fetch('/api/data?table=economics'),
       fetch('/api/data?table=overtime'),
-      fetch('/api/data?table=points')
+      fetch('/api/data?table=points'),
+      fetch('/api/data?table=weekly_hours').catch(()=>({ok:true,json:()=>({data:[]})}))
     ]);
     if(empRes.status===401){location.href='/';return;}
 
-    const [empJson, econJson, otJson, ptJson] = await Promise.all([
-      empRes.json(), econRes.json(), otRes.json(), ptRes.json()
+    const [empJson, econJson, otJson, ptJson, whJson] = await Promise.all([
+      empRes.json(), econRes.json(), otRes.json(), ptRes.json(),
+      whRes.ok ? whRes.json() : {data:[]}
     ]);
 
     // Employees
@@ -238,7 +241,8 @@ async function loadData(){
       status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||''
+      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      empNum:r.employee_number||''
     }));
 
     // Economics
@@ -261,6 +265,13 @@ async function loadData(){
       id:r.id, name:r.name, points:r.points||0, lastDate:r.last_point_date||'',
       levelElig:r.level_up_eligible||'', disciplinary:r.disciplinary||false,
       discDate:r.disc_date||''
+    }));
+
+    // Weekly hours (payroll uploads)
+    state.weeklyHours = (whJson.data||[]).map(r=>({
+      id:r.id, empNum:r.employee_number, date:r.work_date,
+      regular:parseFloat(r.regular_hours)||0, ot:parseFloat(r.ot_hours)||0,
+      comment:r.supervisor_comment||'', batchId:r.upload_batch_id
     }));
 
     state.loading=false;
@@ -349,6 +360,7 @@ function render(){
   else if(state.tab==='economics')el.innerHTML=renderEcon();
   else if(state.tab==='overtime')el.innerHTML=renderOT();
   else if(state.tab==='points')el.innerHTML=renderPoints();
+  else if(state.tab==='otreport')el.innerHTML=renderOTReport();
 }
 
 function attachDropZones(){
@@ -963,6 +975,182 @@ function renderPoints(){
     </div>`;
 }
 
+function renderOTReport(){
+  // Helper to get unique batches and their date ranges
+  const batches = new Map();
+  state.weeklyHours.forEach(r => {
+    if (!batches.has(r.batchId)) {
+      batches.set(r.batchId, { dates: [] });
+    }
+    batches.get(r.batchId).dates.push(r.date);
+  });
+
+  // Sort batches by most recent
+  const sortedBatches = [...batches.entries()].sort((a, b) => {
+    const aMax = Math.max(...a[1].dates.map(d => new Date(d)));
+    const bMax = Math.max(...b[1].dates.map(d => new Date(d)));
+    return bMax - aMax;
+  });
+
+  const selectedBatch = state.selectedOTBatch || (sortedBatches.length > 0 ? sortedBatches[0][0] : null);
+  state.selectedOTBatch = selectedBatch;
+
+  // Filter data for selected batch
+  const batchData = selectedBatch ? state.weeklyHours.filter(r => r.batchId === selectedBatch) : [];
+
+  // Get unique dates for selected batch
+  const dates = [...new Set(batchData.map(r => r.date))].sort();
+  const weekStart = dates.length > 0 ? dates[0] : '';
+  const weekEnd = dates.length > 0 ? dates[dates.length - 1] : '';
+
+  // Calculate totals by employee
+  const empTotals = {};
+  batchData.forEach(r => {
+    if (!empTotals[r.empNum]) {
+      empTotals[r.empNum] = { regular: 0, ot: 0 };
+    }
+    empTotals[r.empNum].regular += r.regular;
+    empTotals[r.empNum].ot += r.ot;
+  });
+
+  // Calculate totals and dollar amounts
+  let totalRegular = 0, totalOT = 0, totalRegularDollars = 0, totalOTDollars = 0;
+  const employeeDetails = [];
+
+  Object.entries(empTotals).forEach(([empNum, hrs]) => {
+    const emp = state.employees.find(e => e.empNum == empNum);
+    if (!emp) {
+      employeeDetails.push({
+        empNum, name: `UNMATCHED (#${empNum})`, regular: hrs.regular, ot: hrs.ot,
+        wage: 0, regularDoll: 0, otDoll: 0, matched: false
+      });
+      return;
+    }
+
+    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+    const regularDoll = hrs.regular * wage;
+    const otDoll = hrs.ot * wage * 1.5;
+
+    totalRegular += hrs.regular;
+    totalOT += hrs.ot;
+    totalRegularDollars += regularDoll;
+    totalOTDollars += otDoll;
+
+    employeeDetails.push({
+      empNum, name: emp.name, regular: hrs.regular, ot: hrs.ot,
+      wage, regularDoll, otDoll, matched: true
+    });
+  });
+
+  // Get pre-approved OT from overtime table (Weekend only)
+  let preApprovedHours = 0, preApprovedDollars = 0;
+  state.ot.weekend.forEach(r => {
+    const emp = state.employees.find(e => e.name === r.name);
+    if (emp) {
+      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      preApprovedHours += r.hours;
+      preApprovedDollars += r.hours * wage * 1.5;
+    }
+  });
+
+  // Calculate net OT
+  const netOTHours = Math.max(0, totalOT - preApprovedHours);
+  const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
+  const totalPayroll = totalRegularDollars + totalOTDollars;
+  const netOTPercent = totalPayroll > 0 ? (netOTDollars / totalPayroll * 100) : 0;
+
+  // Sort employees by OT descending
+  employeeDetails.sort((a, b) => b.ot - a.ot);
+
+  const unmatched = employeeDetails.filter(e => !e.matched);
+
+  return `
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">All OT (hours)</div>
+        <div class="stat-value">${totalOT.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(totalOTDollars)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pre-Approved OT</div>
+        <div class="stat-value">${preApprovedHours.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(preApprovedDollars)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Net OT (hours)</div>
+        <div class="stat-value">${netOTHours.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(netOTDollars)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Non-burdened payroll</div>
+        <div class="stat-value">${fmt$(totalPayroll)}</div>
+        <div class="stat-sub">Net OT: ${netOTPercent.toFixed(1)}%</div>
+      </div>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <label style="font-size:12px;font-weight:700;color:var(--muted)">Week:</label>
+        <select onchange="state.selectedOTBatch=this.value;render()" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)">
+          ${sortedBatches.map(([bId, data]) => {
+            const ds = data.dates.sort();
+            const dStr = ds[0] === ds[ds.length-1] ? ds[0] : ds[0] + ' to ' + ds[ds.length-1];
+            return `<option value="${bId}" ${bId === selectedBatch ? 'selected' : ''}>${dStr}</option>`;
+          }).join('')}
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-left:auto">
+          ${batchData.length} total rows · ${dates.length} days · ${employeeDetails.length} employees
+        </div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('otUploadForm').style.display='block'">↑ Upload new file</button>
+    </div>
+
+    ${unmatched.length > 0 ? `
+      <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:6px;padding:12px;margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;color:#9a600a;margin-bottom:8px">⚠ Unmatched employee numbers (${unmatched.length})</div>
+        <div style="font-size:12px;color:#6b4a0a">${unmatched.map(e => e.name).join(', ')}</div>
+        <div style="font-size:10px;color:#7a5a1a;margin-top:8px">These employees cannot be matched to the roster. Please verify employee numbers in the payroll export or add missing employees.</div>
+      </div>
+    ` : ''}
+
+    <div class="section-head">Employee detail</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Employee</th>
+          <th style="width:90px">Wage</th>
+          <th style="width:80px">Reg. hrs</th>
+          <th style="width:80px">Reg. $</th>
+          <th style="width:80px">OT hrs</th>
+          <th style="width:80px">OT $</th>
+        </tr></thead>
+        <tbody>
+          ${employeeDetails.map(e => `<tr style="${!e.matched ? 'background:#fef5e8' : ''}">
+            <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
+            <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
+            <td style="text-align:right">${e.regular.toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(e.regularDoll)}</td>
+            <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
+            <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div id="otUploadForm" style="display:none;background:var(--surface);border:2px dashed var(--border);border-radius:6px;padding:20px;margin-bottom:24px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
+      </div>
+      <input type="file" id="otUploadFile" accept=".xlsx,.xls" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('otUploadForm').style.display='none'">Cancel</button>
+        <button class="btn btn-primary btn-sm" onclick="parseOTFile()">Parse and preview</button>
+      </div>
+    </div>
+  `;
+}
+
 // ============================================================
 // OVERTIME CRUD
 // ============================================================
@@ -1113,6 +1301,147 @@ function toast(msg,type){
   const el=document.getElementById('toast');
   el.textContent=msg;el.className=`toast ${type} show`;
   setTimeout(()=>{el.className='toast';},4000);
+}
+
+// ============================================================
+// OT REPORT - File upload and parsing
+// ============================================================
+async function parseOTFile(){
+  const file=document.getElementById('otUploadFile').files[0];
+  if(!file){toast('No file selected','error');return;}
+
+  try{
+    const buffer=await file.arrayBuffer();
+    const rows=parseExcelBuffer(buffer);
+    if(!rows||rows.length===0){toast('No data found in file','error');return;}
+
+    showOTFilePreview(rows);
+  }catch(err){
+    console.error('Parse error:',err);
+    toast('Error parsing file: '+err.message,'error');
+  }
+}
+
+function parseExcelBuffer(buffer){
+  const text=new TextDecoder().decode(buffer);
+  return parseCSVText(text);
+}
+
+function parseCSVText(text){
+  const lines=text.split('\n').filter(l=>l.trim());
+  if(lines.length<2)return[];
+
+  let header=lines[0].split(/[,\t]/).map(h=>h.trim().toLowerCase());
+
+  const empNumIdx=header.findIndex(h=>h.includes('employee')||h.includes('number'));
+  const dateIdx=header.findIndex(h=>h.includes('date'));
+  const regIdx=header.findIndex(h=>h.includes('regular'));
+  const otIdx=header.findIndex(h=>h.includes('ot')||h.includes('overtime'));
+  const commIdx=header.findIndex(h=>h.includes('comment')||h.includes('supervisor'));
+
+  if(empNumIdx<0||dateIdx<0){
+    throw new Error('Could not find Employee Number or Date columns');
+  }
+
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const parts=lines[i].split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2||!parts[empNumIdx])continue;
+
+    const empNum=parseInt(parts[empNumIdx]);
+    if(isNaN(empNum))continue;
+
+    rows.push({
+      employee_number:empNum,
+      work_date:parts[dateIdx]||'',
+      regular_hours:parseFloat(parts[regIdx])||0,
+      ot_hours:parseFloat(parts[otIdx])||0,
+      supervisor_comment:commIdx>=0?parts[commIdx]:''
+    });
+  }
+
+  return rows;
+}
+
+function showOTFilePreview(rows){
+  const grouped={};
+  rows.forEach(r=>{
+    if(!grouped[r.employee_number])grouped[r.employee_number]=[];
+    grouped[r.employee_number].push(r);
+  });
+
+  const unmatched=Object.keys(grouped).filter(en=>{
+    return !state.employees.find(e=>e.empNum==parseInt(en));
+  });
+
+  const html=`
+    <div id="otPreview" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000">
+      <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:600px;max-height:80vh;overflow-y:auto">
+        <div style="font-size:16px;font-weight:700;margin-bottom:12px">Upload preview</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+          <div>Rows: ${rows.length}</div>
+          <div>Employees: ${Object.keys(grouped).length}</div>
+          <div>Date range: ${rows.map(r=>r.work_date).sort()[0]} to ${rows.map(r=>r.work_date).sort().pop()}</div>
+        </div>
+
+        ${unmatched.length>0?`
+          <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:10px;margin-bottom:12px;font-size:11px">
+            <div style="font-weight:700;color:#9a600a;margin-bottom:4px">⚠ Unmatched employee numbers (${unmatched.length})</div>
+            <div style="color:#6b4a0a">${unmatched.join(', ')}</div>
+          </div>
+        `:''}
+
+        <div style="background:var(--surface2);border-radius:4px;padding:12px;margin-bottom:16px;font-size:11px;max-height:200px;overflow-y:auto">
+          <table style="font-size:10px;width:100%">
+            <tr style="font-weight:700;border-bottom:1px solid var(--border)"><td style="padding:4px">Emp #</td><td style="padding:4px">Date</td><td style="padding:4px">Reg</td><td style="padding:4px">OT</td></tr>
+            ${rows.slice(0,20).map(r=>`<tr><td style="padding:4px">${r.employee_number}</td><td style="padding:4px">${r.work_date}</td><td style="padding:4px;text-align:right">${r.regular_hours.toFixed(2)}</td><td style="padding:4px;text-align:right">${r.ot_hours.toFixed(2)}</td></tr>`).join('')}
+            ${rows.length>20?`<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:4px">... and ${rows.length-20} more rows</td></tr>`:''}
+          </table>
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="confirmOTUpload(\`${JSON.stringify(rows)}\`)">Confirm and upload</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function confirmOTUpload(rowsJson){
+  try{
+    const rows=JSON.parse(rowsJson);
+    const uploadBatchId='batch-'+Date.now()+'-'+Math.random().toString(36).substr(2,9);
+
+    document.getElementById('otPreview')?.remove();
+    document.getElementById('otUploadForm').style.display='none';
+    document.getElementById('otUploadFile').value='';
+
+    toast('Uploading...','');
+
+    const res=await fetch('/api/ot-upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({uploadBatchId,rows})
+    });
+
+    if(!res.ok){
+      const err=await res.json();
+      throw new Error(err.error||'Upload failed');
+    }
+
+    toast('Upload successful!','success');
+
+    state.selectedOTBatch=uploadBatchId;
+    await loadData();
+    state.tab='otreport';
+    render();
+  }catch(err){
+    console.error('Upload error:',err);
+    toast('Upload failed: '+err.message,'error');
+  }
 }
 
 loadData();
@@ -1337,6 +1666,147 @@ function toast(msg,type){
   const el=document.getElementById('toast');
   el.textContent=msg;el.className=`toast ${type} show`;
   setTimeout(()=>{el.className='toast';},4000);
+}
+
+// ============================================================
+// OT REPORT - File upload and parsing
+// ============================================================
+async function parseOTFile(){
+  const file=document.getElementById('otUploadFile').files[0];
+  if(!file){toast('No file selected','error');return;}
+
+  try{
+    const buffer=await file.arrayBuffer();
+    const rows=parseExcelBuffer(buffer);
+    if(!rows||rows.length===0){toast('No data found in file','error');return;}
+
+    showOTFilePreview(rows);
+  }catch(err){
+    console.error('Parse error:',err);
+    toast('Error parsing file: '+err.message,'error');
+  }
+}
+
+function parseExcelBuffer(buffer){
+  const text=new TextDecoder().decode(buffer);
+  return parseCSVText(text);
+}
+
+function parseCSVText(text){
+  const lines=text.split('\n').filter(l=>l.trim());
+  if(lines.length<2)return[];
+
+  let header=lines[0].split(/[,\t]/).map(h=>h.trim().toLowerCase());
+
+  const empNumIdx=header.findIndex(h=>h.includes('employee')||h.includes('number'));
+  const dateIdx=header.findIndex(h=>h.includes('date'));
+  const regIdx=header.findIndex(h=>h.includes('regular'));
+  const otIdx=header.findIndex(h=>h.includes('ot')||h.includes('overtime'));
+  const commIdx=header.findIndex(h=>h.includes('comment')||h.includes('supervisor'));
+
+  if(empNumIdx<0||dateIdx<0){
+    throw new Error('Could not find Employee Number or Date columns');
+  }
+
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const parts=lines[i].split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2||!parts[empNumIdx])continue;
+
+    const empNum=parseInt(parts[empNumIdx]);
+    if(isNaN(empNum))continue;
+
+    rows.push({
+      employee_number:empNum,
+      work_date:parts[dateIdx]||'',
+      regular_hours:parseFloat(parts[regIdx])||0,
+      ot_hours:parseFloat(parts[otIdx])||0,
+      supervisor_comment:commIdx>=0?parts[commIdx]:''
+    });
+  }
+
+  return rows;
+}
+
+function showOTFilePreview(rows){
+  const grouped={};
+  rows.forEach(r=>{
+    if(!grouped[r.employee_number])grouped[r.employee_number]=[];
+    grouped[r.employee_number].push(r);
+  });
+
+  const unmatched=Object.keys(grouped).filter(en=>{
+    return !state.employees.find(e=>e.empNum==parseInt(en));
+  });
+
+  const html=`
+    <div id="otPreview" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000">
+      <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:600px;max-height:80vh;overflow-y:auto">
+        <div style="font-size:16px;font-weight:700;margin-bottom:12px">Upload preview</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+          <div>Rows: ${rows.length}</div>
+          <div>Employees: ${Object.keys(grouped).length}</div>
+          <div>Date range: ${rows.map(r=>r.work_date).sort()[0]} to ${rows.map(r=>r.work_date).sort().pop()}</div>
+        </div>
+
+        ${unmatched.length>0?`
+          <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:10px;margin-bottom:12px;font-size:11px">
+            <div style="font-weight:700;color:#9a600a;margin-bottom:4px">⚠ Unmatched employee numbers (${unmatched.length})</div>
+            <div style="color:#6b4a0a">${unmatched.join(', ')}</div>
+          </div>
+        `:''}
+
+        <div style="background:var(--surface2);border-radius:4px;padding:12px;margin-bottom:16px;font-size:11px;max-height:200px;overflow-y:auto">
+          <table style="font-size:10px;width:100%">
+            <tr style="font-weight:700;border-bottom:1px solid var(--border)"><td style="padding:4px">Emp #</td><td style="padding:4px">Date</td><td style="padding:4px">Reg</td><td style="padding:4px">OT</td></tr>
+            ${rows.slice(0,20).map(r=>`<tr><td style="padding:4px">${r.employee_number}</td><td style="padding:4px">${r.work_date}</td><td style="padding:4px;text-align:right">${r.regular_hours.toFixed(2)}</td><td style="padding:4px;text-align:right">${r.ot_hours.toFixed(2)}</td></tr>`).join('')}
+            ${rows.length>20?`<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:4px">... and ${rows.length-20} more rows</td></tr>`:''}
+          </table>
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="confirmOTUpload(\`${JSON.stringify(rows)}\`)">Confirm and upload</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function confirmOTUpload(rowsJson){
+  try{
+    const rows=JSON.parse(rowsJson);
+    const uploadBatchId='batch-'+Date.now()+'-'+Math.random().toString(36).substr(2,9);
+
+    document.getElementById('otPreview')?.remove();
+    document.getElementById('otUploadForm').style.display='none';
+    document.getElementById('otUploadFile').value='';
+
+    toast('Uploading...','');
+
+    const res=await fetch('/api/ot-upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({uploadBatchId,rows})
+    });
+
+    if(!res.ok){
+      const err=await res.json();
+      throw new Error(err.error||'Upload failed');
+    }
+
+    toast('Upload successful!','success');
+
+    state.selectedOTBatch=uploadBatchId;
+    await loadData();
+    state.tab='otreport';
+    render();
+  }catch(err){
+    console.error('Upload error:',err);
+    toast('Upload failed: '+err.message,'error');
+  }
 }
 
 loadData();
