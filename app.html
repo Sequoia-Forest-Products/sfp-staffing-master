@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Staffing Master — Sequoia Forest Products</title>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.min.js"></script>
   <!--SESSION_DATA-->
   <style>
     *{margin:0;padding:0;box-sizing:border-box;}
@@ -1323,6 +1324,40 @@ async function parseOTFile(){
 }
 
 function parseExcelBuffer(buffer){
+  try{
+    // Try parsing as Excel using SheetJS
+    if(window.XLSX){
+      const workbook=XLSX.read(buffer,{type:'array'});
+      const sheet=workbook.Sheets[workbook.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sheet);
+
+      if(rows.length===0)return[];
+
+      const result=[];
+      rows.forEach(row=>{
+        const empNumVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'))?.[1];
+        const dateVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('date'))?.[1];
+        const regVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('regular'))?.[1];
+        const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
+        const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
+
+        const empNum=parseInt(empNumVal);
+        if(isNaN(empNum)||!dateVal)return;
+
+        result.push({
+          employee_number:empNum,
+          work_date:String(dateVal).trim(),
+          regular_hours:parseFloat(regVal)||0,
+          ot_hours:parseFloat(otVal)||0,
+          supervisor_comment:String(commVal||'').trim()
+        });
+      });
+
+      return result;
+    }
+  }catch(e){console.warn('XLSX parsing failed:',e);}
+
+  // Fallback to CSV parsing
   const text=new TextDecoder().decode(buffer);
   return parseCSVText(text);
 }
@@ -1688,6 +1723,40 @@ async function parseOTFile(){
 }
 
 function parseExcelBuffer(buffer){
+  try{
+    // Try parsing as Excel using SheetJS
+    if(window.XLSX){
+      const workbook=XLSX.read(buffer,{type:'array'});
+      const sheet=workbook.Sheets[workbook.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sheet);
+
+      if(rows.length===0)return[];
+
+      const result=[];
+      rows.forEach(row=>{
+        const empNumVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'))?.[1];
+        const dateVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('date'))?.[1];
+        const regVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('regular'))?.[1];
+        const otVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'))?.[1];
+        const commVal=Object.entries(row).find(([k])=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'))?.[1];
+
+        const empNum=parseInt(empNumVal);
+        if(isNaN(empNum)||!dateVal)return;
+
+        result.push({
+          employee_number:empNum,
+          work_date:String(dateVal).trim(),
+          regular_hours:parseFloat(regVal)||0,
+          ot_hours:parseFloat(otVal)||0,
+          supervisor_comment:String(commVal||'').trim()
+        });
+      });
+
+      return result;
+    }
+  }catch(e){console.warn('XLSX parsing failed:',e);}
+
+  // Fallback to CSV parsing
   const text=new TextDecoder().decode(buffer);
   return parseCSVText(text);
 }
