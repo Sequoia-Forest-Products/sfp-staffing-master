@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Staffing Master — Sequoia Forest Products</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <!--SESSION_DATA-->
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    :root{
+      --orange:#EE7425;--rust:#AD4C25;--wine:#4B1A21;--gold:#EFBA62;--brick:#902423;--teal:#004C56;
+      --nearBlk:#27211E;--cream:#EAD9CA;--bg:#F5F0EB;--surface:#FFFFFF;--surface2:#F0E8E0;
+      --border:#DDD0C4;--muted:#9A8070;--text:#27211E;--textDim:#6B5448;
+      --font:Montserrat,Arial,sans-serif;
+    }
+    body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;}
+
+    /* HEADER — exact match to Maintenance System */
+    .sfp-header{background:var(--nearBlk);border-bottom:2px solid var(--rust);position:sticky;top:0;z-index:50;}
+    .sfp-header-inner{max-width:1300px;margin:0 auto;padding:0 20px;}
+    .sfp-header-top{display:flex;align-items:center;justify-content:space-between;padding:14px 0 0;flex-wrap:wrap;gap:10;}
+    .sfp-logo-row{display:flex;align-items:center;gap:14px;}
+    .sfp-logo-block{background:var(--rust);border-radius:4px;padding:6px 12px;display:flex;align-items:center;}
+    .sfp-logo-block img{height:28px;width:auto;}
+    .sfp-title-block{display:flex;flex-direction:column;}
+    .sfp-system-name{color:var(--orange);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;}
+    .sfp-page-name{color:#F0E6DC;font-size:17px;font-weight:800;line-height:1.1;}
+    .sfp-header-actions{display:flex;gap:8px;align-items:center;}
+    .sfp-sync-status{font-size:11px;font-family:var(--font);}
+    .sfp-sync-status.idle{color:#4A7C59;}
+    .sfp-sync-status.saving{color:var(--orange);}
+    .sfp-sync-status.error{color:var(--brick);}
+    .sfp-user-pill{display:flex;align-items:center;gap:8px;}
+    .sfp-avatar{width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--rust);}
+    .sfp-user-name{color:#94a3b8;font-size:12px;}
+    .sfp-btn{font-family:var(--font);font-size:12px;font-weight:700;padding:8px 20px;border-radius:4px;cursor:pointer;border:none;background:var(--orange);color:#fff;}
+    .sfp-btn:hover{background:var(--rust);}
+    .sfp-btn-outline{background:none;border:1px solid #3D2E26;color:#F0E6DC;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;font-family:var(--font);cursor:pointer;}
+    .sfp-btn-outline:hover{border-color:var(--muted);}
+    .sfp-btn-sm{font-size:11px;padding:5px 12px;}
+    .sfp-sync-btn{font-family:var(--font);font-size:11px;font-weight:700;padding:6px 14px;border-radius:4px;cursor:pointer;border:none;background:var(--orange);color:#fff;}
+    .sfp-sync-btn:hover{background:var(--rust);}
+    .sfp-sync-btn.saving{background:transparent;color:var(--orange);border:1px solid var(--orange);}
+    .sfp-sync-btn.saved{background:transparent;color:#4A7C59;border:1px solid #4A7C59;}
+
+    /* NAV TABS — exact match */
+    .sfp-tabs{display:flex;gap:2px;margin-top:12px;}
+    .sfp-tab{padding:10px 16px;background:none;border:none;border-bottom:2px solid transparent;color:#94a3b8;cursor:pointer;font-size:13px;font-weight:400;font-family:var(--font);position:relative;transition:color .15s;}
+    .sfp-tab.active{border-bottom-color:var(--orange);color:var(--orange);font-weight:600;}
+    .sfp-tab:hover:not(.active){color:#cbd5e1;}
+
+    /* CONTENT */
+    .sfp-content{max-width:1300px;margin:0 auto;padding:24px 20px;}
+
+    /* STAT CARDS */
+    .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;}
+    .stat-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;}
+    .stat-value{font-size:26px;font-weight:800;color:var(--text);line-height:1;}
+    .stat-sub{font-size:11px;color:var(--muted);margin-top:4px;}
+
+    /* SECTION HEADER */
+    .section-head{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;}
+
+    /* TABLE */
+    .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:24px;}
+    table{width:100%;border-collapse:collapse;font-size:13px;}
+    th{background:var(--surface2);color:var(--textDim);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:10px 12px;text-align:left;white-space:nowrap;}
+    td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;}
+    tr:last-child td{border-bottom:none;}
+    tr:hover td{background:var(--surface2);}
+
+    /* BADGES */
+    .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;}
+    .badge.active{background:#e8f5ec;color:#2a7a47;}
+    .badge.inactive{background:var(--surface2);color:var(--muted);}
+    .badge.en{background:#eef3fc;color:#3a5fa0;}
+    .badge.es{background:#fef5e8;color:#9a600a;}
+    .badge.disc{background:#fce8e8;color:var(--brick);}
+
+    /* BUTTONS */
+    .btn{font-family:var(--font);font-size:12px;font-weight:700;padding:6px 14px;border-radius:4px;cursor:pointer;}
+    .btn-primary{background:var(--orange);color:#fff;border:none;}
+    .btn-primary:hover{background:var(--rust);}
+    .btn-outline{background:none;color:var(--rust);border:1px solid var(--border);}
+    .btn-outline:hover{border-color:var(--orange);color:var(--orange);}
+    .btn-sm{font-size:11px;padding:4px 10px;}
+
+    /* SEARCH ROW */
+    .search-row{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+    .search-row input,.search-row select{font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:7px 12px;background:var(--surface);color:var(--text);}
+    .search-row input{flex:1;min-width:200px;}
+    .search-row input:focus,.search-row select:focus{outline:none;border-color:var(--orange);}
+
+    /* WAGE BARS */
+    .wage-wrap{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:24px;}
+    .wage-sec-hdr{background:var(--surface2);padding:7px 16px;font-size:10px;font-weight:700;color:var(--rust);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);}
+    .wage-row{display:flex;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid var(--border);font-size:12.5px;}
+    .wage-row:last-child{border-bottom:none;}
+    .w-name{width:140px;flex-shrink:0;font-weight:600;}
+    .w-pos{width:160px;flex-shrink:0;color:var(--muted);font-size:11px;}
+    .w-bar-bg{flex:1;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;}
+    .w-bar-fill{height:100%;border-radius:2px;}
+    .w-amt{width:52px;text-align:right;font-weight:700;flex-shrink:0;}
+    .w-var{width:64px;text-align:right;flex-shrink:0;}
+    .var-pill{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;}
+    .var-over{background:#fce8e8;color:var(--brick);}
+    .var-under{background:#e8f5ec;color:#2a7a47;}
+    .var-even{background:var(--surface2);color:var(--muted);}
+
+    /* OT */
+    .ot-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:24px;}
+    .ot-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;}
+    .ot-name{font-size:13px;font-weight:600;}
+    .ot-desc{font-size:11px;color:var(--muted);margin-top:2px;}
+    .ot-hrs{font-size:15px;font-weight:800;color:var(--rust);flex-shrink:0;margin-left:12px;}
+
+    /* MODAL */
+    .modal-bg{position:fixed;inset:0;background:rgba(27,22,18,.65);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;}
+    .modal{background:var(--surface);border-radius:8px;width:100%;max-width:540px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;}
+    .modal-title{font-size:15px;font-weight:800;color:var(--text);display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;}
+    .close-btn{background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);line-height:1;}
+    .close-btn:hover{color:var(--text);}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+    .form-group{display:flex;flex-direction:column;gap:5px;}
+    .form-group.full{grid-column:span 2;}
+    .form-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;}
+    .form-group input,.form-group select{font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:8px 10px;color:var(--text);background:var(--surface);}
+    .form-group input:focus,.form-group select:focus{outline:none;border-color:var(--orange);}
+    .modal-body{flex:1;overflow-y:auto;padding:28px;}
+    .modal-footer{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 8px 8px;flex-shrink:0;}
+
+    /* POINTS */
+    .pt-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+
+    /* TOAST */
+    .toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:6px;font-size:13px;font-weight:700;z-index:300;font-family:var(--font);opacity:0;transition:opacity .2s;pointer-events:none;}
+    .toast.show{opacity:1;}
+    .toast.success{background:#2a7a47;color:#fff;}
+    .toast.error{background:var(--brick);color:#fff;}
+    .loading-state{padding:80px;text-align:center;color:var(--muted);font-size:13px;}
+
+    /* DOCUMENTS */
+    .doc-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;}
+    .doc-tab{padding:8px 16px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;background:none;border:none;border-bottom:2px solid transparent;font-family:var(--font);}
+    .doc-tab.active{color:var(--orange);border-bottom-color:var(--orange);}
+    .doc-list{display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto;}
+    .doc-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border);}
+    .doc-icon{width:32px;height:32px;border-radius:4px;background:var(--rust);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px;color:white;font-weight:700;}
+    .doc-name{font-size:12.5px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .doc-meta{font-size:11px;color:var(--muted);}
+    .doc-actions{display:flex;gap:6px;flex-shrink:0;}
+    .upload-zone{border:2px dashed var(--border);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color 0.15s;}
+    .upload-zone:hover{border-color:var(--orange);}
+    .upload-zone.dragover{border-color:var(--orange);background:rgba(238,116,37,0.05);}
+    .upload-zone input[type=file]{display:none;}
+    .upload-zone-label{font-size:13px;color:var(--muted);}
+    .upload-zone-label span{color:var(--orange);font-weight:600;}
+    .upload-form{display:flex;flex-direction:column;gap:12px;margin-top:14px;}
+    .progress-bar{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:8px;}
+    .progress-fill{height:100%;background:var(--orange);border-radius:2px;transition:width 0.3s;}
+  </style>
+</head>
+<body>
+
+<header class="sfp-header">
+  <div class="sfp-header-inner">
+    <div class="sfp-header-top">
+      <div class="sfp-logo-row">
+        <div class="sfp-logo-block">
+          <img src="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz48c3ZnIGlkPSJiIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDEuNzQgMTE1Ljc5Ij48ZyBpZD0iYyI+PGc+PHBhdGggZD0iTTE0My42NywyMS42NmMtNy43MywwLTguNzgsOS44My04Ljc4LDM2LjA0LDAsMjguMzEsLjY2LDM3LjA5LDguMjYsMzcuMDlzOC4yNi05LjgzLDguMjYtMzcuNjItLjc5LTM1LjUyLTcuNzMtMzUuNTJaIiBzdHlsZT0iZmlsbDojZmZmOyIvPjxwb2x5Z29uIHBvaW50cz0iMzY1LjI2IDI2LjkgMzU4Ljk3IDY5LjIzIDM3MS44MiA2OS4yMyAzNjUuOTIgMjYuOSAzNjUuMjYgMjYuOSIgc3R5bGU9ImZpbGw6I2ZmZjsiLz48cGF0aCBkPSJNMjY0LjM0LDIxLjY2Yy03LjczLDAtOC43OCw5LjgzLTguNzgsMzYuMDQsMCwyOC4zMSwuNjYsMzcuMDksOC4yNiwzNy4wOXM4LjI2LTkuODMsOC4yNi0zNy42Mi0uNzktMzUuNTItNy43My0zNS41MloiIHN0eWxlPSJmaWxsOiNmZmY7Ii8+PHBhdGggZD0iTTQwMS42OSwxMTAuODdMMzgyLjE4LDQuMDNjLS4yNS0xLjM1LTEuNDItMi4zMy0yLjc5LTIuMzNoLTI1LjIxYy0uMywwLS42LC4wNS0uODgsLjE0bC0xNi40Niw1LjM5di0yLjdjMC0xLjU3LTEuMjctMi44NC0yLjg0LTIuODRoLTM2LjA5Yy0uNDUsMC0uODksLjExLTEuMywuMzFsLTExLjUzLDUuOTJjLTQuODgtNS4yNy0xMS44LTcuOTMtMjAuNjItNy45My04LjI2LDAtMTQuODMsMi40NS0yMC4xMiw3LjVsLTEwLjc5LDEwLjQyVjQuNTRjMC0xLjU3LTEuMjctMi44NC0yLjg0LTIuODRoLTI0LjE5Yy0xLjQsMC0yLjYsMS4wMy0yLjgxLDIuNDJsLS45LDUuOTktMS4yLTYuMTJjLS4yNi0xLjMzLTEuNDMtMi4yOS0yLjc4LTIuMjloLTIzLjk4Yy0xLjU3LDAtMi44NCwxLjI3LTIuODQsMi44NFYxNS4zNWwtOC4yMS04LjAxYy00LjkyLTQuOTQtMTEuNDctNy4zNC0yMC4wMi03LjM0cy0xNi4xNSwyLjk4LTIxLjQ3LDguODdsLTEzLjUyLTYuODZjLS40LS4yLS44NC0uMzEtMS4yOC0uMzFINjIuNTRjLTEuNTcsMC0yLjg0LDEuMjctMi44NCwyLjg0djEuOTZMNDMuMDUsMS41NUM0MC4xNCwuNiwzNi44NSwuMDgsMzMuMjYsLjAxaC0uOGMtOS41OC0uMDEtMTcuNzEsMy4yOC0yMy41LDkuNTFDMy4yMywxNS43LC4xOSwyNC4zMywuMTksMzQuNWMwLC42MSwuMDEsMS4yLC4wMywxLjc4LDAsLjE2LC4wMSwuMzEsLjAyLC40NXYuMTRjLjAyLC4zOSwuMDQsLjc3LC4wNywxLjE1LC4wMSwuMjEsLjAzLC40MSwuMDUsLjYxdi4xNWMuMDQsLjMxLC4wNywuNjIsLjEsLjkxLC4wMiwuMjIsLjA1LC40NCwuMDgsLjY2di4wOWMuMDUsLjMsLjA5LC41OSwuMTMsLjksLjA0LC4yNSwuMDcsLjQ5LC4xMiwuNzUsLjA0LC4yNywuMDksLjU0LC4xNCwuODEsLjA1LC4yNiwuMSwuNTIsLjE1LC43OCwuMDUsLjI1LC4xLC40OSwuMTYsLjcyLC4wNiwuMjgsLjEyLC41NSwuMTksLjc5LC4wNSwuMiwuMSwuMzksLjE1LC41OGwuMDMsLjExYy4wNywuMjcsLjE0LC41NCwuMjIsLjc4LC4wNCwuMTMsLjA4LC4yNiwuMTEsLjM3bC4wMywuMWMuNDksMS41OSwxLjA5LDMuMTQsMS43Nyw0LjU5bC4wNywuMTRjLjE3LC4zNSwuMzQsLjY5LC41MSwxLjAxbC4xLC4xOWMuMTgsLjMzLC4zNiwuNjYsLjU0LC45OWwuMDgsLjE1Yy4xOSwuMzMsLjM5LC42NiwuNTgsLjk2bC4wNywuMTFjMy4xOSw1LjA2LDcuMzEsOC42NSwxMS40MiwxMS42M2wtMTQuMjksMS4zMmMtMS40MiwuMTMtMi41MiwxLjI5LTIuNTcsMi43MmwtLjE4LDQuNjdjLS41NiwxNC42MywyLjM0LDI1LjAzLDguODQsMzEuNzksNS4zNiw1LjU3LDEyLjk0LDguMzksMjIuNTEsOC4zOSwzLjg1LDAsNy41MS0uNTYsMTAuODctMS42NmwxNy40Mi01LjE0djIuMzljMCwxLjU3LDEuMjcsMi44NCwyLjg0LDIuODRoNDcuNjZjLjQ2LDAsLjkyLS4xMSwxLjMyLS4zM2wxMC4zNS01LjQ2YzMuNTQsMy41NCw4LDYuMjcsMTMuMzEsNy4yNiwuNDksLjExLDEuMDYsLjExLDEuNjksLjExaDM1LjkyYy45NCwwLDEuODItLjQ3LDIuMzUtMS4yNGw0Ljg2LTcuMTVjNS4wNCw1LjU4LDEyLjUzLDguNCwyMi4zNSw4LjQsMTAuNjIsMCwxOC42Ny0zLjI3LDIzLjkxLTkuNzEsMi4xLTIuNTksMy43Mi01LjYxLDQuODktOS4xNWwxMS4yMiwxMS4zM2M0Ljk1LDUuMDgsMTEuNDYsNy41NCwxOS44OCw3LjU0LDksMCwxNi4yMS0yLjkxLDIxLjQ2LTguNjVsMTIuNzIsNi43NGMuNDEsLjIyLC44NywuMzMsMS4zMywuMzNoMzYuMzljLjU1LDAsMS4wNy0uMTYsMS41LS40M2wuNywuMjZjLjMxLC4xMSwuNjQsLjE3LC45OCwuMTdoMjAuNzJjMS40LDAsMi42LTEuMDMsMi44MS0yLjQxbC4yNy0xLjc5LDEzLjk5LDQuMDljLjI2LC4wOCwuNTMsLjExLC44LC4xMWgyM2MuODQsMCwxLjY0LS4zNywyLjE4LTEuMDIsLjU0LS42NSwuNzYtMS41LC42MS0yLjMzWm0tMzY5Ljc0LTMuMjRjLTE3LjQzLDAtMjMuOTktMTEuMDEtMjMuMi0zMS43MmwxNC42OC0xLjMxYy4xMywxNi41MSwzLjE1LDIwLjA1LDkuMzEsMjAuMDUsNC45OCwwLDguMTMtMy40MSw4LjEzLTExLjI3LDAtOS45Ni01Ljc3LTE0LjY4LTEyLjQ1LTE5LTkuMTgtNi4xNi0xOS41My0xMi4xOS0xOS41My0yOS44OFMxOS40OSw4LjE2LDMyLjk5LDguMTZjMTUuNDcsMCwyMS42Myw5LjcsMjAuMTgsMzEuNTlsLTEzLjg5LDEuMDVjLjM5LTEzLjYzLTEuMDUtMTkuMTQtNy42LTE5LjE0LTUuNjQsMC04LjEzLDQuMzMtOC4xMyw5LjgzLDAsOC4zOSwzLjY3LDEyLjA2LDEwLjM1LDE2LjY1LDkuMzEsNi44MiwyMS42MywxMy41LDIxLjYzLDMxLjk4cy0xMC4wOSwyNy41My0yMy41OSwyNy41M1ptNzcuNDYtMS41N2gtNDEuMDNWOS44NmgzOC40djEzLjYzaC0yMy44NXYyNi43NGgyMS40OXYxMy4zN2gtMjEuNDl2MjguODRoMjYuNDh2MTMuNjNabTYxLjA5LDEuNTdoLTI3Ljc5di0uMDJjLS4yMSwwLS40MSwuMDItLjYyLC4wMi0xOS4yNywwLTIyLjU0LTE2LjI1LTIyLjU0LTQ5LjY4czYuMDMtNDkuODEsMjQuNzctNDkuODFjMTkuOTIsMCwyMi4yOCwxNS45OSwyMi4yOCw0Ny44NCwwLDE3LjY4LTEuMjQsMzAuNjctNSwzOS4yaDguODl2MTIuNDRabTU1LjQ0LTMwLjAyYzAsMTcuMTctMy41NCwzMC4wMi0yMy4wNywzMC4wMnMtMjIuMTUtMTMuODktMjIuMTUtMzAuNTRWOS44NmgxNC4yOVY3NWMwLDE0LjY4LDEuMzEsMTkuOTIsOC4zOSwxOS45MnM4LjI2LTQuODUsOC4yNi0xOS41M1Y5Ljg2aDE0LjI5Vjc3LjYyWm0zNi44MywzMC4wMmMtMTkuMjcsMC0yMi41NC0xNi4yNS0yMi41NC00OS42OHM2LjAzLTQ5LjgxLDI0Ljc3LTQ5LjgxYzE5LjkyLDAsMjIuMjgsMTUuOTksMjIuMjgsNDcuODQsMCwzNS00Ljg1LDUxLjY0LTI0LjUxLDUxLjY0Wm02Ni41OC0xLjU3aC0yOS43NXYtMTIuNDVoNy40N1YyMi4zMWgtNy4zNFY5Ljg2aDI5LjQ5djEyLjQ1aC03LjQ3VjkzLjYxaDcuNnYxMi40NVptNDcuODQsMGwtMy42Ny0yMy40NmgtMTUuOTlsLTMuNTQsMjMuNDZoLTE1LjJsMTYuNzgtOTYuMjFoMTkuOTJsMTcuNTYsOTYuMjFoLTE1Ljg2WiIgc3R5bGU9ImZpbGw6I2ZmZjsiLz48L2c+PC9nPjwvc3ZnPg==" alt="Sequoia" style="height:28px;width:auto">
+        </div>
+        <div class="sfp-title-block">
+          <div class="sfp-system-name">Sequoia Forest Products</div>
+          <div class="sfp-page-name">Staffing Master</div>
+        </div>
+      </div>
+      <div class="sfp-header-actions">
+        <span class="sfp-sync-status idle" id="syncStatus">● Synced</span>
+        <button class="sfp-sync-btn" id="syncBtn" onclick="syncToSheet()">+ Sync</button>
+        <div class="sfp-user-pill">
+          <img class="sfp-avatar" id="userAvatar" src="" alt="">
+          <span class="sfp-user-name" id="userName"></span>
+        </div>
+        <button class="sfp-btn-outline" onclick="location.href='/api/logout'">Sign out</button>
+      </div>
+    </div>
+    <div class="sfp-tabs">
+      <button class="sfp-tab active" onclick="switchTab('employees',this)">Employees</button>
+      <button class="sfp-tab" onclick="switchTab('economics',this)">Staffing Economics</button>
+      <button class="sfp-tab" onclick="switchTab('overtime',this)">Overtime</button>
+      <button class="sfp-tab" onclick="switchTab('points',this)">Points Tracker</button>
+    </div>
+  </div>
+</header>
+
+<main class="sfp-content" id="tabContent">
+  <div class="loading-state">Loading staffing data…</div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const user = window.__SFP_USER__ || {};
+document.getElementById('userName').textContent = user.name || user.email || '';
+if (user.picture) document.getElementById('userAvatar').src = user.picture;
+
+let state = {
+  tab:'employees', employees:[], economics:[],
+  ot:{post:[],friday:[],pre:[]}, points:[],
+  filterName:'', filterDept:'all', filterStatus:'Active',
+  editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
+  sortCol:'name', sortDir:'asc',
+  burden:0.44, mhr:15.0
+};
+
+function fmt$(n){return n==null?'—':'$'+Number(n).toFixed(2);}
+function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).replace(/[$,]/g,'')).toFixed(2));}
+
+async function loadData(){
+  try{
+    const [empRes, econRes, otRes, ptRes] = await Promise.all([
+      fetch('/api/data?table=employees'),
+      fetch('/api/data?table=economics'),
+      fetch('/api/data?table=overtime'),
+      fetch('/api/data?table=points')
+    ]);
+    if(empRes.status===401){location.href='/';return;}
+
+    const [empJson, econJson, otJson, ptJson] = await Promise.all([
+      empRes.json(), econRes.json(), otRes.json(), ptRes.json()
+    ]);
+
+    // Employees
+    state.employees = (empJson.data||[]).map(r=>({
+      id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
+      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
+      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
+      birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
+      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||''
+    }));
+
+    // Economics
+    state.economics = (econJson.data||[]).map(r=>({
+      id:r.id, num:r.num, section:r.section||'', position:r.position||'',
+      name:r.name||'', max:parseFloat(r.max_wage)||0
+    }));
+
+    // OT
+    state.ot = {pre:[], post:[], weekend:[]};
+    (otJson.data||[]).forEach(r=>{
+      const rec={id:r.id, name:r.name, hours:parseFloat(r.hours)||0, desc:r.description||''};
+      if(r.ot_type==='Pre-Shift') state.ot.pre.push(rec);
+      else if(r.ot_type==='Post-Shift') state.ot.post.push(rec);
+      else state.ot.weekend.push(rec);
+    });
+
+    // Points
+    state.points = (ptJson.data||[]).map(r=>({
+      id:r.id, name:r.name, points:r.points||0, lastDate:r.last_point_date||'',
+      levelElig:r.level_up_eligible||'', disciplinary:r.disciplinary||false,
+      discDate:r.disc_date||''
+    }));
+
+    state.loading=false;
+  }catch(e){console.error('loadData error:',e);state.loading=false;}
+  render();
+}
+
+async function loadEcon(){ /* handled in loadData */ }
+async function loadOT(){ /* handled in loadData */ }
+async function loadPoints(){ /* handled in loadData */ }
+
+async function loadEcon(){
+  try{
+    const res=await fetch('/api/sheets?range=Economics!A:G');
+    const json=await res.json();
+    const rows=json.values||[];
+    state.economics=[];
+    // Header: NUM,SECTION,POSITION,NAME,WAGE,MAX_WAGE,VARIANCE
+    // Col:    0   1        2        3    4     5        6
+    const header=rows[0]||[];
+    // Find column indices dynamically in case order varies
+    const iNum=0, iSec=1, iPos=2, iName=3, iWage=4, iMax=5;
+    for(let i=1;i<rows.length;i++){
+      const r=rows[i];
+      if(!r[iPos]?.trim()) continue; // skip rows with no position
+      const max=parseFloat(r[iMax])||0;
+      state.economics.push({
+        num:+r[iNum]||i,
+        section:r[iSec]||'',
+        position:r[iPos]||'',
+        name:r[iName]||'',
+        max
+      });
+    }
+  }catch(e){console.error('loadEcon:',e);}
+}
+
+async function loadOT(){
+  try{
+    const res=await fetch('/api/sheets?range=Overtime!A:D');
+    const json=await res.json();
+    const rows=json.values||[];
+    state.ot={post:[],weekend:[],pre:[]};
+    // Header: NAME,OT_TYPE,HOURS,DESCRIPTION
+    for(let i=1;i<rows.length;i++){
+      const r=rows[i];
+      if(!r[0]?.trim())continue;
+      const rec={name:r[0],hours:parseFloat(r[2])||0,desc:r[3]||''};
+      const type=r[1]||'';
+      if(type==='Post-Shift')state.ot.post.push(rec);
+      else if(type==='Weekend'||type==='Friday')state.ot.weekend.push(rec);
+      else if(type==='Pre-Shift')state.ot.pre.push(rec);
+    }
+  }catch(e){console.error('loadOT:',e);}
+}
+
+async function loadPoints(){
+  try{
+    const res=await fetch('/api/sheets?range=Points!A:F');
+    const json=await res.json();
+    const rows=json.values||[];
+    state.points=[];
+    // Header: NAME,POINTS,LAST_POINT_DATE,LEVEL_UP_ELIGIBLE,DISCIPLINARY,DISCIPLINARY_DATE
+    for(let i=1;i<rows.length;i++){
+      const r=rows[i];
+      if(!r[0]?.trim())continue;
+      state.points.push({
+        name:r[0],points:parseInt(r[1])||0,lastDate:r[2]||'',
+        levelElig:r[3]||'',disciplinary:r[4]==='Yes',discDate:r[5]||''
+      });
+    }
+  }catch(e){console.error('loadPoints:',e);}
+}
+
+function switchTab(tab,el){
+  state.tab=tab;
+  document.querySelectorAll('.sfp-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  render();
+}
+
+function render(){
+  const el=document.getElementById('tabContent');
+  if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
+  if(state.tab==='employees')el.innerHTML=renderEmployees();
+  else if(state.tab==='economics')el.innerHTML=renderEcon();
+  else if(state.tab==='overtime')el.innerHTML=renderOT();
+  else if(state.tab==='points')el.innerHTML=renderPoints();
+}
+
+function attachDropZones(){
+  // Attach drag start to emp cards
+  document.querySelectorAll('.emp-card[data-empname]').forEach(card=>{
+    card.addEventListener('dragstart', e=>{
+      e.dataTransfer.setData('text/plain', card.dataset.empname);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+  });
+  // Attach drop to position zones
+  document.querySelectorAll('.pos-drop').forEach(zone=>{
+    const idx = parseInt(zone.dataset.idx);
+    zone.addEventListener('dragover', e=>{e.preventDefault();zone.classList.add('drag-over');});
+    zone.addEventListener('dragleave', ()=>zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e=>{
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      econDrop(e, idx);
+    });
+  });
+}
+
+function getFiltered(){
+  let list = state.employees.filter(e=>
+    (state.filterStatus==='all'||e.status===state.filterStatus)&&
+    (state.filterDept==='all'||e.dept===state.filterDept)&&
+    (!state.filterName||e.name.toLowerCase().includes(state.filterName.toLowerCase()))
+  );
+  const col = state.sortCol || 'name';
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  return [...list].sort((a,b)=>{
+    if(col==='wage'){
+      const av=parseFloat(String(a.wage||'0').replace(/[$,]/g,''))||0;
+      const bv=parseFloat(String(b.wage||'0').replace(/[$,]/g,''))||0;
+      return (av-bv)*dir;
+    }
+    const av=String(a[col]||'').toLowerCase();
+    const bv=String(b[col]||'').toLowerCase();
+    return av<bv?-dir:av>bv?dir:0;
+  });
+}
+
+function renderEmployees(){
+  const active=state.employees.filter(e=>e.status==='Active');
+  const en=active.filter(e=>e.language==='English').length;
+  const es=active.filter(e=>e.language==='Spanish').length;
+  const allDepts=[...new Set(state.employees.map(e=>e.dept))].filter(Boolean).sort();
+  const filtered=getFiltered();
+  return `
+    <div class="stat-row">
+      <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${active.length}</div><div class="stat-sub">of ${state.employees.length} total</div></div>
+      <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${en}</div><div class="stat-sub">${es} Spanish</div></div>
+      <div class="stat-card"><div class="stat-label">Departments</div><div class="stat-value">${allDepts.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${state.employees.length-active.length}</div><div class="stat-sub">on roster</div></div>
+    </div>
+    <div class="section-head">
+      <span>Employee roster</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="copyTextBoltList()" id="copyTBBtn">📋 Copy TextBolt list</button>
+        <button class="btn btn-primary btn-sm" onclick="openAdd()">+ Add employee</button>
+      </div>
+    </div>
+    <div class="search-row">
+      <input type="text" id="empSearch" placeholder="Search by name…" value="${state.filterName}" oninput="state.filterName=this.value;renderEmployeeList()">
+      <select onchange="state.filterDept=this.value;renderEmployeeList()">
+        <option value="all" ${state.filterDept==='all'?'selected':''}>All departments</option>
+        ${allDepts.map(d=>`<option value="${d}" ${state.filterDept===d?'selected':''}>${d}</option>`).join('')}
+      </select>
+      <select onchange="state.filterStatus=this.value;renderEmployeeList()">
+        <option value="Active" ${state.filterStatus==='Active'?'selected':''}>Active only</option>
+        <option value="Inactive" ${state.filterStatus==='Inactive'?'selected':''}>Inactive</option>
+        <option value="all" ${state.filterStatus==='all'?'selected':''}>All</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          ${['name','wage','dept','status','language','days','phone'].map(col=>{
+            const labels={name:'Name',wage:'Wage/hr',dept:'Department',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
+            const active=state.sortCol===col;
+            const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
+            return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
+          }).join('')}
+          <th style="width:60px">SMS</th><th style="width:60px"></th>
+        </tr></thead>
+        <tbody>
+          ${filtered.length?filtered.map(e=>`
+            <tr>
+              <td style="font-weight:600">${e.name}</td>
+              <td>${fmtWage(e.wage)}</td>
+              <td>${e.dept||'—'}</td>
+              <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
+              <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
+              <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
+              <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
+              <td style="font-size:10px;color:#c0392b;font-weight:700">${e.textBolt==='STOP'?'NO SMS':''}</td>
+              <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
+            </tr>`).join(''):
+            '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    ${state.editing!==null?renderModal():''}
+  `;
+}
+
+function formatWageInput(input) {
+  const val = input.value.trim();
+  if (!val || val.toLowerCase() === 'salary') {
+    input.value = 'Salary';
+    state.editing.wage = 'Salary';
+    return;
+  }
+  const num = parseFloat(val.replace(/[$,]/g, ''));
+  if (!isNaN(num)) {
+    const formatted = '$' + num.toFixed(2);
+    input.value = formatted;
+    state.editing.wage = formatted;
+  }
+}
+
+function sortEmployees(col) {
+  if (state.sortCol === col) {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.sortCol = col;
+    state.sortDir = 'asc';
+  }
+  render();
+}
+
+function renderEmployeeList() {
+  const filtered = getFiltered();
+
+  // Update stat cards
+  const active = state.employees.filter(e => e.status === 'Active');
+  const spanish = active.filter(e => e.language === 'Spanish').length;
+  const depts = [...new Set(active.map(e => e.dept).filter(Boolean))].length;
+  const inactive = state.employees.filter(e => e.status === 'Inactive').length;
+
+  const statEls = document.querySelectorAll('.stat-value');
+  if (statEls.length >= 4) {
+    statEls[0].textContent = active.length;
+    statEls[1].textContent = active.length - spanish;
+    statEls[2].textContent = depts;
+    statEls[3].textContent = inactive;
+  }
+
+  // Update table body only
+  const tbody = document.querySelector('.table-wrap tbody');
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(e => {
+    const idx = state.employees.indexOf(e);
+    return `<tr>
+      <td style="font-weight:600">${e.name}</td>
+      <td>${e.wage||'—'}</td>
+      <td style="color:var(--muted)">${e.dept||'—'}</td>
+      <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status}</span></td>
+      <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
+      <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
+      <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
+      <td style="font-size:10px;color:#c0392b;font-weight:700">${e.textBolt==='STOP'?'NO SMS':''}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="openEdit(${idx})">Edit</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function toggleSmsOptOut(checkbox) {
+  const fg = checkbox.closest('.form-group');
+  const isStop = checkbox.checked;
+  // If opting out, set STOP. If opting back in, restore original address.
+  if (isStop) {
+    state.editing.textBolt = 'STOP';
+  } else {
+    // Restore original from the employee record
+    const orig = state.employees[state.editing._idx]?.textBolt || '';
+    state.editing.textBolt = (orig && orig !== 'STOP') ? orig : '';
+  }
+  fg.querySelector('.sms-track').style.background = isStop ? '#c0392b' : 'var(--border)';
+  fg.querySelector('.sms-thumb').style.left = isStop ? '18px' : '2px';
+  fg.querySelector('.sms-label').textContent = isStop ? 'Opted out' : 'Receiving texts';
+}
+
+function openEdit(idx){
+  state.editing={...state.employees[idx],_idx:idx,_isNew:false};
+  render();
+  // Load Drive folder link after render
+  setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
+}
+function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',_isNew:true};render();}
+function closeModal(){state.editing=null;render();}
+
+function saveEdit(){
+  const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
+  delete e._idx;delete e._isNew;
+  if(isNew)state.employees.push(e);else state.employees[idx]=e;
+  state.dirty=true;state.editing=null;
+  setSyncStatus('saving');
+  toast('Saved locally — click Sync to write to sheet.','success');
+  // Auto-create Drive folder for new employees in the background
+  if(isNew && e.name){
+    fetch('/api/documents?employee='+encodeURIComponent(e.name))
+      .catch(()=>{}); // silent — folder creation happens server-side
+  }
+  render();
+}
+
+function renderModal(){
+  const e=state.editing;
+  const allDepts=[...new Set(state.employees.map(emp=>emp.dept))].filter(Boolean).sort();
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
+          <span>${e._isNew?'Add employee':'Edit — '+(state.employees[e._idx]?.name||'')}</span>
+          <button class="close-btn" onclick="closeModal()">×</button>
+        </div>
+
+        <div class="modal-body">
+        <div id="modal-details-pane">
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Full name</label><input type="text" value="${e.name}" oninput="state.editing.name=this.value"></div>
+          <div class="form-group"><label class="form-label">Wage ($/hr or Salary)</label><input type="text" value="${e.wage}" id="wageInput"
+            oninput="state.editing.wage=this.value"
+            onblur="formatWageInput(this)"></div>
+          <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.dept=this.value">${allDepts.map(d=>`<option value="${d}" ${e.dept===d?'selected':''}>${d}</option>`).join('')}</select></div>
+          <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
+          <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
+          <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>
+          <div class="form-group"><label class="form-label">Clock in</label><input type="text" value="${e.clockIn}" oninput="state.editing.clockIn=this.value"></div>
+          <div class="form-group"><label class="form-label">Clock out</label><input type="text" value="${e.clockOut}" oninput="state.editing.clockOut=this.value"></div>
+          <div class="form-group"><label class="form-label">Birthday</label><input type="text" value="${e.birthday}" oninput="state.editing.birthday=this.value"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value"></div>
+          <div class="form-group full"><label class="form-label">Email</label><input type="text" value="${e.email}" oninput="state.editing.email=this.value"></div>
+          <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
+            <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+              <div>
+                <div style="font-size:12px;font-weight:700;color:var(--text)">SMS opt-out</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee</div>
+              </div>
+              <input type="checkbox" ${e.textBolt==='STOP'?'checked':''} onchange="state.editing.textBolt=this.checked?'STOP':(state.employees[state.editing._idx]?.textBolt&&state.employees[state.editing._idx].textBolt!=='STOP'?state.employees[state.editing._idx].textBolt:'')" style="width:18px;height:18px;cursor:pointer;accent-color:#c0392b">
+            </label>
+          </div>
+        </div>
+
+        </div><!-- end modal-details-pane -->
+        ${!e._isNew ? `
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:10px">HR File</div>
+          <div id="driveLinkArea">
+            <div style="font-size:12px;color:var(--muted)">Loading folder link…</div>
+          </div>
+        </div>
+        ` : ''}
+
+
+        </div><!-- end modal-body -->
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveEdit()">Save changes</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function calcDollarPerM(wage){
+  return wage * (1 + state.burden) / state.mhr;
+}
+
+function getEmpWage(name){
+  const emp = state.employees.find(e=>e.name===name);
+  if(!emp) return 0;
+  const w = String(emp.wage||'').replace(/[$,]/g,'');
+  return parseFloat(w)||0;
+}
+
+function renderEcon(){
+  const burden = state.burden;
+  const mhr = state.mhr;
+
+  // Active non-SGA employees
+  const eligible = state.employees.filter(e=>e.status==='Active' && e.dept!=='SG&A');
+
+  // Find duplicates
+  const nameCount = {};
+  state.economics.forEach(p=>{ if(p.name) nameCount[p.name]=(nameCount[p.name]||0)+1; });
+  const dupes = new Set(Object.keys(nameCount).filter(n=>nameCount[n]>1));
+
+  // Unassigned = eligible employees not in any position
+  const assignedNames = new Set(state.economics.map(p=>p.name).filter(Boolean));
+  const unassigned = eligible.filter(e=>!assignedNames.has(e.name));
+
+  const secs = [...new Set(state.economics.map(e=>e.section))];
+  const totalWage = state.economics.reduce((s,p)=>s+(p.name?getEmpWage(p.name):0),0);
+  const totalDpm = state.economics.reduce((s,p)=>s+(p.name?calcDollarPerM(getEmpWage(p.name)):0),0);
+
+  // Build dropdown options — all eligible employees
+  const empOptions = eligible.map(e=>`<option value="${e.name}">${e.name}</option>`).join('');
+
+  // Build position rows
+  const posRows = secs.map(sec=>{
+    const positions = state.economics.filter(p=>p.section===sec);
+    const hdr = `<div class="dept-header">${sec}</div>`;
+    const rows = positions.map(p=>{
+      const econIdx = state.economics.indexOf(p);
+      const wage = p.name ? getEmpWage(p.name) : 0;
+      const dpm = wage ? '$'+calcDollarPerM(wage).toFixed(2) : '—';
+      const variance = (p.name && p.max) ? wage - p.max : null;
+      const isOver = variance !== null && variance > 0;
+      const isUnder = variance !== null && variance < 0;
+      const varStr = variance === null ? '—' : (variance > 0 ? '+$'+variance.toFixed(2) : '-$'+Math.abs(variance).toFixed(2));
+      const varCls = isOver ? 'var-over' : isUnder ? 'var-under' : 'var-even';
+      const isDupe = p.name && dupes.has(p.name);
+      const rowAlert = isDupe ? ' style="border-color:#e67e22;background:#fffbf5"' : '';
+
+      return `<div class="pos-row"${rowAlert}>
+        <div class="pos-num">${p.num}</div>
+        <div class="pos-title">${p.position}</div>
+        <div>
+          <select class="pos-select${isDupe?' dupe-select':''}" onchange="econAssign(${econIdx},this.value)">
+            <option value="">— unassigned —</option>
+            ${eligible.map(e=>`<option value="${e.name}" ${p.name===e.name?'selected':''}>${e.name}</option>`).join('')}
+          </select>
+          ${isDupe ? '<span style="color:#e67e22;font-size:10px;font-weight:700;margin-left:6px">⚠ assigned twice</span>' : ''}
+        </div>
+        <div class="pos-dpm">${wage ? '$'+wage.toFixed(2) : '—'}</div>
+        <div class="pos-dpm">${dpm}</div>
+        <div class="pos-max">${p.max ? '$'+Number(p.max).toFixed(2) : '—'}</div>
+        <div class="pos-var ${varCls}">${varStr}</div>
+      </div>`;
+    }).join('');
+    return hdr + rows;
+  }).join('');
+
+  return `<style>
+    .econ-layout{display:grid;grid-template-columns:190px 1fr;gap:16px;align-items:start}
+    .unassigned-panel{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;position:sticky;top:0}
+    .unassigned-panel h4{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin:0 0 8px}
+    .unemp{font-size:12px;font-weight:600;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text)}
+    .unemp:last-child{border:none}
+    .dept-header{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:white;background:var(--rust);padding:5px 12px;border-radius:6px;margin-top:10px}
+    .pos-row{display:grid;grid-template-columns:28px 130px 1fr 65px 65px 65px 75px;gap:8px;align-items:center;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:11px;margin-top:3px}
+    .pos-select{font-family:var(--font);font-size:11px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%;background:white}
+    .pos-select.dupe-select{border-color:#e67e22}
+    .pos-num{color:var(--muted);font-size:10px;font-weight:700}
+    .pos-title{font-weight:600;font-size:11px}
+    .pos-dpm,.pos-max{font-size:11px}
+    .pos-var{font-size:11px;font-weight:600}
+    .var-over{color:#e74c3c}
+    .var-under{color:#2a7a47}
+    .var-even{color:var(--muted)}
+    .econ-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+    .econ-ctrl{display:flex;align-items:center;gap:6px;font-size:12px}
+    .econ-ctrl label{color:var(--muted);font-weight:600}
+    .econ-ctrl input{width:65px;font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 7px}
+    .col-hdr{font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+  </style>
+
+  <div class="stat-row">
+    <div class="stat-card"><div class="stat-label">Positions</div><div class="stat-value">${state.economics.length}</div>
+      <div class="stat-sub">${unassigned.length>0?'<span style="color:#e67e22">⚠ '+unassigned.length+' unassigned</span>':'✓ All filled'}</div></div>
+    <div class="stat-card"><div class="stat-label">Wage pool</div><div class="stat-value">$${totalWage.toFixed(0)}<span style="font-size:13px">/hr</span></div></div>
+    <div class="stat-card"><div class="stat-label">Burdened cost</div><div class="stat-value">$${totalDpm.toFixed(2)}<span style="font-size:13px">/m</span></div></div>
+    <div class="stat-card"><div class="stat-label">Duplicates</div><div class="stat-value" style="color:${dupes.size?'#e67e22':'#2a7a47'}">${dupes.size}</div>
+      <div class="stat-sub">${dupes.size?[...dupes].join(', '):'none'}</div></div>
+  </div>
+
+  <div class="econ-controls">
+    <div class="econ-ctrl"><label>Burden %</label><input type="number" value="${(burden*100).toFixed(0)}" min="0" max="100" step="1" onchange="state.burden=+this.value/100;render()"> %</div>
+    <div class="econ-ctrl"><label>M/Hr</label><input type="number" value="${mhr}" min="1" step="0.5" onchange="state.mhr=+this.value;render()"></div>
+    <div style="margin-left:auto"><button class="btn btn-primary btn-sm" onclick="saveEconomics()">Save staffing plan</button></div>
+  </div>
+
+  <div class="econ-layout">
+    <div class="unassigned-panel">
+      <h4>Unassigned (${unassigned.length})</h4>
+      ${unassigned.length
+        ? unassigned.map(e=>`<div class="unemp">${e.name}<span style="color:var(--muted);font-size:10px;float:right">${getEmpWage(e.name)?'$'+getEmpWage(e.name).toFixed(2):''}</span></div>`).join('')
+        : '<div style="font-size:11px;color:#2a7a47;padding:4px">&#x2713; All employees assigned</div>'}
+    </div>
+    <div>
+      <div style="display:grid;grid-template-columns:28px 130px 1fr 65px 65px 65px 75px;gap:8px;padding:3px 8px;margin-bottom:4px">
+        <div class="col-hdr">#</div>
+        <div class="col-hdr">Position</div>
+        <div class="col-hdr">Employee</div>
+        <div class="col-hdr">$/hr</div>
+        <div class="col-hdr">$/m</div>
+        <div class="col-hdr">Max $/hr</div>
+        <div class="col-hdr">Variance</div>
+      </div>
+      ${posRows}
+    </div>
+  </div>`;
+}
+
+function econAssign(posIdx, name) {
+  state.economics[posIdx].name = name;
+  render();
+}
+
+function econUnassign(posIdx) {
+  state.economics[posIdx].name = '';
+  render();
+}
+
+async function saveEconomics() {
+  try {
+    for(const p of state.economics){
+      if(p.id){
+        await fetch('/api/data?table=economics&id='+p.id,{
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:p.name||''})
+        });
+      }
+    }
+    toast('Staffing plan saved', 'success');
+  } catch(e) { toast('Save failed: '+e.message, 'error'); }
+}
+
+
+
+
+function renderOT(){
+  const all=[...state.ot.pre,...state.ot.post,...state.ot.weekend];
+  const tPr=state.ot.pre.reduce((s,r)=>s+r.hours,0);
+  const tP=state.ot.post.reduce((s,r)=>s+r.hours,0);
+  const tW=state.ot.weekend.reduce((s,r)=>s+r.hours,0);
+  const uniq=new Set(all.map(r=>r.name)).size;
+  const editing=state.otEditing;
+  const allNames=[...new Set(state.employees.filter(e=>e.status==='Active').map(e=>e.name))].sort();
+
+  function viewSection(title,recs,total){
+    if(!recs.length)return'';
+    // Group by description, sort groups by hours ascending
+    const groups={};
+    recs.forEach(r=>{
+      const key=(r.desc||'Other').trim();
+      if(!groups[key]) groups[key]={desc:key,hours:r.hours,names:[]};
+      groups[key].names.push(r.name);
+    });
+    const sorted=Object.values(groups).sort((a,b)=>a.hours-b.hours);
+    const chip=n=>`<span style="font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:2px 8px;color:var(--text)">${n}</span>`;
+    return `
+      <div style="margin-top:24px">
+        <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:var(--rust);margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--rust)">${title}</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px">${recs.length} employees · ${total.toFixed(2)} hrs</div>
+        <div class="ot-grid">
+          ${sorted.map(g=>`<div class="ot-card" style="flex-direction:column;align-items:flex-start;gap:6px">
+            <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+              <div style="font-weight:700;color:var(--text);font-size:12px">${g.desc}</div>
+              <div class="ot-hrs">${g.hours.toFixed(2)}h</div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px">${g.names.map(chip).join('')}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  function editSection(title,recs,type){
+    return `<div class="section-head" style="margin-top:16px">
+      <span>${title}</span>
+      <button class="btn btn-outline btn-sm" onclick="addOT('${type}')">+ Add</button>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Employee</th><th style="width:80px">Hours</th><th>Description</th><th style="width:40px"></th></tr></thead>
+      <tbody>
+        ${recs.map((r,i)=>`<tr>
+          <td><input type="text" value="${r.name}" list="ot-names" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%" onchange="updateOT('${type}',${i},'name',this.value)"></td>
+          <td><input type="number" value="${r.hours}" step="0.25" min="0" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%" onchange="updateOT('${type}',${i},'hours',+this.value)"></td>
+          <td><input type="text" value="${r.desc||''}" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%" onchange="updateOT('${type}',${i},'desc',this.value)"></td>
+          <td><button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="deleteOT('${type}',${i})">✕</button></td>
+        </tr>`).join('')}
+        ${!recs.length?`<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:12px">No entries</td></tr>`:''}
+      </tbody>
+    </table></div>`;
+  }
+
+  return `
+    <datalist id="ot-names">${allNames.map(n=>`<option value="${n}">`).join('')}</datalist>
+    <div class="stat-row">
+      <div class="stat-card"><div class="stat-label">Before Shift OT</div><div class="stat-value">${state.ot.pre.length}</div><div class="stat-sub">${tPr.toFixed(2)} hrs · daily</div></div>
+      <div class="stat-card"><div class="stat-label">After Shift OT</div><div class="stat-value">${state.ot.post.length}</div><div class="stat-sub">${tP.toFixed(2)} hrs · daily</div></div>
+      <div class="stat-card"><div class="stat-label">Weekend OT</div><div class="stat-value">${state.ot.weekend.length}</div><div class="stat-sub">${tW.toFixed(2)} hrs · weekly</div></div>
+      <div class="stat-card"><div class="stat-label">Unique workers</div><div class="stat-value">${uniq}</div><div class="stat-sub">${all.length} total assignments</div></div>
+    </div>
+
+    ${editing ? `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <div style="font-size:13px;color:var(--orange);font-weight:600">✎ Edit mode</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="state.otEditing=false;render()">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveOT()">Save changes</button>
+        </div>
+      </div>
+      ${editSection('Before Shift Pre-Approved OT',state.ot.pre,'pre')}
+      ${editSection('After Shift Pre-Approved OT',state.ot.post,'post')}
+      ${editSection('Weekend Pre-Approved OT',state.ot.weekend,'weekend')}
+      <div style="margin-top:16px;text-align:right;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="state.otEditing=false;render()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveOT()">Save changes</button>
+      </div>
+    ` : `
+      <div style="display:flex;justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-primary btn-sm" onclick="state.otEditing=true;render()">✎ Edit OT</button>
+      </div>
+      ${viewSection('Before Shift Pre-Approved OT',state.ot.pre,tPr)}
+      ${viewSection('After Shift Pre-Approved OT',state.ot.post,tP)}
+      ${viewSection('Weekend Pre-Approved OT',state.ot.weekend,tW)}
+      ${!all.length?'<div class="loading-state">No OT assignments yet</div>':''}
+    `}
+  `;
+}
+
+function renderPoints(){
+  const withDisc=state.points.filter(p=>p.disciplinary).length;
+  const high=state.points.filter(p=>p.points>=4).length;
+  const clean=state.points.filter(p=>p.points===0&&!p.disciplinary).length;
+  const editing=state.ptEditing;
+  function dot(pts,disc){if(disc)return'var(--brick)';if(pts>=4)return'#e67e22';if(pts>=2)return'#f1c40f';return'#2ecc71';}
+  const allNames=[...new Set(state.employees.filter(e=>e.status==='Active').map(e=>e.name))].sort();
+  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
+
+  const stats=`
+    <div class="stat-row">
+      <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${state.points.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Disciplinary</div><div class="stat-value" style="color:var(--brick)">${withDisc}</div></div>
+      <div class="stat-card"><div class="stat-label">High points (4+)</div><div class="stat-value" style="color:#e67e22">${high}</div></div>
+      <div class="stat-card"><div class="stat-label">Clean record</div><div class="stat-value" style="color:#2a7a47">${clean}</div></div>
+    </div>`;
+
+  if(editing){
+    return `
+      <datalist id="pt-names">${allNames.map(n=>`<option value="${n}">`).join('')}</datalist>
+      ${stats}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <div style="font-size:13px;color:var(--orange);font-weight:600">✎ Edit mode</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="addPoint()">+ Add entry</button>
+          <button class="btn btn-outline btn-sm" onclick="state.ptEditing=false;render()">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="savePoints()">Save changes</button>
+        </div>
+      </div>
+      <div class="section-head" style="margin-top:16px"><span>Attendance points log</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:20px"></th>
+            <th>Employee</th>
+            <th style="width:70px">Points</th>
+            <th style="width:110px">Last point</th>
+            <th style="width:120px">Level-up eligible</th>
+            <th style="width:80px">Disc?</th>
+            <th style="width:110px">Disc. date</th>
+            <th style="width:36px"></th>
+          </tr></thead>
+          <tbody>
+            ${sorted.map((p,i)=>`<tr>
+              <td><div class="pt-dot" style="background:${dot(p.points,p.disciplinary)}"></div></td>
+              <td><input type="text" value="${p.name}" list="pt-names" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%" onchange="updatePoint(${i},'name',this.value)"></td>
+              <td><input type="number" value="${p.points}" min="0" max="20" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%;font-weight:700" onchange="updatePoint(${i},'points',+this.value)"></td>
+              <td><input type="text" value="${p.lastDate||''}" placeholder="M/D/YYYY" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%" onchange="updatePoint(${i},'lastDate',this.value)"></td>
+              <td><input type="text" value="${p.levelElig||''}" placeholder="M/D/YYYY" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%" onchange="updatePoint(${i},'levelElig',this.value)"></td>
+              <td style="text-align:center"><input type="checkbox" ${p.disciplinary?'checked':''} onchange="updatePoint(${i},'disciplinary',this.checked)" style="width:16px;height:16px;cursor:pointer;accent-color:var(--brick)"></td>
+              <td><input type="text" value="${p.discDate||''}" placeholder="M/D/YYYY" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;width:100%" onchange="updatePoint(${i},'discDate',this.value)"></td>
+              <td><button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="deletePoint(${i})">✕</button></td>
+            </tr>`).join('')}
+            ${!state.points.length?'<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:16px">No entries yet</td></tr>':''}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="state.ptEditing=false;render()">Cancel</button>
+        <button class="btn btn-primary" onclick="savePoints()">Save changes</button>
+      </div>`;
+  }
+
+  return `
+    ${stats}
+    <div style="display:flex;justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="state.ptEditing=true;render()">✎ Edit points</button>
+    </div>
+    <div class="section-head" style="margin-top:16px"><span>Attendance points log</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:20px"></th>
+          <th style="width:180px">Employee</th>
+          <th style="width:70px">Points</th>
+          <th style="width:120px">Last point</th>
+          <th style="width:140px">Level-up eligible</th>
+          <th>Disciplinary</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(p=>`<tr>
+            <td><div class="pt-dot" style="background:${dot(p.points,p.disciplinary)}"></div></td>
+            <td style="font-weight:600">${p.name}</td>
+            <td style="font-weight:800;color:${p.points>=4?'var(--brick)':p.points>=2?'#e67e22':'#2a7a47'}">${p.points}</td>
+            <td style="color:var(--muted)">${p.lastDate||'—'}</td>
+            <td style="color:var(--muted)">${p.levelElig||'—'}</td>
+            <td>${p.disciplinary?'<span class="badge disc">Yes</span>':'<span class="badge active">No</span>'}</td>
+          </tr>`).join('')}
+          ${!state.points.length?'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px">No entries yet</td></tr>':''}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// ============================================================
+// OVERTIME CRUD
+// ============================================================
+function typeToKey(t){ return t==='Post-Shift'?'post':t==='Pre-Shift'?'pre':'weekend'; }
+
+function addOT(type){
+  type=type||'post';
+  const otType=type==='post'?'Post-Shift':type==='pre'?'Pre-Shift':'Weekend';
+  state.ot[type].push({name:'',hours:1,desc:'',otType});
+  state.dirty=true; render();
+}
+
+function updateOT(type,idx,field,val){
+  if(field==='otType'){
+    // Move to different type array
+    const rec={...state.ot[type][idx],otType:val};
+    state.ot[type].splice(idx,1);
+    state.ot[typeToKey(val)].push(rec);
+  } else {
+    state.ot[type][idx][field]=val;
+  }
+  state.dirty=true;
+}
+
+function deleteOT(type,idx){
+  if(!confirm('Remove this OT assignment?')) return;
+  state.ot[type].splice(idx,1);
+  state.dirty=true; render();
+}
+
+async function saveOT(){
+  const rows=[];
+  state.ot.pre.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Pre-Shift',hours:r.hours||0,description:r.desc||''});});
+  state.ot.post.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Post-Shift',hours:r.hours||0,description:r.desc||''});});
+  state.ot.weekend.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Weekend',hours:r.hours||0,description:r.desc||''});});
+  try{
+    const res=await fetch('/api/data?table=overtime',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
+    if(!res.ok) throw new Error();
+    toast('Overtime saved','success'); state.dirty=false;
+    // Reload to get new ids
+    const fresh=await fetch('/api/data?table=overtime');
+    const d=await fresh.json();
+    state.ot={pre:[],post:[],weekend:[]};
+    (d.data||[]).forEach(r=>{
+      const rec={id:r.id,name:r.name,hours:parseFloat(r.hours)||0,desc:r.description||''};
+      if(r.ot_type==='Pre-Shift')state.ot.pre.push(rec);
+      else if(r.ot_type==='Post-Shift')state.ot.post.push(rec);
+      else state.ot.weekend.push(rec);
+    });
+    state.otEditing=false; render();
+  }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+// ============================================================
+// POINTS CRUD
+// ============================================================
+function addPoint(){
+  state.points.push({name:'',points:0,lastDate:'',levelElig:'',disciplinary:false,discDate:''});
+  state.dirty=true; render();
+}
+
+function updatePoint(idx,field,val){
+  // Find the actual index in the sorted array — we need to map back
+  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
+  const orig=sorted[idx];
+  const realIdx=state.points.indexOf(orig);
+  if(realIdx===-1) return;
+  state.points[realIdx][field]=val;
+  state.dirty=true;
+}
+
+function deletePoint(idx){
+  if(!confirm('Delete this points entry?')) return;
+  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
+  const orig=sorted[idx];
+  const realIdx=state.points.indexOf(orig);
+  if(realIdx!==-1) state.points.splice(realIdx,1);
+  state.dirty=true; render();
+}
+
+async function savePoints(){
+  const rows=state.points.filter(p=>p.name).map(p=>({
+    name:p.name, points:p.points||0, last_point_date:p.lastDate||'',
+    level_up_eligible:p.levelElig||'', disciplinary:p.disciplinary||false,
+    disc_date:p.discDate||''
+  }));
+  try{
+    const res=await fetch('/api/data?table=points',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
+    if(!res.ok) throw new Error();
+    toast('Points saved','success'); state.dirty=false;
+    // Reload
+    const fresh=await fetch('/api/data?table=points');
+    const d=await fresh.json();
+    state.points=(d.data||[]).map(r=>({
+      id:r.id,name:r.name,points:r.points||0,lastDate:r.last_point_date||'',
+      levelElig:r.level_up_eligible||'',disciplinary:r.disciplinary||false,discDate:r.disc_date||''
+    }));
+    state.ptEditing=false; render();
+  }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+function setSyncStatus(s){
+  const el=document.getElementById('syncStatus');
+  if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
+  else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
+  else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
+}
+
+async function syncToSheet(){
+  const btn=document.getElementById('syncBtn');
+  btn.textContent='Syncing…';btn.className='sfp-sync-btn saving';
+  setSyncStatus('saving');
+  try{
+    for(const e of state.employees){
+      const row={
+        name:e.name, wage:e.wage, dept:e.dept, status:e.status,
+        days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
+        break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
+        birthday:e.birthday, phone:e.phone, language:e.language,
+        email:e.email, text_bolt:e.textBolt||'',
+        drive_folder_id:e.driveFolderId||null
+      };
+      if(e.id){
+        await fetch('/api/data?table=employees&id='+e.id,{
+          method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+        });
+      } else {
+        const res=await fetch('/api/data?table=employees',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+        });
+        const d=await res.json();
+        if(d.data?.[0]?.id) e.id=d.data[0].id;
+      }
+    }
+    state.dirty=false;
+    btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
+    setSyncStatus('idle');
+    toast('Saved to Supabase','success');
+    setTimeout(()=>{btn.textContent='+ Sync';btn.className='sfp-sync-btn';},3000);
+  }catch(err){
+    btn.textContent='+ Sync';btn.className='sfp-sync-btn';
+    setSyncStatus('error');
+    toast('Sync failed: '+err.message,'error');
+  }
+}
+
+function toast(msg,type){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.className=`toast ${type} show`;
+  setTimeout(()=>{el.className='toast';},4000);
+}
+
+loadData();
+
+// ============================================================
+// TEXTBOLT LIST
+// ============================================================
+function copyTextBoltList() {
+  const addresses = state.employees
+    .filter(e =>
+      e.status === 'Active' &&
+      e.textBolt &&
+      e.textBolt !== 'STOP' &&
+      e.textBolt.includes('@')
+    )
+    .map(e => e.textBolt);
+
+  if (!addresses.length) {
+    toast('No active opted-in employees found', 'error');
+    return;
+  }
+
+  const list = addresses.join(', ');
+  navigator.clipboard.writeText(list).then(() => {
+    const btn = document.getElementById('copyTBBtn');
+    btn.textContent = '✓ Copied ' + addresses.length + ' addresses';
+    btn.style.color = '#2a7a47';
+    btn.style.borderColor = '#2a7a47';
+    toast(addresses.length + ' TextBolt addresses copied to clipboard', 'success');
+    setTimeout(() => {
+      btn.textContent = '📋 Copy TextBolt list';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+    }, 3000);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = list;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(addresses.length + ' addresses copied', 'success');
+  });
+}
+
+// ============================================================
+// DRIVE FOLDER LINK
+// ============================================================
+function loadDriveLink(employeeName) {
+  const el = document.getElementById('driveLinkArea');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Looking up folder…</div>';
+
+  fetch('/api/documents?employee=' + encodeURIComponent(employeeName))
+    .then(r => r.json())
+    .then(data => {
+      const link = data.folderLink || null;
+      if (link) {
+        el.innerHTML = `<a href="${link}" target="_blank" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Open HR File in Drive
+        </a>`;
+      } else {
+        el.innerHTML = '<div style="font-size:12px;color:var(--muted)">No folder found — will be created on first upload via Drive</div>';
+      }
+    })
+    .catch(() => {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Could not load folder link</div>';
+    });
+}
+
+// ============================================================
+// OVERTIME CRUD
+// ============================================================
+function typeToKey(t){ return t==='Post-Shift'?'post':t==='Pre-Shift'?'pre':'weekend'; }
+
+function addOT(type){
+  type=type||'post';
+  const otType=type==='post'?'Post-Shift':type==='pre'?'Pre-Shift':'Weekend';
+  state.ot[type].push({name:'',hours:1,desc:'',otType});
+  state.dirty=true; render();
+}
+
+function updateOT(type,idx,field,val){
+  if(field==='otType'){
+    // Move to different type array
+    const rec={...state.ot[type][idx],otType:val};
+    state.ot[type].splice(idx,1);
+    state.ot[typeToKey(val)].push(rec);
+  } else {
+    state.ot[type][idx][field]=val;
+  }
+  state.dirty=true;
+}
+
+function deleteOT(type,idx){
+  if(!confirm('Remove this OT assignment?')) return;
+  state.ot[type].splice(idx,1);
+  state.dirty=true; render();
+}
+
+async function saveOT(){
+  const rows=[];
+  state.ot.pre.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Pre-Shift',hours:r.hours||0,description:r.desc||''});});
+  state.ot.post.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Post-Shift',hours:r.hours||0,description:r.desc||''});});
+  state.ot.weekend.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Weekend',hours:r.hours||0,description:r.desc||''});});
+  try{
+    const res=await fetch('/api/data?table=overtime',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
+    if(!res.ok) throw new Error();
+    toast('Overtime saved','success'); state.dirty=false;
+    // Reload to get new ids
+    const fresh=await fetch('/api/data?table=overtime');
+    const d=await fresh.json();
+    state.ot={pre:[],post:[],weekend:[]};
+    (d.data||[]).forEach(r=>{
+      const rec={id:r.id,name:r.name,hours:parseFloat(r.hours)||0,desc:r.description||''};
+      if(r.ot_type==='Pre-Shift')state.ot.pre.push(rec);
+      else if(r.ot_type==='Post-Shift')state.ot.post.push(rec);
+      else state.ot.weekend.push(rec);
+    });
+    state.otEditing=false; render();
+  }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+// ============================================================
+// POINTS CRUD
+// ============================================================
+function addPoint(){
+  state.points.push({name:'',points:0,lastDate:'',levelElig:'',disciplinary:false,discDate:''});
+  state.dirty=true; render();
+}
+
+function updatePoint(idx,field,val){
+  // Find the actual index in the sorted array — we need to map back
+  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
+  const orig=sorted[idx];
+  const realIdx=state.points.indexOf(orig);
+  if(realIdx===-1) return;
+  state.points[realIdx][field]=val;
+  state.dirty=true;
+}
+
+function deletePoint(idx){
+  if(!confirm('Delete this points entry?')) return;
+  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
+  const orig=sorted[idx];
+  const realIdx=state.points.indexOf(orig);
+  if(realIdx!==-1) state.points.splice(realIdx,1);
+  state.dirty=true; render();
+}
+
+async function savePoints(){
+  const rows=state.points.filter(p=>p.name).map(p=>({
+    name:p.name, points:p.points||0, last_point_date:p.lastDate||'',
+    level_up_eligible:p.levelElig||'', disciplinary:p.disciplinary||false,
+    disc_date:p.discDate||''
+  }));
+  try{
+    const res=await fetch('/api/data?table=points',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
+    if(!res.ok) throw new Error();
+    toast('Points saved','success'); state.dirty=false;
+    // Reload
+    const fresh=await fetch('/api/data?table=points');
+    const d=await fresh.json();
+    state.points=(d.data||[]).map(r=>({
+      id:r.id,name:r.name,points:r.points||0,lastDate:r.last_point_date||'',
+      levelElig:r.level_up_eligible||'',disciplinary:r.disciplinary||false,discDate:r.disc_date||''
+    }));
+    state.ptEditing=false; render();
+  }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+function setSyncStatus(s){
+  const el=document.getElementById('syncStatus');
+  if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
+  else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
+  else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
+}
+
+async function syncToSheet(){
+  const btn=document.getElementById('syncBtn');
+  btn.textContent='Syncing…';btn.className='sfp-sync-btn saving';
+  setSyncStatus('saving');
+  try{
+    for(const e of state.employees){
+      const row={
+        name:e.name, wage:e.wage, dept:e.dept, status:e.status,
+        days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
+        break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
+        birthday:e.birthday, phone:e.phone, language:e.language,
+        email:e.email, text_bolt:e.textBolt||'',
+        drive_folder_id:e.driveFolderId||null
+      };
+      if(e.id){
+        await fetch('/api/data?table=employees&id='+e.id,{
+          method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+        });
+      } else {
+        const res=await fetch('/api/data?table=employees',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+        });
+        const d=await res.json();
+        if(d.data?.[0]?.id) e.id=d.data[0].id;
+      }
+    }
+    state.dirty=false;
+    btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
+    setSyncStatus('idle');
+    toast('Saved to Supabase','success');
+    setTimeout(()=>{btn.textContent='+ Sync';btn.className='sfp-sync-btn';},3000);
+  }catch(err){
+    btn.textContent='+ Sync';btn.className='sfp-sync-btn';
+    setSyncStatus('error');
+    toast('Sync failed: '+err.message,'error');
+  }
+}
+
+function toast(msg,type){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.className=`toast ${type} show`;
+  setTimeout(()=>{el.className='toast';},4000);
+}
+
+loadData();
+
+// ============================================================
+// TEXTBOLT LIST
+// ============================================================
+function copyTextBoltList() {
+  const addresses = state.employees
+    .filter(e =>
+      e.status === 'Active' &&
+      e.textBolt &&
+      e.textBolt !== 'STOP' &&
+      e.textBolt.includes('@')
+    )
+    .map(e => e.textBolt);
+
+  if (!addresses.length) {
+    toast('No active opted-in employees found', 'error');
+    return;
+  }
+
+  const list = addresses.join(', ');
+  navigator.clipboard.writeText(list).then(() => {
+    const btn = document.getElementById('copyTBBtn');
+    btn.textContent = '✓ Copied ' + addresses.length + ' addresses';
+    btn.style.color = '#2a7a47';
+    btn.style.borderColor = '#2a7a47';
+    toast(addresses.length + ' TextBolt addresses copied to clipboard', 'success');
+    setTimeout(() => {
+      btn.textContent = '📋 Copy TextBolt list';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+    }, 3000);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = list;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(addresses.length + ' addresses copied', 'success');
+  });
+}
+
+// ============================================================
+// DOCUMENT MANAGEMENT
+// ============================================================
+let docState = { employeeName: null, folderId: null, pendingFile: null };
+
+function loadDocs(employeeName) {
+  docState.employeeName = employeeName;
+  const el = document.getElementById('docSection');
+  if (!el) return;
+  el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">Loading…</div>';
+  fetch('/api/documents?employee=' + encodeURIComponent(employeeName))
+    .then(r => r.json())
+    .then(data => {
+      docState.folderId = data.folderId;
+      docState.folderLink = data.folderLink;
+      // Update the Drive link if we got a real one
+      const linkEl = document.getElementById('driveFolderLink');
+      if (linkEl && data.folderLink) linkEl.href = data.folderLink;
+      renderDocs(data.files || []);
+    })
+    .catch(() => {
+      el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">Could not load documents</div>';
+    });
+}
+
+function renderDocs(files) {
+  const el = document.getElementById('docSection');
+  if (!el) return;
+  if (!files.length) {
+    el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">No documents yet</div>';
+    return;
+  }
+  const icons = {'pdf':'PDF','image/jpeg':'IMG','image/png':'IMG','image/heic':'IMG','default':'DOC'};
+  el.innerHTML = '<div class="doc-list">' + files.map(f => {
+    const ext = (f.name.split('.').pop() || '').toUpperCase();
+    const icon = icons[f.mimeType] || icons[ext] || icons.default;
+    const date = f.createdTime ? new Date(f.createdTime).toLocaleDateString() : '';
+    const desc = f.description ? f.description.split(' | ')[0] : '';
+    return `<div class="doc-item">
+      <div class="doc-icon">${icon}</div>
+      <div style="flex:1;min-width:0">
+        <div class="doc-name" title="${f.name}">${f.name}</div>
+        <div class="doc-meta">${[desc, date].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="doc-actions">
+        <a href="https://drive.google.com/file/d/${f.id}/view" target="_blank" class="btn btn-outline btn-sm">Open</a>
+        <button class="btn btn-sm" style="background:none;border:1px solid #ddd;color:var(--muted)" onclick="deleteDoc('${f.id}','${f.name.replace(/'/g,"\'")}')">✕</button>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function handleFileSelect(files) {
+  if (!files || !files.length) return;
+  docState.pendingFile = files[0];
+  document.getElementById('uploadForm').style.display = 'block';
+  document.getElementById('uploadFileName').textContent = '📄 ' + files[0].name + ' (' + (files[0].size / 1024).toFixed(1) + ' KB)';
+  document.getElementById('uploadZone').style.display = 'none';
+}
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('dragover');
+  handleFileSelect(event.dataTransfer.files);
+}
+
+function cancelUpload() {
+  docState.pendingFile = null;
+  const form = document.getElementById('uploadForm');
+  const zone = document.getElementById('uploadZone');
+  const input = document.getElementById('fileInput');
+  const btn = document.getElementById('uploadBtn');
+  const prog = document.getElementById('progressWrap');
+  const fname = document.getElementById('uploadFileName');
+  if (form) form.style.display = 'none';
+  if (zone) zone.style.display = 'block';
+  if (input) input.value = '';
+  if (btn) { btn.textContent = 'Upload'; btn.disabled = false; }
+  if (prog) prog.style.display = 'none';
+  if (fname) fname.textContent = '';
+  const notes = document.getElementById('docNotes');
+  if (notes) notes.value = '';
+}
+
+async function confirmUpload() {
+  const file = docState.pendingFile;
+  if (!file || !docState.employeeName) return;
+
+  const btn = document.getElementById('uploadBtn');
+  btn.textContent = 'Uploading…';
+  btn.disabled = true;
+  document.getElementById('progressWrap').style.display = 'block';
+  document.getElementById('progressFill').style.width = '30%';
+
+  try {
+    const base64 = await fileToBase64(file);
+    document.getElementById('progressFill').style.width = '60%';
+
+    const docType = document.getElementById('docTypeSelect').value;
+    const notes = document.getElementById('docNotes').value;
+
+    const res = await fetch('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        employeeName: docState.employeeName,
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        base64Data: base64,
+        docType, notes
+      })
+    });
+
+    document.getElementById('progressFill').style.width = '100%';
+    const data = await res.json();
+
+    if (data.success) {
+      toast('Document uploaded successfully', 'success');
+      cancelUpload();
+      setTimeout(() => loadDocs(docState.employeeName), 500);
+    } else {
+      throw new Error(data.error || 'Upload failed');
+    }
+  } catch(e) {
+    toast('Upload failed: ' + e.message, 'error');
+    btn.textContent = 'Upload';
+    btn.disabled = false;
+    document.getElementById('progressWrap').style.display = 'none';
+  }
+}
+
+async function deleteDoc(fileId, fileName) {
+  if (!confirm('Delete "' + fileName + '"?')) return;
+  const res = await fetch('/api/documents?fileId=' + fileId, { method: 'DELETE' });
+  const data = await res.json();
+  if (data.success) {
+    toast('Document deleted', 'success');
+    loadDocs(docState.employeeName);
+  } else {
+    toast('Delete failed', 'error');
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+loadData();
+</script>
+</body>
+</html>

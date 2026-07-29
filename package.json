@@ -1,0 +1,13 @@
+{
+  "name": "sfp-staffing-master",
+  "version": "1.0.0",
+  "description": "Sequoia Forest Products — Staffing Master App",
+  "private": true,
+  "scripts": {
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.0.0"
+  }
+}

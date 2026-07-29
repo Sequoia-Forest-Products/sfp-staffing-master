@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Staffing Master — Sequoia Forest Products</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --orange: #EE7425; --rust: #AD4C25; --wine: #4B1A21;
+      --cream: #EAD9CA; --ink: #27211E; --font: 'Montserrat', system-ui, sans-serif;
+    }
+    body { font-family: var(--font); background: #1a1410; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
+
+    .top-bar { position: fixed; top: 0; left: 0; right: 0; height: 58px; background: var(--ink); display: flex; align-items: stretch; border-bottom: 2px solid var(--rust); z-index: 10; }
+    .logo-block { background: var(--orange); display: flex; align-items: center; justify-content: center; padding: 0 16px; }
+    .logo-block svg { height: 28px; width: auto; }
+    .top-titles { display: flex; flex-direction: column; justify-content: center; padding: 0 18px; }
+    .top-system { font-size: 9px; font-weight: 700; color: var(--orange); letter-spacing: 0.14em; text-transform: uppercase; }
+    .top-page { font-size: 15px; font-weight: 700; color: white; margin-top: 1px; }
+
+    .card { background: #231e1a; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 44px 40px; width: 100%; max-width: 400px; text-align: center; margin-top: 20px; }
+
+    .title { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--orange); margin-bottom: 8px; }
+    .divider { width: 40px; height: 2px; background: var(--rust); margin: 0 auto 20px; border-radius: 1px; }
+    .subtitle { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 32px; line-height: 1.6; }
+
+    .google-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 13px 20px; background: var(--orange); color: white; font-family: var(--font); font-size: 14px; font-weight: 700; border: none; border-radius: 7px; cursor: pointer; text-decoration: none; transition: background 0.15s; letter-spacing: 0.02em; }
+    .google-btn:hover { background: var(--rust); }
+    .google-icon { width: 18px; height: 18px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+    .footer { margin-top: 28px; font-size: 11px; color: rgba(255,255,255,0.2); line-height: 1.6; }
+
+    .error-msg { font-size: 12px; font-weight: 600; padding: 10px 14px; border-radius: 6px; margin-bottom: 20px; display: none; }
+    .error-msg.show { display: block; }
+    .error-msg.err { background: rgba(192,57,43,0.2); color: #e87070; }
+    .error-msg.ok  { background: rgba(42,122,71,0.2); color: #6dc87e; }
+  </style>
+</head>
+<body>
+
+  <div class="top-bar">
+    <div class="logo-block">
+      <svg viewBox="0 0 603.13 226.71" xmlns="http://www.w3.org/2000/svg" style="height:28px">
+        <path d="M573.43,2.59h-38.39l-30.73,10.07V2.59h-54.96l-20.62,10.58c-6.71-8.86-16.67-13.18-30.31-13.18-11.41,0-20.44,3.33-27.63,10.21l-23.75,22.95V2.59h-36.83l-5.05,33.79-6.66-33.79h-36.52v26.71l-19.89-19.4c-6.65-6.66-15.62-9.9-27.43-9.9-13.56,0-24.16,4.91-31.57,14.6l-23.65-12.01h-68.52v8.77L59.95,2.17C55.9.84,51.3.11,46.27.02l-1.15-.02C17.89,0,.29,18.93.29,48.22c0,.87.02,1.73.04,2.56,0,.21.02.41.03.61v.24c.04.55.06,1.1.1,1.64.02.29.04.57.07.85v.13c.05.47.09.95.14,1.4.04.36.08.7.12,1.06.05.42.11.84.17,1.27.05.36.11.71.17,1.07.06.38.13.77.2,1.14.07.37.14.74.21,1.11.07.35.15.69.22,1.03.09.38.17.76.26,1.12.07.27.14.53.21.8l.05.19c.1.37.2.75.3,1.09.05.16.1.32.15.48l.06.18c.68,2.22,1.52,4.37,2.49,6.44l.08.18c.23.48.47.95.71,1.41l.13.26c.25.46.5.92.75,1.37l.12.22c.27.46.54.92.82,1.36l.08.13c6.34,10.05,15.54,16.18,23.65,21.59l2.08,1.39.38.24L.37,103.88l-.27,7.11c-.8,21.05,3.21,35.85,12.26,45.25,7.32,7.6,17.81,11.46,31.16,11.46,5.43,0,10.56-.79,15.26-2.33l32.13-9.49v9.42h72.58l18.71-9.88c5.41,6.53,12.75,10.97,21.9,12.28h54.7l10.78-15.87c6.69,10.66,17.96,15.87,34.22,15.87,14.81,0,25.94-4.44,33.06-13.2,4.15-5.1,6.93-11.47,8.51-19.66l22.46,22.67c6.69,6.85,15.58,10.18,27.18,10.18,13.72,0,24.33-4.81,31.61-14.3l22.46,11.9h91.82l1.15-7.61,26.05,7.61h35.02L573.43,2.59Z" fill="white"/>
+        <polygon points="121.17 92.53 153.9 92.53 153.9 72.17 121.17 72.17 121.17 31.45 157.49 31.45 157.49 10.69 99.01 10.69 99.01 157.2 161.49 157.2 161.49 136.44 121.17 136.44 121.17 92.53" fill="#27211E"/>
+        <path d="M317.18,110.49c0,22.36-2,29.74-12.57,29.74s-12.77-7.98-12.77-30.34V10.69h-21.76v102.39c0,25.35,3.19,46.51,33.73,46.51s35.13-19.56,35.13-45.71V10.69h-21.76v99.8Z" fill="#27211E"/>
+        <path d="M398.42,8.1c-28.54,0-37.73,24.95-37.73,75.85s4.99,75.65,34.33,75.65,37.32-25.35,37.32-78.64c0-48.5-3.59-72.85-33.93-72.85ZM396.62,140.03c-11.58,0-12.57-13.37-12.57-56.49,0-39.92,1.6-54.89,13.37-54.89,10.58,0,11.78,13.77,11.78,54.09,0,42.31-1,57.28-12.57,57.28Z" fill="#27211E"/>
+        <path d="M248.59,80.95c0-48.5-3.59-72.85-33.93-72.85-28.54,0-37.73,24.95-37.73,75.85s4.99,75.65,34.33,75.65c.32,0,.62-.02.94-.03v.03h42.31v-18.94h-13.54c5.73-12.99,7.62-32.78,7.62-59.7ZM200.29,83.55c0-39.92,1.6-54.89,13.37-54.89,10.58,0,11.78,13.77,11.78,54.09,0,42.31-1,57.28-12.57,57.28s-12.57-13.37-12.57-56.49Z" fill="#27211E"/>
+        <polygon points="484.84 29.66 496.22 29.66 496.22 10.69 451.31 10.69 451.31 29.66 462.49 29.66 462.49 138.24 451.11 138.24 451.11 157.2 496.42 157.2 496.42 138.24 484.84 138.24 484.84 29.66" fill="#27211E"/>
+        <path d="M566.68,10.69h-30.34l-25.55,146.5h23.15l5.39-35.73h24.35l5.59,35.73h24.15l-26.75-146.5ZM541.53,101.11l9.58-64.47h1l8.98,64.47h-19.56Z" fill="#27211E"/>
+        <path d="M46.52,68.98c-10.18-6.99-15.77-12.57-15.77-25.35,0-8.38,3.79-14.97,12.38-14.97,9.98,0,12.17,6.79,11.58,27.54h21.16c2.2-33.33-7.18-48.1-30.74-48.1-20.56,0-36.73,12.97-36.73,40.12s15.77,36.13,29.74,45.51c10.18,6.59,18.96,13.77,18.96,28.94,0,11.98-4.79,17.17-12.38,17.17-9.13,0-13.72-5.11-14.14-28.54H8.19c-1.2,31.54,8.78,48.3,35.33,48.3,20.56,0,35.93-12.97,35.93-41.92s-18.76-38.32-32.93-48.7Z" fill="#27211E"/>
+      </svg>
+    </div>
+    <div class="top-titles">
+      <div class="top-system">Sequoia Forest Products</div>
+      <div class="top-page">Staffing Master</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">HR Portal</div>
+    <div class="divider"></div>
+    <div class="subtitle">Sign in with your Sequoia Forest Products<br>Google Workspace account to continue.</div>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <a href="/api/auth?action=login" class="google-btn">
+      <span class="google-icon">
+        <svg width="12" height="12" viewBox="0 0 24 24">
+          <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+          <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+          <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+          <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+        </svg>
+      </span>
+      Sign in with Google
+    </a>
+
+    <div class="footer">
+      Access is restricted to @sequoiafp.com accounts.<br>
+      Contact your administrator to request access.
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('error')) {
+      const msg = document.getElementById('errorMsg');
+      const errors = { unauthorized: 'Your account is not authorized. Contact your administrator.', auth_failed: 'Sign-in failed. Please try again.', no_code: 'Authentication was cancelled.' };
+      msg.textContent = errors[params.get('error')] || 'An error occurred. Please try again.';
+      msg.className = 'error-msg show err';
+    }
+    if (params.get('logged_out')) {
+      const msg = document.getElementById('errorMsg');
+      msg.textContent = 'You have been signed out.';
+      msg.className = 'error-msg show ok';
+    }
+  </script>
+</body>
+</html>

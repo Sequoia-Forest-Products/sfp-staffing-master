@@ -1,0 +1,38 @@
+[build]
+  functions = "netlify/functions"
+  publish = "."
+
+[functions]
+  node_bundler = "esbuild"
+
+# Birthday notifications — runs daily at 7 AM Pacific (15:00 UTC)
+[functions.birthday]
+  schedule = "0 15 * * *"
+
+[[redirects]]
+  from = "/auth/callback"
+  to = "/.netlify/functions/auth"
+  status = 200
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/app.html"
+  to = "/.netlify/functions/session"
+  status = 200
+  conditions = {Cookie = ["sfp_session"]}
+
+[[redirects]]
+  from = "/app.html"
+  to = "/index.html"
+  status = 302
+
+[[headers]]
+  for = "/app.html"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Cache-Control = "no-store"
