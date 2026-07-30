@@ -577,6 +577,7 @@ async function saveEdit(){
         wage = parseFloat(wage.replace(/[$,]/g,'')) || wage;
       }
     }
+    e.wage = wage; // Update the editing object with normalized wage
 
     const row={
       name:e.name, wage:wage, dept:e.dept, status:e.status,
