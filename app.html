@@ -1539,8 +1539,7 @@ async function parseOTFile(){
   if(!file){toast('No file selected','error');return;}
 
   try{
-    const buffer=await file.arrayBuffer();
-    const rows=parseExcelBuffer(buffer,file.name);
+    const rows=await parseExcelBuffer(file);
     if(!rows||rows.length===0){toast('No data found in file','error');return;}
 
     showOTFilePreview(rows);
@@ -1550,73 +1549,73 @@ async function parseOTFile(){
   }
 }
 
-function parseExcelBuffer(buffer,filename){
-  try{
-    // Try parsing as Excel using SheetJS
-    if(window.XLSX){
-      const isXLS=filename.toLowerCase().endsWith('.xls');
-      let workbook;
-      if(isXLS){
-        // For XLS (binary format), convert ArrayBuffer to binary string
-        const uint8=new Uint8Array(buffer);
-        const binary=String.fromCharCode.apply(null,uint8);
-        workbook=XLSX.read(binary,{type:'binary'});
-      }else{
-        // For XLSX and other formats, use array type
-        workbook=XLSX.read(buffer,{type:'array'});
+async function parseExcelBuffer(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=(e)=>{
+      try{
+        if(window.XLSX){
+          // Use base64 data URL approach which works for both XLS and XLSX
+          const data=e.target.result;
+          const base64=data.split(',')[1];
+          const workbook=XLSX.read(base64,{type:'base64'});
+          const sheet=workbook.Sheets[workbook.SheetNames[0]];
+          const rows=XLSX.utils.sheet_to_json(sheet);
+
+          if(rows.length===0)throw new Error('No data found in file');
+
+          // Find header columns by matching keys
+          const firstRow=rows[0];
+          const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
+          const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
+          const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
+          const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
+          const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
+
+          if(!empNumKey||!dateKey){
+            throw new Error('Missing required columns: Employee Number or Date');
+          }
+
+          const result=[];
+          rows.forEach(row=>{
+            const empNumVal=String(row[empNumKey]||'').trim();
+            const dateVal=String(row[dateKey]||'').trim();
+            const regVal=parseFloat(row[regKey])||0;
+            const otVal=parseFloat(row[otKey])||0;
+            const commVal=String(row[commKey]||'').trim();
+
+            if(!empNumVal||!dateVal)return;
+
+            result.push({
+              employee_number:empNumVal,
+              work_date:dateVal,
+              regular_hours:regVal,
+              ot_hours:otVal,
+              supervisor_comment:commVal
+            });
+          });
+
+          if(result.length>0){
+            resolve(result);
+          }else{
+            throw new Error('No valid data rows found');
+          }
+        }else{
+          throw new Error('XLSX library not loaded');
+        }
+      }catch(xlsxErr){
+        console.warn('XLSX parsing failed, trying CSV:',xlsxErr.message);
+        try{
+          const text=e.target.result;
+          resolve(parseCSVText(text));
+        }catch(csvErr){
+          reject(new Error('Could not parse file - supported formats are XLS, XLSX, and CSV'));
+        }
       }
-      const sheet=workbook.Sheets[workbook.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(sheet);
-
-      if(rows.length===0)return[];
-
-      // Find header columns by matching keys
-      const firstRow=rows[0];
-      const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
-      const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
-      const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
-      const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
-      const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
-
-      if(!empNumKey||!dateKey){
-        console.warn('XLSX: Could not find columns. Keys:',Object.keys(firstRow));
-        throw new Error('Missing required columns');
-      }
-
-      const result=[];
-      rows.forEach(row=>{
-        const empNumVal=String(row[empNumKey]||'').trim();
-        const dateVal=String(row[dateKey]||'').trim();
-        const regVal=parseFloat(row[regKey])||0;
-        const otVal=parseFloat(row[otKey])||0;
-        const commVal=String(row[commKey]||'').trim();
-
-        if(!empNumVal||!dateVal)return;
-
-        result.push({
-          employee_number:empNumVal,
-          work_date:dateVal,
-          regular_hours:regVal,
-          ot_hours:otVal,
-          supervisor_comment:commVal
-        });
-      });
-
-      if(result.length>0)return result;
-      throw new Error('No valid data rows found');
-    }
-  }catch(e){
-    console.warn('XLSX parsing failed:',e.message);
-  }
-
-  // Fallback to CSV parsing
-  try{
-    const text=new TextDecoder().decode(buffer);
-    return parseCSVText(text);
-  }catch(csvErr){
-    console.error('CSV fallback failed:',csvErr);
-    throw new Error('Could not parse file - supported formats are XLS, XLSX, and CSV');
-  }
+    };
+    reader.onerror=()=>reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function parseCSVText(text){
