@@ -1912,20 +1912,74 @@ function sendManagerEmails(rows){
   // Calculate summary data
   const dates = [...new Set(rows.map(r => r.date))].sort();
   const dateRange = dates.length > 0 ? (dates.length > 1 ? `${dates[0]} to ${dates[dates.length-1]}` : dates[0]) : 'Unknown';
+
+  const empTotals = {};
+  rows.forEach(r => {
+    if (!empTotals[r.empNum]) {
+      empTotals[r.empNum] = { regular: 0, ot: 0, name: r.lastName ? `${r.firstName} ${r.lastName}` : '' };
+    }
+    empTotals[r.empNum].regular += r.regular;
+    empTotals[r.empNum].ot += r.ot;
+  });
+
+  // Calculate number of weeks
+  let numWeeks = 1;
+  if (dates.length > 0) {
+    const firstDate = new Date(dates[0]);
+    const lastDate = new Date(dates[dates.length - 1]);
+    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
+    numWeeks = Math.ceil(daysDiff / 7) || 1;
+  }
+
+  // Calculate pre-approved OT
+  let totalPreApproved = 0;
+  const activeEmps = state.employees.filter(e => e.status === 'Active');
+  const baseAllowancePerEmp = 0.5 * numWeeks;
+
+  activeEmps.forEach(emp => {
+    totalPreApproved += baseAllowancePerEmp;
+  });
+
+  state.ot.weekend.forEach(r => {
+    totalPreApproved += r.hours;
+  });
+
   const totalRegHrs = rows.reduce((s,r) => s + (r.regular||0), 0);
   const totalOTHrs = rows.reduce((s,r) => s + (r.ot||0), 0);
-  const empCount = [...new Set(rows.map(r => r.empNum))].length;
+  const netOT = Math.max(0, totalOTHrs - totalPreApproved);
+  const empCount = Object.keys(empTotals).length;
+
+  // Find employees who exceeded pre-approved limits
+  const exceededEmployees = [];
+  Object.entries(empTotals).forEach(([empNum, hrs]) => {
+    const emp = state.employees.find(e => e.empNum == empNum);
+    if (emp) {
+      const preApp = (state.ot.weekend.find(r => r.name === emp.name)?.hours || 0) + baseAllowancePerEmp;
+      const variance = hrs.ot - preApp;
+      if (variance > 0.1) {
+        exceededEmployees.push({
+          name: emp.name,
+          unapprovedHours: variance.toFixed(2)
+        });
+      }
+    }
+  });
+  exceededEmployees.sort((a, b) => parseFloat(b.unapprovedHours) - parseFloat(a.unapprovedHours));
 
   // Prepare email data for backend
   const emailData = {
     to: state.emailSettings.managers,
-    subject: `OT Report Uploaded - ${dateRange}`,
-    summary: {
+    subject: `OT Report: ${dateRange}`,
+    data: {
       dateRange,
       totalRegularHours: totalRegHrs.toFixed(2),
       totalOTHours: totalOTHrs.toFixed(2),
+      totalPreApprovedHours: totalPreApproved.toFixed(2),
+      netOTHours: netOT.toFixed(2),
       employeeCount: empCount,
-      uploadTime: new Date().toLocaleString()
+      uploadTime: new Date().toLocaleString(),
+      exceededEmployees,
+      reportLink: window.location.origin + window.location.pathname
     }
   };
 
