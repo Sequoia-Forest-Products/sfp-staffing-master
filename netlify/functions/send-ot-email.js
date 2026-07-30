@@ -98,24 +98,9 @@ function generateEmailHTML(data) {
           <div class="section-title">Summary</div>
           <div class="stats">
             <div class="stat-box">
-              <div class="stat-label">All OT (hours)</div>
-              <div class="stat-value">${totalOTHours}</div>
-              <div class="stat-sub">Total overtime</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Pre-Approved OT</div>
-              <div class="stat-value">${totalPreApprovedHours}</div>
-              <div class="stat-sub">Base + assignments</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Net OT (hours)</div>
-              <div class="stat-value">${netOTHours}</div>
+              <div class="stat-label">Extra OT</div>
+              <div class="stat-value">${netOTPercent}%</div>
               <div class="stat-sub">Unapproved overtime</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Total % OT</div>
-              <div class="stat-value">${totalOTPercent}%</div>
-              <div class="stat-sub">Of total payroll $</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">Pre-Approved OT %</div>

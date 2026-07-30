@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Staffing Master — Sequoia Forest Products</title>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.min.js"></script>
   <!--SESSION_DATA-->
   <style>
     *{margin:0;padding:0;box-sizing:border-box;}
@@ -190,7 +190,7 @@
     <div class="sfp-tabs">
       <button class="sfp-tab active" onclick="switchTab('employees',this)">Employees</button>
       <button class="sfp-tab" onclick="switchTab('economics',this)">Staffing Economics</button>
-      <button class="sfp-tab" onclick="switchTab('overtime',this)">Pre-Approved Overtime</button>
+      <button class="sfp-tab" onclick="switchTab('overtime',this)">Overtime</button>
       <button class="sfp-tab" onclick="switchTab('points',this)">Points Tracker</button>
       <button class="sfp-tab" onclick="switchTab('otreport',this)">OT Report</button>
     </div>
@@ -214,8 +214,7 @@ let state = {
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
   sortCol:'name', sortDir:'asc',
-  burden:0.44, mhr:15.0,
-  emailSettings:{managers:[], autoSend:false}
+  burden:0.44, mhr:15.0
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toFixed(2);}
@@ -850,10 +849,10 @@ function renderOT(){
   return `
     <datalist id="ot-names">${allNames.map(n=>`<option value="${n}">`).join('')}</datalist>
     <div class="stat-row">
-      <div class="stat-card"><div class="stat-label">Before Shift OT</div><div class="stat-value">${state.ot.pre.length}</div><div class="stat-sub">${tPr.toFixed(2)} hrs · Hours/Day</div></div>
-      <div class="stat-card"><div class="stat-label">After Shift OT</div><div class="stat-value">${state.ot.post.length}</div><div class="stat-sub">${tP.toFixed(2)} hrs · Hours/Day</div></div>
-      <div class="stat-card"><div class="stat-label">Friday Pre-Approved</div><div class="stat-value">${state.ot.weekend.length}</div><div class="stat-sub">${tW.toFixed(2)} hrs · Hours/Day</div></div>
-      <div class="stat-card"><div class="stat-label">Employee base allowance</div><div class="stat-value">${allNames.length}</div><div class="stat-sub">0.5 hrs · Hours/Week</div></div>
+      <div class="stat-card"><div class="stat-label">Before Shift OT</div><div class="stat-value">${state.ot.pre.length}</div><div class="stat-sub">${tPr.toFixed(2)} hrs · daily</div></div>
+      <div class="stat-card"><div class="stat-label">After Shift OT</div><div class="stat-value">${state.ot.post.length}</div><div class="stat-sub">${tP.toFixed(2)} hrs · daily</div></div>
+      <div class="stat-card"><div class="stat-label">Weekend OT</div><div class="stat-value">${state.ot.weekend.length}</div><div class="stat-sub">${tW.toFixed(2)} hrs · weekly</div></div>
+      <div class="stat-card"><div class="stat-label">Unique workers</div><div class="stat-value">${uniq}</div><div class="stat-sub">${all.length} total assignments</div></div>
     </div>
 
     ${editing ? `
@@ -864,20 +863,9 @@ function renderOT(){
           <button class="btn btn-primary btn-sm" onclick="saveOT()">Save changes</button>
         </div>
       </div>
-      ${editSection('Before Shift Pre-Approved OT (Hours/Day)',state.ot.pre,'pre')}
-      ${editSection('After Shift Pre-Approved OT (Hours/Day)',state.ot.post,'post')}
-      ${editSection('Friday Pre-Approved (Hours/Day)',state.ot.weekend,'weekend')}
-      <div style="margin-top:24px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:10px">Employee Base Allowance (0.5 hrs/week)</div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">All active employees receive 0.5 hours per week of pre-approved OT to account for time between whistles and clock in/out before and after shifts.</div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Employee</th><th style="width:100px">Hours/Week</th></tr></thead>
-          <tbody>
-            ${allNames.map(name=>`<tr><td>${name}</td><td style="text-align:right;font-weight:600">0.5</td></tr>`).join('')}
-            ${!allNames.length?'<tr><td colspan="2" style="text-align:center;color:var(--muted);padding:12px">No active employees</td></tr>':''}
-          </tbody>
-        </table></div>
-      </div>
+      ${editSection('Before Shift Pre-Approved OT',state.ot.pre,'pre')}
+      ${editSection('After Shift Pre-Approved OT',state.ot.post,'post')}
+      ${editSection('Weekend Pre-Approved OT',state.ot.weekend,'weekend')}
       <div style="margin-top:16px;text-align:right;display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="state.otEditing=false;render()">Cancel</button>
         <button class="btn btn-primary" onclick="saveOT()">Save changes</button>
@@ -886,47 +874,10 @@ function renderOT(){
       <div style="display:flex;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-primary btn-sm" onclick="state.otEditing=true;render()">✎ Edit OT</button>
       </div>
-      ${viewSection('Before Shift Pre-Approved OT (Hours/Day)',state.ot.pre,tPr)}
-      ${viewSection('After Shift Pre-Approved OT (Hours/Day)',state.ot.post,tP)}
-      ${viewSection('Friday Pre-Approved (Hours/Day)',state.ot.weekend,tW)}
-      <div style="margin-top:24px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:10px">Employee Base Allowance (0.5 hrs/week)</div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">All active employees receive 0.5 hours per week of pre-approved OT to account for time between whistles and clock in/out before and after shifts.</div>
-        <div style="font-size:12px;font-weight:600;color:var(--text)">${allNames.length} active employees × 0.5 hrs/week = ${(allNames.length * 0.5).toFixed(1)} hrs/week base allowance</div>
-      </div>
+      ${viewSection('Before Shift Pre-Approved OT',state.ot.pre,tPr)}
+      ${viewSection('After Shift Pre-Approved OT',state.ot.post,tP)}
+      ${viewSection('Weekend Pre-Approved OT',state.ot.weekend,tW)}
       ${!all.length?'<div class="loading-state">No OT assignments yet</div>':''}
-
-      <div style="margin-top:32px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:13px;font-weight:700;margin-bottom:16px">📧 Report Email Notifications</div>
-        <div style="margin-bottom:16px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
-            <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
-            <span style="font-size:12px;font-weight:600">Auto-send OT reports to managers when files are uploaded</span>
-          </label>
-        </div>
-
-        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Manager recipients</div>
-        <div style="display:flex;gap:8px;margin-bottom:12px">
-          <input type="email" id="newManagerEmail" placeholder="manager@company.com" style="flex:1;font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 8px">
-          <button class="btn btn-primary btn-sm" onclick="addManager()">+ Add</button>
-        </div>
-
-        ${state.emailSettings.managers.length > 0 ? `
-          <div class="table-wrap" style="margin-bottom:12px">
-            <table>
-              <thead><tr><th>Email</th><th style="width:40px"></th></tr></thead>
-              <tbody>
-                ${state.emailSettings.managers.map((email,i)=>`<tr>
-                  <td style="font-size:12px">${email}</td>
-                  <td style="text-align:center"><button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="removeManager(${i})">✕</button></td>
-                </tr>`).join('')}
-              </tbody>
-            </table>
-          </div>
-        ` : `
-          <div style="font-size:11px;color:var(--muted);padding:12px;background:var(--surface2);border-radius:4px;margin-bottom:12px">No managers added yet</div>
-        `}
-      </div>
     `}
   `;
 }
@@ -1065,46 +1016,6 @@ function renderOTReport(){
 
   // Calculate totals and dollar amounts
   let totalRegular = 0, totalOT = 0, totalRegularDollars = 0, totalOTDollars = 0;
-
-  // Calculate number of weeks in the report period
-  let numWeeks = 1;
-  if (dates.length > 0) {
-    const firstDate = new Date(dates[0]);
-    const lastDate = new Date(dates[dates.length - 1]);
-    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
-    numWeeks = Math.ceil(daysDiff / 7) || 1;
-  }
-
-  // Get pre-approved OT from overtime table (Friday Pre-Approved) - per employee
-  const preApprovedMap = {};
-  let preApprovedHours = 0, preApprovedDollars = 0;
-
-  // Add Friday pre-approved assignments
-  state.ot.weekend.forEach(r => {
-    const emp = state.employees.find(e => e.name === r.name);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      preApprovedMap[r.name] = {hours: r.hours, dollars: r.hours * wage * 1.5};
-      preApprovedHours += r.hours;
-      preApprovedDollars += r.hours * wage * 1.5;
-    }
-  });
-
-  // Add 0.5 hrs/week base allowance for all active employees
-  const activeEmps = state.employees.filter(e => e.status === 'Active');
-  const baseAllowancePerEmp = 0.5 * numWeeks;
-  activeEmps.forEach(emp => {
-    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-    if (!preApprovedMap[emp.name]) {
-      preApprovedMap[emp.name] = {hours: baseAllowancePerEmp, dollars: baseAllowancePerEmp * wage * 1.5};
-    } else {
-      preApprovedMap[emp.name].hours += baseAllowancePerEmp;
-      preApprovedMap[emp.name].dollars += baseAllowancePerEmp * wage * 1.5;
-    }
-    preApprovedHours += baseAllowancePerEmp;
-    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
-  });
-
   const employeeDetails = [];
 
   Object.entries(empTotals).forEach(([empNum, hrs]) => {
@@ -1112,9 +1023,7 @@ function renderOTReport(){
     if (!emp) {
       employeeDetails.push({
         empNum, name: `UNMATCHED (#${empNum})`, regular: hrs.regular, ot: hrs.ot,
-        wage: 0, regularDoll: 0, otDoll: 0,
-        preApprovedOT: 0, variance: hrs.ot,
-        matched: false
+        wage: 0, regularDoll: 0, otDoll: 0, matched: false
       });
       return;
     }
@@ -1128,25 +1037,28 @@ function renderOTReport(){
     totalRegularDollars += regularDoll;
     totalOTDollars += otDoll;
 
-    const preApp = preApprovedMap[emp.name] || {hours: 0, dollars: 0};
     employeeDetails.push({
       empNum, name: emp.name, regular: hrs.regular, ot: hrs.ot,
-      wage, regularDoll, otDoll,
-      preApprovedOT: preApp.hours,
-      variance: hrs.ot - preApp.hours,
-      matched: true
+      wage, regularDoll, otDoll, matched: true
     });
   });
 
-  // Calculate net OT and OT percentages (all based on dollars)
+  // Get pre-approved OT from overtime table (Weekend only)
+  let preApprovedHours = 0, preApprovedDollars = 0;
+  state.ot.weekend.forEach(r => {
+    const emp = state.employees.find(e => e.name === r.name);
+    if (emp) {
+      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      preApprovedHours += r.hours;
+      preApprovedDollars += r.hours * wage * 1.5;
+    }
+  });
+
+  // Calculate net OT
   const netOTHours = Math.max(0, totalOT - preApprovedHours);
   const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
   const totalPayroll = totalRegularDollars + totalOTDollars;
-  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
-  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
   const netOTPercent = totalPayroll > 0 ? (netOTDollars / totalPayroll * 100) : 0;
-  const otBudgetPercent = 10.0;
-  const budgetVariance = totalOTPercent - otBudgetPercent;
 
   // Sort employees by OT descending
   employeeDetails.sort((a, b) => b.ot - a.ot);
@@ -1154,35 +1066,31 @@ function renderOTReport(){
   const unmatched = employeeDetails.filter(e => !e.matched);
 
   return `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
-        Supported formats: XLS, XLSX, CSV<br>
-        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
-      </div>
-      <input type="file" id="otUploadFile" accept=".xlsx,.xls,.csv" style="margin-bottom:12px;width:100%;padding:8px;border:1px solid var(--border);border-radius:4px" onchange="parseOTFile()">
-    </div>
-
     <div class="stat-row">
       <div class="stat-card">
-        <div class="stat-label">Extra OT</div>
-        <div class="stat-value">${(totalOTPercent - preApprovedOTPercent).toFixed(1)}%</div>
-        <div class="stat-sub">Unapproved overtime</div>
+        <div class="stat-label">All OT (hours)</div>
+        <div class="stat-value">${totalOT.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(totalOTDollars)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Pre-Approved OT %</div>
-        <div class="stat-value">${preApprovedOTPercent.toFixed(1)}%</div>
-        <div class="stat-sub">Approved hours</div>
+        <div class="stat-label">Pre-Approved OT</div>
+        <div class="stat-value">${preApprovedHours.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(preApprovedDollars)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">OT Budget</div>
-        <div class="stat-value" style="color:${budgetVariance > 0 ? 'var(--brick)' : '#2a7a47'}">${totalOTPercent.toFixed(1)}% / 10%</div>
-        <div class="stat-sub">Net: ${(totalOTPercent - preApprovedOTPercent).toFixed(1)}%</div>
+        <div class="stat-label">Net OT (hours)</div>
+        <div class="stat-value">${netOTHours.toFixed(2)}</div>
+        <div class="stat-sub">${fmt$(netOTDollars)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Non-burdened payroll</div>
+        <div class="stat-value">${fmt$(totalPayroll)}</div>
+        <div class="stat-sub">Net OT: ${netOTPercent.toFixed(1)}%</div>
       </div>
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
         <label style="font-size:12px;font-weight:700;color:var(--muted)">Week:</label>
         <select onchange="state.selectedOTBatch=this.value;render()" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)">
           ${sortedBatches.map(([bId, data]) => {
@@ -1195,6 +1103,7 @@ function renderOTReport(){
           ${batchData.length} total rows · ${dates.length} days · ${employeeDetails.length} employees
         </div>
       </div>
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('otUploadForm').style.display='block'">↑ Upload new file</button>
     </div>
 
     ${unmatched.length > 0 ? `
@@ -1214,39 +1123,31 @@ function renderOTReport(){
           <th style="width:80px">Reg. hrs</th>
           <th style="width:80px">Reg. $</th>
           <th style="width:80px">OT hrs</th>
-          <th style="width:80px">Pre-App OT</th>
-          <th style="width:80px">Variance</th>
           <th style="width:80px">OT $</th>
-          <th style="width:80px">OT %</th>
         </tr></thead>
         <tbody>
-          <tr style="background:var(--surface2);font-weight:700;border-bottom:2px solid var(--border)">
-            <td>TOTAL</td>
-            <td></td>
-            <td style="text-align:right">${totalRegular.toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalRegularDollars)}</td>
-            <td style="text-align:right">${totalOT.toFixed(2)}</td>
-            <td style="text-align:right">${preApprovedHours.toFixed(2)}</td>
-            <td style="text-align:right">${(totalOT - preApprovedHours).toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalOTDollars)}</td>
-            <td style="text-align:right">${totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100).toFixed(1) : '0'}%</td>
-          </tr>
-          ${employeeDetails.map(e => {
-            const otPct = e.regularDoll > 0 ? (e.otDoll / e.regularDoll * 100) : 0;
-            return `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
-              <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
-              <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
-              <td style="text-align:right">${e.regular.toFixed(2)}</td>
-              <td style="text-align:right">${fmt$(e.regularDoll)}</td>
-              <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
-              <td style="text-align:right">${e.preApprovedOT.toFixed(2)}</td>
-              <td style="text-align:right;font-weight:600;color:${e.variance > 0.1 ? 'var(--brick)' : 'inherit'}">${e.variance.toFixed(2)}</td>
-              <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
-              <td style="text-align:right">${otPct.toFixed(1)}%</td>
-            </tr>`;
-          }).join('')}
+          ${employeeDetails.map(e => `<tr style="${!e.matched ? 'background:#fef5e8' : ''}">
+            <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
+            <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
+            <td style="text-align:right">${e.regular.toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(e.regularDoll)}</td>
+            <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
+            <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
+          </tr>`).join('')}
         </tbody>
       </table>
+    </div>
+
+    <div id="otUploadForm" style="display:none;background:var(--surface);border:2px dashed var(--border);border-radius:6px;padding:20px;margin-bottom:24px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
+      </div>
+      <input type="file" id="otUploadFile" accept=".xlsx,.xls" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('otUploadForm').style.display='none'">Cancel</button>
+        <button class="btn btn-primary btn-sm" onclick="parseOTFile()">Parse and preview</button>
+      </div>
     </div>
   `;
 }
@@ -1352,25 +1253,6 @@ async function savePoints(){
   }catch(e){ toast('Save failed: '+e.message,'error'); }
 }
 
-// ============================================================
-// EMAIL SETTINGS FUNCTIONS
-// ============================================================
-function addManager(){
-  const input=document.getElementById('newManagerEmail');
-  const email=input.value.trim();
-  if(!email){toast('Please enter a valid email','error');return;}
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
-  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
-  state.emailSettings.managers.push(email);
-  input.value='';
-  render();
-}
-
-function removeManager(idx){
-  state.emailSettings.managers.splice(idx,1);
-  render();
-}
-
 function setSyncStatus(s){
   const el=document.getElementById('syncStatus');
   if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
@@ -1425,6 +1307,199 @@ function toast(msg,type){
 // ============================================================
 // OT REPORT - File upload and parsing
 // ============================================================
+async function parseOTFile(){
+  const file=document.getElementById('otUploadFile').files[0];
+  if(!file){toast('No file selected','error');return;}
+
+  try{
+    const buffer=await file.arrayBuffer();
+    const rows=parseExcelBuffer(buffer);
+    if(!rows||rows.length===0){toast('No data found in file','error');return;}
+
+    showOTFilePreview(rows);
+  }catch(err){
+    console.error('Parse error:',err);
+    toast('Error parsing file: '+err.message,'error');
+  }
+}
+
+function parseExcelBuffer(buffer){
+  try{
+    // Try parsing as Excel using SheetJS
+    if(window.XLSX){
+      const workbook=XLSX.read(buffer,{type:'array'});
+      const sheet=workbook.Sheets[workbook.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sheet);
+
+      if(rows.length===0)return[];
+
+      // Find header columns by matching keys
+      const firstRow=rows[0];
+      const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
+      const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
+      const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
+      const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
+      const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
+
+      if(!empNumKey||!dateKey){
+        console.warn('XLSX: Could not find columns. Keys:',Object.keys(firstRow));
+        throw new Error('Missing required columns');
+      }
+
+      const result=[];
+      rows.forEach(row=>{
+        const empNumVal=String(row[empNumKey]||'').trim();
+        const dateVal=String(row[dateKey]||'').trim();
+        const regVal=parseFloat(row[regKey])||0;
+        const otVal=parseFloat(row[otKey])||0;
+        const commVal=String(row[commKey]||'').trim();
+
+        if(!empNumVal||!dateVal)return;
+
+        result.push({
+          employee_number:empNumVal,
+          work_date:dateVal,
+          regular_hours:regVal,
+          ot_hours:otVal,
+          supervisor_comment:commVal
+        });
+      });
+
+      if(result.length>0)return result;
+      throw new Error('No valid data rows found');
+    }
+  }catch(e){
+    console.warn('XLSX parsing failed:',e.message);
+  }
+
+  // Fallback to CSV parsing
+  try{
+    const text=new TextDecoder().decode(buffer);
+    return parseCSVText(text);
+  }catch(csvErr){
+    console.error('CSV fallback failed:',csvErr);
+    throw new Error('Could not parse file - try exporting as CSV from Excel');
+  }
+}
+
+function parseCSVText(text){
+  const lines=text.split('\n').filter(l=>l.trim());
+  if(lines.length<2)return[];
+
+  let header=lines[0].split(/[,\t]/).map(h=>h.trim().toLowerCase());
+
+  const empNumIdx=header.findIndex(h=>h.includes('employee')||h.includes('number'));
+  const dateIdx=header.findIndex(h=>h.includes('date'));
+  const regIdx=header.findIndex(h=>h.includes('regular'));
+  const otIdx=header.findIndex(h=>h.includes('ot')||h.includes('overtime'));
+  const commIdx=header.findIndex(h=>h.includes('comment')||h.includes('supervisor'));
+
+  if(empNumIdx<0||dateIdx<0){
+    throw new Error('Could not find Employee Number or Date columns');
+  }
+
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const parts=lines[i].split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2||!parts[empNumIdx])continue;
+
+    const empNum=parseInt(parts[empNumIdx]);
+    if(isNaN(empNum))continue;
+
+    rows.push({
+      employee_number:empNum,
+      work_date:parts[dateIdx]||'',
+      regular_hours:parseFloat(parts[regIdx])||0,
+      ot_hours:parseFloat(parts[otIdx])||0,
+      supervisor_comment:commIdx>=0?parts[commIdx]:''
+    });
+  }
+
+  return rows;
+}
+
+function showOTFilePreview(rows){
+  const grouped={};
+  rows.forEach(r=>{
+    if(!grouped[r.employee_number])grouped[r.employee_number]=[];
+    grouped[r.employee_number].push(r);
+  });
+
+  const unmatched=Object.keys(grouped).filter(en=>{
+    return !state.employees.find(e=>e.empNum==en);
+  });
+
+  const html=`
+    <div id="otPreview" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000">
+      <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:600px;max-height:80vh;overflow-y:auto">
+        <div style="font-size:16px;font-weight:700;margin-bottom:12px">Upload preview</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+          <div>Rows: ${rows.length}</div>
+          <div>Employees: ${Object.keys(grouped).length}</div>
+          <div>Date range: ${rows.map(r=>r.work_date).sort()[0]} to ${rows.map(r=>r.work_date).sort().pop()}</div>
+        </div>
+
+        ${unmatched.length>0?`
+          <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:10px;margin-bottom:12px;font-size:11px">
+            <div style="font-weight:700;color:#9a600a;margin-bottom:4px">⚠ Unmatched employee numbers (${unmatched.length})</div>
+            <div style="color:#6b4a0a">${unmatched.join(', ')}</div>
+          </div>
+        `:''}
+
+        <div style="background:var(--surface2);border-radius:4px;padding:12px;margin-bottom:16px;font-size:11px;max-height:200px;overflow-y:auto">
+          <table style="font-size:10px;width:100%">
+            <tr style="font-weight:700;border-bottom:1px solid var(--border)"><td style="padding:4px">Emp #</td><td style="padding:4px">Date</td><td style="padding:4px">Reg</td><td style="padding:4px">OT</td></tr>
+            ${rows.slice(0,20).map(r=>`<tr><td style="padding:4px">${r.employee_number}</td><td style="padding:4px">${r.work_date}</td><td style="padding:4px;text-align:right">${r.regular_hours.toFixed(2)}</td><td style="padding:4px;text-align:right">${r.ot_hours.toFixed(2)}</td></tr>`).join('')}
+            ${rows.length>20?`<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:4px">... and ${rows.length-20} more rows</td></tr>`:''}
+          </table>
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="confirmOTUpload(\`${JSON.stringify(rows)}\`)">Confirm and upload</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function confirmOTUpload(rowsJson){
+  try{
+    const rows=JSON.parse(rowsJson);
+    const uploadBatchId='batch-'+Date.now()+'-'+Math.random().toString(36).substr(2,9);
+
+    document.getElementById('otPreview')?.remove();
+    document.getElementById('otUploadForm').style.display='none';
+    document.getElementById('otUploadFile').value='';
+
+    toast('Uploading...','');
+
+    const res=await fetch('/api/ot-upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({uploadBatchId,rows})
+    });
+
+    if(!res.ok){
+      const err=await res.json();
+      throw new Error(err.error||'Upload failed');
+    }
+
+    toast('Upload successful!','success');
+
+    state.selectedOTBatch=uploadBatchId;
+    await loadData();
+    state.tab='otreport';
+    render();
+  }catch(err){
+    console.error('Upload error:',err);
+    toast('Upload failed: '+err.message,'error');
+  }
+}
+
+loadData();
 
 // ============================================================
 // TEXTBOLT LIST
@@ -1597,25 +1672,6 @@ async function savePoints(){
   }catch(e){ toast('Save failed: '+e.message,'error'); }
 }
 
-// ============================================================
-// EMAIL SETTINGS FUNCTIONS
-// ============================================================
-function addManager(){
-  const input=document.getElementById('newManagerEmail');
-  const email=input.value.trim();
-  if(!email){toast('Please enter a valid email','error');return;}
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
-  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
-  state.emailSettings.managers.push(email);
-  input.value='';
-  render();
-}
-
-function removeManager(idx){
-  state.emailSettings.managers.splice(idx,1);
-  render();
-}
-
 function setSyncStatus(s){
   const el=document.getElementById('syncStatus');
   if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
@@ -1675,7 +1731,8 @@ async function parseOTFile(){
   if(!file){toast('No file selected','error');return;}
 
   try{
-    const rows=await parseExcelBuffer(file);
+    const buffer=await file.arrayBuffer();
+    const rows=parseExcelBuffer(buffer);
     if(!rows||rows.length===0){toast('No data found in file','error');return;}
 
     showOTFilePreview(rows);
@@ -1685,82 +1742,63 @@ async function parseOTFile(){
   }
 }
 
-async function parseExcelBuffer(file){
-  return new Promise((resolve,reject)=>{
-    const reader=new FileReader();
-    reader.onload=(e)=>{
-      try{
-        if(window.XLSX){
-          // Use base64 data URL approach which works for both XLS and XLSX
-          const data=e.target.result;
-          const base64=data.split(',')[1];
-          console.log('File type:',file.name,'| Base64 length:',base64.length);
+function parseExcelBuffer(buffer){
+  try{
+    // Try parsing as Excel using SheetJS
+    if(window.XLSX){
+      const workbook=XLSX.read(buffer,{type:'array'});
+      const sheet=workbook.Sheets[workbook.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sheet);
 
-          const workbook=XLSX.read(base64,{type:'base64'});
-          console.log('Sheet names:',workbook.SheetNames);
+      if(rows.length===0)return[];
 
-          const sheet=workbook.Sheets[workbook.SheetNames[0]];
-          const rows=XLSX.utils.sheet_to_json(sheet);
-          console.log('Rows parsed:',rows.length,'| First row keys:',rows.length>0?Object.keys(rows[0]):null);
+      // Find header columns by matching keys
+      const firstRow=rows[0];
+      const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
+      const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
+      const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
+      const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
+      const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
 
-          if(rows.length===0)throw new Error('No data found in file');
-
-          // Find header columns by matching keys
-          const firstRow=rows[0];
-          const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
-          const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
-          const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
-          const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
-          const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
-
-          if(!empNumKey||!dateKey){
-            console.error('Column search failed. Looking for:');
-            console.error('  - empNumKey (has "employee" or "number"):', empNumKey);
-            console.error('  - dateKey (has "date"):', dateKey);
-            console.error('Available keys:', Object.keys(firstRow));
-            throw new Error('Missing required columns: Employee Number or Date');
-          }
-
-          const result=[];
-          rows.forEach(row=>{
-            const empNumVal=String(row[empNumKey]||'').trim();
-            const dateVal=String(row[dateKey]||'').trim();
-            const regVal=parseFloat(row[regKey])||0;
-            const otVal=parseFloat(row[otKey])||0;
-            const commVal=String(row[commKey]||'').trim();
-
-            if(!empNumVal||!dateVal)return;
-
-            result.push({
-              employee_number:empNumVal,
-              work_date:dateVal,
-              regular_hours:regVal,
-              ot_hours:otVal,
-              supervisor_comment:commVal
-            });
-          });
-
-          if(result.length>0){
-            resolve(result);
-          }else{
-            throw new Error('No valid data rows found');
-          }
-        }else{
-          throw new Error('XLSX library not loaded');
-        }
-      }catch(xlsxErr){
-        console.warn('XLSX parsing failed, trying CSV:',xlsxErr.message);
-        try{
-          const text=e.target.result;
-          resolve(parseCSVText(text));
-        }catch(csvErr){
-          reject(new Error('Could not parse file - supported formats are XLS, XLSX, and CSV'));
-        }
+      if(!empNumKey||!dateKey){
+        console.warn('XLSX: Could not find columns. Keys:',Object.keys(firstRow));
+        throw new Error('Missing required columns');
       }
-    };
-    reader.onerror=()=>reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
+
+      const result=[];
+      rows.forEach(row=>{
+        const empNumVal=String(row[empNumKey]||'').trim();
+        const dateVal=String(row[dateKey]||'').trim();
+        const regVal=parseFloat(row[regKey])||0;
+        const otVal=parseFloat(row[otKey])||0;
+        const commVal=String(row[commKey]||'').trim();
+
+        if(!empNumVal||!dateVal)return;
+
+        result.push({
+          employee_number:empNumVal,
+          work_date:dateVal,
+          regular_hours:regVal,
+          ot_hours:otVal,
+          supervisor_comment:commVal
+        });
+      });
+
+      if(result.length>0)return result;
+      throw new Error('No valid data rows found');
+    }
+  }catch(e){
+    console.warn('XLSX parsing failed:',e.message);
+  }
+
+  // Fallback to CSV parsing
+  try{
+    const text=new TextDecoder().decode(buffer);
+    return parseCSVText(text);
+  }catch(csvErr){
+    console.error('CSV fallback failed:',csvErr);
+    throw new Error('Could not parse file - try exporting as CSV from Excel');
+  }
 }
 
 function parseCSVText(text){
@@ -1784,8 +1822,8 @@ function parseCSVText(text){
     const parts=lines[i].split(/[,\t]/).map(p=>p.trim());
     if(parts.length<2||!parts[empNumIdx])continue;
 
-    const empNum=String(parts[empNumIdx]).trim();
-    if(!empNum)continue;
+    const empNum=parseInt(parts[empNumIdx]);
+    if(isNaN(empNum))continue;
 
     rows.push({
       employee_number:empNum,
@@ -1837,27 +1875,19 @@ function showOTFilePreview(rows){
 
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
-          <button class="btn btn-primary btn-sm" id="otConfirmBtn">Confirm and upload</button>
+          <button class="btn btn-primary btn-sm" onclick="confirmOTUpload(\`${JSON.stringify(rows)}\`)">Confirm and upload</button>
         </div>
       </div>
     </div>
   `;
 
   document.body.insertAdjacentHTML('beforeend',html);
-  window.otPreviewRows = rows;
-  document.getElementById('otConfirmBtn').addEventListener('click', async function(){
-    await confirmOTUpload(window.otPreviewRows);
-  });
 }
 
-async function confirmOTUpload(rows){
+async function confirmOTUpload(rowsJson){
   try{
-    // Generate proper UUID format for uploadBatchId
-    const uploadBatchId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
+    const rows=JSON.parse(rowsJson);
+    const uploadBatchId='batch-'+Date.now()+'-'+Math.random().toString(36).substr(2,9);
 
     document.getElementById('otPreview')?.remove();
     document.getElementById('otUploadForm').style.display='none';
@@ -1865,13 +1895,10 @@ async function confirmOTUpload(rows){
 
     toast('Uploading...','');
 
-    const payload={uploadBatchId,rows};
-    console.log('Sending to API:', JSON.stringify(payload).substring(0,200));
-
     const res=await fetch('/api/ot-upload',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload)
+      body:JSON.stringify({uploadBatchId,rows})
     });
 
     if(!res.ok){
@@ -1880,11 +1907,6 @@ async function confirmOTUpload(rows){
     }
 
     toast('Upload successful!','success');
-
-    // Send emails to managers if auto-send is enabled
-    if(state.emailSettings.autoSend && state.emailSettings.managers.length > 0){
-      sendManagerEmails(rows);
-    }
 
     state.selectedOTBatch=uploadBatchId;
     await loadData();
@@ -1896,6 +1918,195 @@ async function confirmOTUpload(rows){
   }
 }
 
+loadData();
+
+// ============================================================
+// TEXTBOLT LIST
+// ============================================================
+function copyTextBoltList() {
+  const addresses = state.employees
+    .filter(e =>
+      e.status === 'Active' &&
+      e.textBolt &&
+      e.textBolt !== 'STOP' &&
+      e.textBolt.includes('@')
+    )
+    .map(e => e.textBolt);
+
+  if (!addresses.length) {
+    toast('No active opted-in employees found', 'error');
+    return;
+  }
+
+  const list = addresses.join(', ');
+  navigator.clipboard.writeText(list).then(() => {
+    const btn = document.getElementById('copyTBBtn');
+    btn.textContent = '✓ Copied ' + addresses.length + ' addresses';
+    btn.style.color = '#2a7a47';
+    btn.style.borderColor = '#2a7a47';
+    toast(addresses.length + ' TextBolt addresses copied to clipboard', 'success');
+    setTimeout(() => {
+      btn.textContent = '📋 Copy TextBolt list';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+    }, 3000);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = list;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(addresses.length + ' addresses copied', 'success');
+  });
+}
+
+// ============================================================
+// DOCUMENT MANAGEMENT
+// ============================================================
+let docState = { employeeName: null, folderId: null, pendingFile: null };
+
+function loadDocs(employeeName) {
+  docState.employeeName = employeeName;
+  const el = document.getElementById('docSection');
+  if (!el) return;
+  el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">Loading…</div>';
+  fetch('/api/documents?employee=' + encodeURIComponent(employeeName))
+    .then(r => r.json())
+    .then(data => {
+      docState.folderId = data.folderId;
+      docState.folderLink = data.folderLink;
+      // Update the Drive link if we got a real one
+      const linkEl = document.getElementById('driveFolderLink');
+      if (linkEl && data.folderLink) linkEl.href = data.folderLink;
+      renderDocs(data.files || []);
+    })
+    .catch(() => {
+      el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">Could not load documents</div>';
+    });
+}
+
+function renderDocs(files) {
+  const el = document.getElementById('docSection');
+  if (!el) return;
+  if (!files.length) {
+    el.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">No documents yet</div>';
+    return;
+  }
+  const icons = {'pdf':'PDF','image/jpeg':'IMG','image/png':'IMG','image/heic':'IMG','default':'DOC'};
+  el.innerHTML = '<div class="doc-list">' + files.map(f => {
+    const ext = (f.name.split('.').pop() || '').toUpperCase();
+    const icon = icons[f.mimeType] || icons[ext] || icons.default;
+    const date = f.createdTime ? new Date(f.createdTime).toLocaleDateString() : '';
+    const desc = f.description ? f.description.split(' | ')[0] : '';
+    return `<div class="doc-item">
+      <div class="doc-icon">${icon}</div>
+      <div style="flex:1;min-width:0">
+        <div class="doc-name" title="${f.name}">${f.name}</div>
+        <div class="doc-meta">${[desc, date].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="doc-actions">
+        <a href="https://drive.google.com/file/d/${f.id}/view" target="_blank" class="btn btn-outline btn-sm">Open</a>
+        <button class="btn btn-sm" style="background:none;border:1px solid #ddd;color:var(--muted)" onclick="deleteDoc('${f.id}','${f.name.replace(/'/g,"\'")}')">✕</button>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function handleFileSelect(files) {
+  if (!files || !files.length) return;
+  docState.pendingFile = files[0];
+  document.getElementById('uploadForm').style.display = 'block';
+  document.getElementById('uploadFileName').textContent = '📄 ' + files[0].name + ' (' + (files[0].size / 1024).toFixed(1) + ' KB)';
+  document.getElementById('uploadZone').style.display = 'none';
+}
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('dragover');
+  handleFileSelect(event.dataTransfer.files);
+}
+
+function cancelUpload() {
+  docState.pendingFile = null;
+  const form = document.getElementById('uploadForm');
+  const zone = document.getElementById('uploadZone');
+  const input = document.getElementById('fileInput');
+  const btn = document.getElementById('uploadBtn');
+  const prog = document.getElementById('progressWrap');
+  const fname = document.getElementById('uploadFileName');
+  if (form) form.style.display = 'none';
+  if (zone) zone.style.display = 'block';
+  if (input) input.value = '';
+  if (btn) { btn.textContent = 'Upload'; btn.disabled = false; }
+  if (prog) prog.style.display = 'none';
+  if (fname) fname.textContent = '';
+  const notes = document.getElementById('docNotes');
+  if (notes) notes.value = '';
+}
+
+async function confirmUpload() {
+  const file = docState.pendingFile;
+  if (!file || !docState.employeeName) return;
+
+  const btn = document.getElementById('uploadBtn');
+  btn.textContent = 'Uploading…';
+  btn.disabled = true;
+  document.getElementById('progressWrap').style.display = 'block';
+  document.getElementById('progressFill').style.width = '30%';
+
+  try {
+    const base64 = await fileToBase64(file);
+    document.getElementById('progressFill').style.width = '60%';
+
+    const docType = document.getElementById('docTypeSelect').value;
+    const notes = document.getElementById('docNotes').value;
+
+    const res = await fetch('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        employeeName: docState.employeeName,
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        base64Data: base64,
+        docType, notes
+      })
+    });
+
+    document.getElementById('progressFill').style.width = '100%';
+    const data = await res.json();
+
+    if (data.success) {
+      toast('Document uploaded successfully', 'success');
+      cancelUpload();
+      setTimeout(() => loadDocs(docState.employeeName), 500);
+    } else {
+      throw new Error(data.error || 'Upload failed');
+    }
+  } catch(e) {
+    toast('Upload failed: ' + e.message, 'error');
+    btn.textContent = 'Upload';
+    btn.disabled = false;
+    document.getElementById('progressWrap').style.display = 'none';
+  }
+}
+
+async function deleteDoc(fileId, fileName) {
+  if (!confirm('Delete "' + fileName + '"?')) return;
+  const res = await fetch('/api/documents?fileId=' + fileId, { method: 'DELETE' });
+  const data = await res.json();
+  if (data.success) {
+    toast('Document deleted', 'success');
+    loadDocs(docState.employeeName);
+  } else {
+    toast('Delete failed', 'error');
+  }
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1903,130 +2114,6 @@ function fileToBase64(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
-}
-
-function sendManagerEmails(rows){
-  if(!state.emailSettings.managers.length) return;
-
-  // Calculate summary data
-  const dates = [...new Set(rows.map(r => r.date))].sort();
-  const dateRange = dates.length > 0 ? (dates.length > 1 ? `${dates[0]} to ${dates[dates.length-1]}` : dates[0]) : 'Unknown';
-
-  const empTotals = {};
-  rows.forEach(r => {
-    if (!empTotals[r.empNum]) {
-      empTotals[r.empNum] = { regular: 0, ot: 0, name: r.lastName ? `${r.firstName} ${r.lastName}` : '' };
-    }
-    empTotals[r.empNum].regular += r.regular;
-    empTotals[r.empNum].ot += r.ot;
-  });
-
-  // Calculate number of weeks
-  let numWeeks = 1;
-  if (dates.length > 0) {
-    const firstDate = new Date(dates[0]);
-    const lastDate = new Date(dates[dates.length - 1]);
-    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
-    numWeeks = Math.ceil(daysDiff / 7) || 1;
-  }
-
-  // Calculate pre-approved OT
-  let totalPreApproved = 0;
-  const activeEmps = state.employees.filter(e => e.status === 'Active');
-  const baseAllowancePerEmp = 0.5 * numWeeks;
-
-  activeEmps.forEach(emp => {
-    totalPreApproved += baseAllowancePerEmp;
-  });
-
-  state.ot.weekend.forEach(r => {
-    totalPreApproved += r.hours;
-  });
-
-  const totalRegHrs = rows.reduce((s,r) => s + (r.regular||0), 0);
-  const totalOTHrs = rows.reduce((s,r) => s + (r.ot||0), 0);
-  const netOT = Math.max(0, totalOTHrs - totalPreApproved);
-  const empCount = Object.keys(empTotals).length;
-
-  // Calculate wages and percentages for email
-  let totalRegDollars = 0, totalOTDollars = 0;
-  Object.entries(empTotals).forEach(([empNum, hrs]) => {
-    const emp = state.employees.find(e => e.empNum == empNum);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      totalRegDollars += hrs.regular * wage;
-      totalOTDollars += hrs.ot * wage * 1.5;
-    }
-  });
-  const totalPayroll = totalRegDollars + totalOTDollars;
-  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
-
-  // Calculate pre-approved OT in dollars
-  let preApprovedDollars = 0;
-  activeEmps.forEach(emp => {
-    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
-  });
-  state.ot.weekend.forEach(r => {
-    const emp = state.employees.find(e => e.name === r.name);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      preApprovedDollars += r.hours * wage * 1.5;
-    }
-  });
-  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
-  const otBudgetPercent = 10.0;
-  const budgetVariance = totalOTPercent - otBudgetPercent;
-
-  // Find employees who exceeded pre-approved limits
-  const exceededEmployees = [];
-  Object.entries(empTotals).forEach(([empNum, hrs]) => {
-    const emp = state.employees.find(e => e.empNum == empNum);
-    if (emp) {
-      const preApp = (state.ot.weekend.find(r => r.name === emp.name)?.hours || 0) + baseAllowancePerEmp;
-      const variance = hrs.ot - preApp;
-      if (variance > 0.1) {
-        exceededEmployees.push({
-          name: emp.name,
-          unapprovedHours: variance.toFixed(2)
-        });
-      }
-    }
-  });
-  exceededEmployees.sort((a, b) => parseFloat(b.unapprovedHours) - parseFloat(a.unapprovedHours));
-
-  // Calculate net OT percentage for email
-  const netOTPercent = totalOTPercent - preApprovedOTPercent;
-
-  // Prepare email data for backend
-  const emailData = {
-    to: state.emailSettings.managers,
-    subject: `OT Report: ${dateRange}`,
-    data: {
-      dateRange,
-      totalRegularHours: totalRegHrs.toFixed(2),
-      totalOTHours: totalOTHrs.toFixed(2),
-      totalPreApprovedHours: totalPreApproved.toFixed(2),
-      netOTHours: netOT.toFixed(2),
-      totalOTPercent: totalOTPercent.toFixed(1),
-      preApprovedOTPercent: preApprovedOTPercent.toFixed(1),
-      netOTPercent: netOTPercent.toFixed(1),
-      otBudgetPercent: otBudgetPercent.toFixed(1),
-      budgetVariance: budgetVariance.toFixed(1),
-      totalPayroll: totalPayroll.toFixed(2),
-      employeeCount: empCount,
-      uploadTime: new Date().toLocaleString(),
-      exceededEmployees,
-      reportLink: window.location.origin + window.location.pathname
-    }
-  };
-
-  // Send to backend (implement on server side)
-  fetch('/api/send-ot-email', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(emailData)
-  }).catch(err => console.log('Email notification sent (or queued)', err));
 }
 
 loadData();
