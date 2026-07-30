@@ -7,6 +7,9 @@
     "dev": "netlify dev",
     "deploy": "netlify deploy --prod"
   },
+  "dependencies": {
+    "nodemailer": "^6.9.0"
+  },
   "devDependencies": {
     "netlify-cli": "^17.0.0"
   }
