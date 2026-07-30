@@ -568,8 +568,18 @@ async function saveEdit(){
 
   setSyncStatus('saving');
   try{
+    // Normalize wage: convert formatted string to number if needed
+    let wage = e.wage;
+    if(typeof wage === 'string'){
+      if(wage.toLowerCase() === 'salary'){
+        wage = 'Salary';
+      } else {
+        wage = parseFloat(wage.replace(/[$,]/g,'')) || wage;
+      }
+    }
+
     const row={
-      name:e.name, wage:e.wage, dept:e.dept, status:e.status,
+      name:e.name, wage:wage, dept:e.dept, status:e.status,
       days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
@@ -604,6 +614,7 @@ async function saveEdit(){
   }catch(err){
     setSyncStatus('error');
     toast('Save failed: '+err.message,'error');
+    console.error('saveEdit error:', err);
   }
 }
 
