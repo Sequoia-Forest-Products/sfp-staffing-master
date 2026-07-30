@@ -1141,9 +1141,10 @@ function renderOTReport(){
     <div id="otUploadForm" style="display:none;background:var(--surface);border:2px dashed var(--border);border-radius:6px;padding:20px;margin-bottom:24px">
       <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Supported formats: XLS, XLSX, CSV<br>
         Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
       </div>
-      <input type="file" id="otUploadFile" accept=".xlsx,.xls" style="margin-bottom:12px">
+      <input type="file" id="otUploadFile" accept=".xlsx,.xls,.csv" style="margin-bottom:12px">
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline btn-sm" onclick="document.getElementById('otUploadForm').style.display='none'">Cancel</button>
         <button class="btn btn-primary btn-sm" onclick="parseOTFile()">Parse and preview</button>
@@ -1604,7 +1605,7 @@ function parseExcelBuffer(buffer){
     return parseCSVText(text);
   }catch(csvErr){
     console.error('CSV fallback failed:',csvErr);
-    throw new Error('Could not parse file - try exporting as CSV from Excel');
+    throw new Error('Could not parse file - supported formats are XLS, XLSX, and CSV');
   }
 }
 
