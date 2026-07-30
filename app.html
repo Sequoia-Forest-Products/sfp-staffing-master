@@ -218,8 +218,8 @@ let state = {
   emailSettings:{managers:[], autoSend:false}
 };
 
-function fmt$(n){return n==null?'—':'$'+Number(n).toFixed(2);}
-function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).replace(/[$,]/g,'')).toFixed(2));}
+function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).replace(/[$,]/g,'')).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));}
 
 async function loadData(){
   try{
@@ -479,7 +479,7 @@ function formatWageInput(input) {
   }
   const num = parseFloat(val.replace(/[$,]/g, ''));
   if (!isNaN(num)) {
-    const formatted = '$' + num.toFixed(2);
+    const formatted = '$' + num.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     input.value = formatted;
     state.editing.wage = formatted;
   }
@@ -676,11 +676,11 @@ function renderEcon(){
     const rows = positions.map(p=>{
       const econIdx = state.economics.indexOf(p);
       const wage = p.name ? getEmpWage(p.name) : 0;
-      const dpm = wage ? '$'+calcDollarPerM(wage).toFixed(2) : '—';
+      const dpm = wage ? '$'+calcDollarPerM(wage).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
       const variance = (p.name && p.max) ? wage - p.max : null;
       const isOver = variance !== null && variance > 0;
       const isUnder = variance !== null && variance < 0;
-      const varStr = variance === null ? '—' : (variance > 0 ? '+$'+variance.toFixed(2) : '-$'+Math.abs(variance).toFixed(2));
+      const varStr = variance === null ? '—' : (variance > 0 ? '+$'+variance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '-$'+Math.abs(variance).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
       const varCls = isOver ? 'var-over' : isUnder ? 'var-under' : 'var-even';
       const isDupe = p.name && dupes.has(p.name);
       const rowAlert = isDupe ? ' style="border-color:#e67e22;background:#fffbf5"' : '';
@@ -695,9 +695,9 @@ function renderEcon(){
           </select>
           ${isDupe ? '<span style="color:#e67e22;font-size:10px;font-weight:700;margin-left:6px">⚠ assigned twice</span>' : ''}
         </div>
-        <div class="pos-dpm">${wage ? '$'+wage.toFixed(2) : '—'}</div>
+        <div class="pos-dpm">${wage ? '$'+wage.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</div>
         <div class="pos-dpm">${dpm}</div>
-        <div class="pos-max">${p.max ? '$'+Number(p.max).toFixed(2) : '—'}</div>
+        <div class="pos-max">${p.max ? '$'+Number(p.max).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</div>
         <div class="pos-var ${varCls}">${varStr}</div>
       </div>`;
     }).join('');
@@ -732,7 +732,7 @@ function renderEcon(){
     <div class="stat-card"><div class="stat-label">Positions</div><div class="stat-value">${state.economics.length}</div>
       <div class="stat-sub">${unassigned.length>0?'<span style="color:#e67e22">⚠ '+unassigned.length+' unassigned</span>':'✓ All filled'}</div></div>
     <div class="stat-card"><div class="stat-label">Wage pool</div><div class="stat-value">$${totalWage.toFixed(0)}<span style="font-size:13px">/hr</span></div></div>
-    <div class="stat-card"><div class="stat-label">Burdened cost</div><div class="stat-value">$${totalDpm.toFixed(2)}<span style="font-size:13px">/m</span></div></div>
+    <div class="stat-card"><div class="stat-label">Burdened cost</div><div class="stat-value">$${totalDpm.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}<span style="font-size:13px">/m</span></div></div>
     <div class="stat-card"><div class="stat-label">Duplicates</div><div class="stat-value" style="color:${dupes.size?'#e67e22':'#2a7a47'}">${dupes.size}</div>
       <div class="stat-sub">${dupes.size?[...dupes].join(', '):'none'}</div></div>
   </div>
@@ -747,7 +747,7 @@ function renderEcon(){
     <div class="unassigned-panel">
       <h4>Unassigned (${unassigned.length})</h4>
       ${unassigned.length
-        ? unassigned.map(e=>`<div class="unemp">${e.name}<span style="color:var(--muted);font-size:10px;float:right">${getEmpWage(e.name)?'$'+getEmpWage(e.name).toFixed(2):''}</span></div>`).join('')
+        ? unassigned.map(e=>`<div class="unemp">${e.name}<span style="color:var(--muted);font-size:10px;float:right">${getEmpWage(e.name)?'$'+getEmpWage(e.name).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):''}</span></div>`).join('')
         : '<div style="font-size:11px;color:#2a7a47;padding:4px">&#x2713; All employees assigned</div>'}
     </div>
     <div>
