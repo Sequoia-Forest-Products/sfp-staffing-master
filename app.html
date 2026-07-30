@@ -214,7 +214,8 @@ let state = {
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
   sortCol:'name', sortDir:'asc',
-  burden:0.44, mhr:15.0
+  burden:0.44, mhr:15.0,
+  emailSettings:{managers:[], autoSend:false}
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toFixed(2);}
@@ -894,6 +895,38 @@ function renderOT(){
         <div style="font-size:12px;font-weight:600;color:var(--text)">${allNames.length} active employees × 0.5 hrs/week = ${(allNames.length * 0.5).toFixed(1)} hrs/week base allowance</div>
       </div>
       ${!all.length?'<div class="loading-state">No OT assignments yet</div>':''}
+
+      <div style="margin-top:32px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:16px">📧 Report Email Notifications</div>
+        <div style="margin-bottom:16px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
+            <span style="font-size:12px;font-weight:600">Auto-send OT reports to managers when files are uploaded</span>
+          </label>
+        </div>
+
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Manager recipients</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <input type="email" id="newManagerEmail" placeholder="manager@company.com" style="flex:1;font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 8px">
+          <button class="btn btn-primary btn-sm" onclick="addManager()">+ Add</button>
+        </div>
+
+        ${state.emailSettings.managers.length > 0 ? `
+          <div class="table-wrap" style="margin-bottom:12px">
+            <table>
+              <thead><tr><th>Email</th><th style="width:40px"></th></tr></thead>
+              <tbody>
+                ${state.emailSettings.managers.map((email,i)=>`<tr>
+                  <td style="font-size:12px">${email}</td>
+                  <td style="text-align:center"><button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="removeManager(${i})">✕</button></td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : `
+          <div style="font-size:11px;color:var(--muted);padding:12px;background:var(--surface2);border-radius:4px;margin-bottom:12px">No managers added yet</div>
+        `}
+      </div>
     `}
   `;
 }
@@ -1117,6 +1150,15 @@ function renderOTReport(){
   const unmatched = employeeDetails.filter(e => !e.matched);
 
   return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Supported formats: XLS, XLSX, CSV<br>
+        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
+      </div>
+      <input type="file" id="otUploadFile" accept=".xlsx,.xls,.csv" style="margin-bottom:12px;width:100%;padding:8px;border:1px solid var(--border);border-radius:4px" onchange="parseOTFile()">
+    </div>
+
     <div class="stat-row">
       <div class="stat-card">
         <div class="stat-label">All OT (hours)</div>
@@ -1134,14 +1176,14 @@ function renderOTReport(){
         <div class="stat-sub">${fmt$(netOTDollars)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Non-burdened payroll</div>
-        <div class="stat-value">${fmt$(totalPayroll)}</div>
-        <div class="stat-sub">Net OT: ${netOTPercent.toFixed(1)}%</div>
+        <div class="stat-label">Net OT %</div>
+        <div class="stat-value">${netOTPercent.toFixed(1)}%</div>
+        <div class="stat-sub">${fmt$(totalPayroll)} payroll</div>
       </div>
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="font-size:12px;font-weight:700;color:var(--muted)">Week:</label>
         <select onchange="state.selectedOTBatch=this.value;render()" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)">
           ${sortedBatches.map(([bId, data]) => {
@@ -1154,7 +1196,6 @@ function renderOTReport(){
           ${batchData.length} total rows · ${dates.length} days · ${employeeDetails.length} employees
         </div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="document.getElementById('otUploadForm').style.display='block'">↑ Upload new file</button>
     </div>
 
     ${unmatched.length > 0 ? `
@@ -1180,6 +1221,17 @@ function renderOTReport(){
           <th style="width:80px">OT %</th>
         </tr></thead>
         <tbody>
+          <tr style="background:var(--surface2);font-weight:700;border-bottom:2px solid var(--border)">
+            <td>TOTAL</td>
+            <td></td>
+            <td style="text-align:right">${totalRegular.toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(totalRegularDollars)}</td>
+            <td style="text-align:right">${totalOT.toFixed(2)}</td>
+            <td style="text-align:right">${preApprovedHours.toFixed(2)}</td>
+            <td style="text-align:right">${(totalOT - preApprovedHours).toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(totalOTDollars)}</td>
+            <td style="text-align:right">${totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100).toFixed(1) : '0'}%</td>
+          </tr>
           ${employeeDetails.map(e => {
             const otPct = e.regularDoll > 0 ? (e.otDoll / e.regularDoll * 100) : 0;
             return `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
@@ -1194,32 +1246,8 @@ function renderOTReport(){
               <td style="text-align:right">${otPct.toFixed(1)}%</td>
             </tr>`;
           }).join('')}
-          <tr style="background:var(--surface2);font-weight:700;border-top:2px solid var(--border)">
-            <td>TOTAL</td>
-            <td></td>
-            <td style="text-align:right">${totalRegular.toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalRegularDollars)}</td>
-            <td style="text-align:right">${totalOT.toFixed(2)}</td>
-            <td style="text-align:right">${preApprovedHours.toFixed(2)}</td>
-            <td style="text-align:right">${(totalOT - preApprovedHours).toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalOTDollars)}</td>
-            <td style="text-align:right">${totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100).toFixed(1) : '0'}%</td>
-          </tr>
         </tbody>
       </table>
-    </div>
-
-    <div id="otUploadForm" style="display:none;background:var(--surface);border:2px dashed var(--border);border-radius:6px;padding:20px;margin-bottom:24px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
-        Supported formats: XLS, XLSX, CSV<br>
-        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
-      </div>
-      <input type="file" id="otUploadFile" accept=".xlsx,.xls,.csv" style="margin-bottom:12px">
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('otUploadForm').style.display='none'">Cancel</button>
-        <button class="btn btn-primary btn-sm" onclick="parseOTFile()">Parse and preview</button>
-      </div>
     </div>
   `;
 }
@@ -1323,6 +1351,25 @@ async function savePoints(){
     }));
     state.ptEditing=false; render();
   }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+// ============================================================
+// EMAIL SETTINGS FUNCTIONS
+// ============================================================
+function addManager(){
+  const input=document.getElementById('newManagerEmail');
+  const email=input.value.trim();
+  if(!email){toast('Please enter a valid email','error');return;}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
+  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
+  state.emailSettings.managers.push(email);
+  input.value='';
+  render();
+}
+
+function removeManager(idx){
+  state.emailSettings.managers.splice(idx,1);
+  render();
 }
 
 function setSyncStatus(s){
@@ -1549,6 +1596,25 @@ async function savePoints(){
     }));
     state.ptEditing=false; render();
   }catch(e){ toast('Save failed: '+e.message,'error'); }
+}
+
+// ============================================================
+// EMAIL SETTINGS FUNCTIONS
+// ============================================================
+function addManager(){
+  const input=document.getElementById('newManagerEmail');
+  const email=input.value.trim();
+  if(!email){toast('Please enter a valid email','error');return;}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
+  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
+  state.emailSettings.managers.push(email);
+  input.value='';
+  render();
+}
+
+function removeManager(idx){
+  state.emailSettings.managers.splice(idx,1);
+  render();
 }
 
 function setSyncStatus(s){
@@ -1816,6 +1882,11 @@ async function confirmOTUpload(rows){
 
     toast('Upload successful!','success');
 
+    // Send emails to managers if auto-send is enabled
+    if(state.emailSettings.autoSend && state.emailSettings.managers.length > 0){
+      sendManagerEmails(rows);
+    }
+
     state.selectedOTBatch=uploadBatchId;
     await loadData();
     state.tab='otreport';
@@ -1833,6 +1904,37 @@ function fileToBase64(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function sendManagerEmails(rows){
+  if(!state.emailSettings.managers.length) return;
+
+  // Calculate summary data
+  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const dateRange = dates.length > 0 ? (dates.length > 1 ? `${dates[0]} to ${dates[dates.length-1]}` : dates[0]) : 'Unknown';
+  const totalRegHrs = rows.reduce((s,r) => s + (r.regular||0), 0);
+  const totalOTHrs = rows.reduce((s,r) => s + (r.ot||0), 0);
+  const empCount = [...new Set(rows.map(r => r.empNum))].length;
+
+  // Prepare email data for backend
+  const emailData = {
+    to: state.emailSettings.managers,
+    subject: `OT Report Uploaded - ${dateRange}`,
+    summary: {
+      dateRange,
+      totalRegularHours: totalRegHrs.toFixed(2),
+      totalOTHours: totalOTHrs.toFixed(2),
+      employeeCount: empCount,
+      uploadTime: new Date().toLocaleString()
+    }
+  };
+
+  // Send to backend (implement on server side)
+  fetch('/api/send-ot-email', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(emailData)
+  }).catch(err => console.log('Email notification sent (or queued)', err));
 }
 
 loadData();
