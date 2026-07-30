@@ -190,7 +190,7 @@
     <div class="sfp-tabs">
       <button class="sfp-tab active" onclick="switchTab('employees',this)">Employees</button>
       <button class="sfp-tab" onclick="switchTab('economics',this)">Staffing Economics</button>
-      <button class="sfp-tab" onclick="switchTab('overtime',this)">Overtime</button>
+      <button class="sfp-tab" onclick="switchTab('overtime',this)">Pre-Approved Overtime</button>
       <button class="sfp-tab" onclick="switchTab('points',this)">Points Tracker</button>
       <button class="sfp-tab" onclick="switchTab('otreport',this)">OT Report</button>
     </div>
@@ -849,10 +849,10 @@ function renderOT(){
   return `
     <datalist id="ot-names">${allNames.map(n=>`<option value="${n}">`).join('')}</datalist>
     <div class="stat-row">
-      <div class="stat-card"><div class="stat-label">Before Shift OT</div><div class="stat-value">${state.ot.pre.length}</div><div class="stat-sub">${tPr.toFixed(2)} hrs · daily</div></div>
-      <div class="stat-card"><div class="stat-label">After Shift OT</div><div class="stat-value">${state.ot.post.length}</div><div class="stat-sub">${tP.toFixed(2)} hrs · daily</div></div>
-      <div class="stat-card"><div class="stat-label">Weekend OT</div><div class="stat-value">${state.ot.weekend.length}</div><div class="stat-sub">${tW.toFixed(2)} hrs · weekly</div></div>
-      <div class="stat-card"><div class="stat-label">Unique workers</div><div class="stat-value">${uniq}</div><div class="stat-sub">${all.length} total assignments</div></div>
+      <div class="stat-card"><div class="stat-label">Before Shift OT</div><div class="stat-value">${state.ot.pre.length}</div><div class="stat-sub">${tPr.toFixed(2)} hrs · Hours/Day</div></div>
+      <div class="stat-card"><div class="stat-label">After Shift OT</div><div class="stat-value">${state.ot.post.length}</div><div class="stat-sub">${tP.toFixed(2)} hrs · Hours/Day</div></div>
+      <div class="stat-card"><div class="stat-label">Friday Pre-Approved</div><div class="stat-value">${state.ot.weekend.length}</div><div class="stat-sub">${tW.toFixed(2)} hrs · Hours/Day</div></div>
+      <div class="stat-card"><div class="stat-label">Employee base allowance</div><div class="stat-value">${allNames.length}</div><div class="stat-sub">0.5 hrs · Hours/Week</div></div>
     </div>
 
     ${editing ? `
@@ -863,9 +863,20 @@ function renderOT(){
           <button class="btn btn-primary btn-sm" onclick="saveOT()">Save changes</button>
         </div>
       </div>
-      ${editSection('Before Shift Pre-Approved OT',state.ot.pre,'pre')}
-      ${editSection('After Shift Pre-Approved OT',state.ot.post,'post')}
-      ${editSection('Weekend Pre-Approved OT',state.ot.weekend,'weekend')}
+      ${editSection('Before Shift Pre-Approved OT (Hours/Day)',state.ot.pre,'pre')}
+      ${editSection('After Shift Pre-Approved OT (Hours/Day)',state.ot.post,'post')}
+      ${editSection('Friday Pre-Approved (Hours/Day)',state.ot.weekend,'weekend')}
+      <div style="margin-top:24px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:10px">Employee Base Allowance (0.5 hrs/week)</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">All active employees receive 0.5 hours per week of pre-approved OT to account for time between whistles and clock in/out before and after shifts.</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Employee</th><th style="width:100px">Hours/Week</th></tr></thead>
+          <tbody>
+            ${allNames.map(name=>`<tr><td>${name}</td><td style="text-align:right;font-weight:600">0.5</td></tr>`).join('')}
+            ${!allNames.length?'<tr><td colspan="2" style="text-align:center;color:var(--muted);padding:12px">No active employees</td></tr>':''}
+          </tbody>
+        </table></div>
+      </div>
       <div style="margin-top:16px;text-align:right;display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="state.otEditing=false;render()">Cancel</button>
         <button class="btn btn-primary" onclick="saveOT()">Save changes</button>
@@ -874,9 +885,14 @@ function renderOT(){
       <div style="display:flex;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-primary btn-sm" onclick="state.otEditing=true;render()">✎ Edit OT</button>
       </div>
-      ${viewSection('Before Shift Pre-Approved OT',state.ot.pre,tPr)}
-      ${viewSection('After Shift Pre-Approved OT',state.ot.post,tP)}
-      ${viewSection('Weekend Pre-Approved OT',state.ot.weekend,tW)}
+      ${viewSection('Before Shift Pre-Approved OT (Hours/Day)',state.ot.pre,tPr)}
+      ${viewSection('After Shift Pre-Approved OT (Hours/Day)',state.ot.post,tP)}
+      ${viewSection('Friday Pre-Approved (Hours/Day)',state.ot.weekend,tW)}
+      <div style="margin-top:24px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:10px">Employee Base Allowance (0.5 hrs/week)</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">All active employees receive 0.5 hours per week of pre-approved OT to account for time between whistles and clock in/out before and after shifts.</div>
+        <div style="font-size:12px;font-weight:600;color:var(--text)">${allNames.length} active employees × 0.5 hrs/week = ${(allNames.length * 0.5).toFixed(1)} hrs/week base allowance</div>
+      </div>
       ${!all.length?'<div class="loading-state">No OT assignments yet</div>':''}
     `}
   `;
@@ -1017,9 +1033,20 @@ function renderOTReport(){
   // Calculate totals and dollar amounts
   let totalRegular = 0, totalOT = 0, totalRegularDollars = 0, totalOTDollars = 0;
 
-  // Get pre-approved OT from overtime table (Weekend only) - per employee
+  // Calculate number of weeks in the report period
+  let numWeeks = 1;
+  if (dates.length > 0) {
+    const firstDate = new Date(dates[0]);
+    const lastDate = new Date(dates[dates.length - 1]);
+    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
+    numWeeks = Math.ceil(daysDiff / 7) || 1;
+  }
+
+  // Get pre-approved OT from overtime table (Friday Pre-Approved) - per employee
   const preApprovedMap = {};
   let preApprovedHours = 0, preApprovedDollars = 0;
+
+  // Add Friday pre-approved assignments
   state.ot.weekend.forEach(r => {
     const emp = state.employees.find(e => e.name === r.name);
     if (emp) {
@@ -1028,6 +1055,21 @@ function renderOTReport(){
       preApprovedHours += r.hours;
       preApprovedDollars += r.hours * wage * 1.5;
     }
+  });
+
+  // Add 0.5 hrs/week base allowance for all active employees
+  const activeEmps = state.employees.filter(e => e.status === 'Active');
+  const baseAllowancePerEmp = 0.5 * numWeeks;
+  activeEmps.forEach(emp => {
+    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+    if (!preApprovedMap[emp.name]) {
+      preApprovedMap[emp.name] = {hours: baseAllowancePerEmp, dollars: baseAllowancePerEmp * wage * 1.5};
+    } else {
+      preApprovedMap[emp.name].hours += baseAllowancePerEmp;
+      preApprovedMap[emp.name].dollars += baseAllowancePerEmp * wage * 1.5;
+    }
+    preApprovedHours += baseAllowancePerEmp;
+    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
   });
 
   const employeeDetails = [];
