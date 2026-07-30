@@ -1138,10 +1138,11 @@ function renderOTReport(){
     });
   });
 
-  // Calculate net OT
+  // Calculate net OT and total OT percentage
   const netOTHours = Math.max(0, totalOT - preApprovedHours);
   const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
   const totalPayroll = totalRegularDollars + totalOTDollars;
+  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
   const netOTPercent = totalPayroll > 0 ? (netOTDollars / totalPayroll * 100) : 0;
 
   // Sort employees by OT descending
@@ -1176,9 +1177,9 @@ function renderOTReport(){
         <div class="stat-sub">${fmt$(netOTDollars)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Total Payroll</div>
-        <div class="stat-value">${fmt$(totalPayroll)}</div>
-        <div class="stat-sub">Net OT: ${netOTPercent.toFixed(1)}%</div>
+        <div class="stat-label">Total % OT</div>
+        <div class="stat-value">${totalOTPercent.toFixed(1)}%</div>
+        <div class="stat-sub">${fmt$(totalPayroll)} payroll</div>
       </div>
     </div>
 
@@ -1949,6 +1950,19 @@ function sendManagerEmails(rows){
   const netOT = Math.max(0, totalOTHrs - totalPreApproved);
   const empCount = Object.keys(empTotals).length;
 
+  // Calculate wages and percentages for email
+  let totalRegDollars = 0, totalOTDollars = 0;
+  Object.entries(empTotals).forEach(([empNum, hrs]) => {
+    const emp = state.employees.find(e => e.empNum == empNum);
+    if (emp) {
+      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      totalRegDollars += hrs.regular * wage;
+      totalOTDollars += hrs.ot * wage * 1.5;
+    }
+  });
+  const totalPayroll = totalRegDollars + totalOTDollars;
+  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
+
   // Find employees who exceeded pre-approved limits
   const exceededEmployees = [];
   Object.entries(empTotals).forEach(([empNum, hrs]) => {
@@ -1976,6 +1990,8 @@ function sendManagerEmails(rows){
       totalOTHours: totalOTHrs.toFixed(2),
       totalPreApprovedHours: totalPreApproved.toFixed(2),
       netOTHours: netOT.toFixed(2),
+      totalOTPercent: totalOTPercent.toFixed(1),
+      totalPayroll: totalPayroll.toFixed(2),
       employeeCount: empCount,
       uploadTime: new Date().toLocaleString(),
       exceededEmployees,
