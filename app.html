@@ -1138,13 +1138,12 @@ function renderOTReport(){
     });
   });
 
-  // Calculate net OT and OT percentages (all based on dollars)
+  // Calculate net OT and OT percentages (as % of regular dollars, to match table)
   const netOTHours = Math.max(0, totalOT - preApprovedHours);
   const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
-  const totalPayroll = totalRegularDollars + totalOTDollars;
-  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
-  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
-  const netOTPercent = totalPayroll > 0 ? (netOTDollars / totalPayroll * 100) : 0;
+  const totalOTPercent = totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100) : 0;
+  const preApprovedOTPercent = totalRegularDollars > 0 ? (preApprovedDollars / totalRegularDollars * 100) : 0;
+  const netOTPercent = totalRegularDollars > 0 ? (netOTDollars / totalRegularDollars * 100) : 0;
   const otBudgetPercent = 10.0;
   const budgetVariance = totalOTPercent - otBudgetPercent;
 
@@ -1976,8 +1975,8 @@ function sendManagerEmails(rows){
       totalOTDollars += hrs.ot * wage * 1.5;
     }
   });
+  const totalOTPercent = totalRegDollars > 0 ? (totalOTDollars / totalRegDollars * 100) : 0;
   const totalPayroll = totalRegDollars + totalOTDollars;
-  const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
 
   // Calculate pre-approved OT in dollars
   let preApprovedDollars = 0;
@@ -1992,7 +1991,7 @@ function sendManagerEmails(rows){
       preApprovedDollars += r.hours * wage * 1.5;
     }
   });
-  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
+  const preApprovedOTPercent = totalRegDollars > 0 ? (preApprovedDollars / totalRegDollars * 100) : 0;
   const otBudgetPercent = 10.0;
   const budgetVariance = totalOTPercent - otBudgetPercent;
 
