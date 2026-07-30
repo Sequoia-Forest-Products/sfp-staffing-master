@@ -1540,7 +1540,7 @@ async function parseOTFile(){
 
   try{
     const buffer=await file.arrayBuffer();
-    const rows=parseExcelBuffer(buffer);
+    const rows=parseExcelBuffer(buffer,file.name);
     if(!rows||rows.length===0){toast('No data found in file','error');return;}
 
     showOTFilePreview(rows);
@@ -1550,11 +1550,21 @@ async function parseOTFile(){
   }
 }
 
-function parseExcelBuffer(buffer){
+function parseExcelBuffer(buffer,filename){
   try{
     // Try parsing as Excel using SheetJS
     if(window.XLSX){
-      const workbook=XLSX.read(buffer,{type:'array'});
+      const isXLS=filename.toLowerCase().endsWith('.xls');
+      let workbook;
+      if(isXLS){
+        // For XLS (binary format), convert ArrayBuffer to binary string
+        const uint8=new Uint8Array(buffer);
+        const binary=String.fromCharCode.apply(null,uint8);
+        workbook=XLSX.read(binary,{type:'binary'});
+      }else{
+        // For XLSX and other formats, use array type
+        workbook=XLSX.read(buffer,{type:'array'});
+      }
       const sheet=workbook.Sheets[workbook.SheetNames[0]];
       const rows=XLSX.utils.sheet_to_json(sheet);
 
