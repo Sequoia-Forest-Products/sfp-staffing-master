@@ -1724,10 +1724,13 @@ async function confirmOTUpload(rows){
 
     toast('Uploading...','');
 
+    const payload={uploadBatchId,rows};
+    console.log('Sending to API:', JSON.stringify(payload).substring(0,200));
+
     const res=await fetch('/api/ot-upload',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({uploadBatchId,rows})
+      body:JSON.stringify(payload)
     });
 
     if(!res.ok){
