@@ -564,19 +564,47 @@ function openEdit(idx){
 function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
-function saveEdit(){
+async function saveEdit(){
   const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
   delete e._idx;delete e._isNew;
-  if(isNew)state.employees.push(e);else state.employees[idx]=e;
-  state.dirty=true;state.editing=null;
+
   setSyncStatus('saving');
-  toast('Saved locally — click Sync to write to sheet.','success');
-  // Auto-create Drive folder for new employees in the background
-  if(isNew && e.name){
-    fetch('/api/documents?employee='+encodeURIComponent(e.name))
-      .catch(()=>{}); // silent — folder creation happens server-side
+  try{
+    const row={
+      name:e.name, wage:e.wage, dept:e.dept, status:e.status,
+      days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
+      break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
+      birthday:e.birthday, phone:e.phone, language:e.language,
+      email:e.email, text_bolt:e.textBolt||'',
+      drive_folder_id:e.driveFolderId||null
+    };
+    if(e.id){
+      await fetch('/api/data?table=employees&id='+e.id,{
+        method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+      });
+    } else {
+      const res=await fetch('/api/data?table=employees',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
+      });
+      const d=await res.json();
+      if(d.data?.[0]?.id) e.id=d.data[0].id;
+    }
+
+    if(isNew)state.employees.push(e);else state.employees[idx]=e;
+    state.editing=null;
+    setSyncStatus('idle');
+    toast('Saved','success');
+
+    // Auto-create Drive folder for new employees in the background
+    if(isNew && e.name){
+      fetch('/api/documents?employee='+encodeURIComponent(e.name))
+        .catch(()=>{});
+    }
+    render();
+  }catch(err){
+    setSyncStatus('error');
+    toast('Save failed: '+err.message,'error');
   }
-  render();
 }
 
 function renderModal(){
