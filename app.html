@@ -1558,9 +1558,14 @@ async function parseExcelBuffer(file){
           // Use base64 data URL approach which works for both XLS and XLSX
           const data=e.target.result;
           const base64=data.split(',')[1];
+          console.log('File type:',file.name,'| Base64 length:',base64.length);
+
           const workbook=XLSX.read(base64,{type:'base64'});
+          console.log('Sheet names:',workbook.SheetNames);
+
           const sheet=workbook.Sheets[workbook.SheetNames[0]];
           const rows=XLSX.utils.sheet_to_json(sheet);
+          console.log('Rows parsed:',rows.length,'| First row keys:',rows.length>0?Object.keys(rows[0]):null);
 
           if(rows.length===0)throw new Error('No data found in file');
 
@@ -1573,6 +1578,10 @@ async function parseExcelBuffer(file){
           const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
 
           if(!empNumKey||!dateKey){
+            console.error('Column search failed. Looking for:');
+            console.error('  - empNumKey (has "employee" or "number"):', empNumKey);
+            console.error('  - dateKey (has "date"):', dateKey);
+            console.error('Available keys:', Object.keys(firstRow));
             throw new Error('Missing required columns: Employee Number or Date');
           }
 
