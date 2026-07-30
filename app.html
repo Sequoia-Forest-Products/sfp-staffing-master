@@ -1138,12 +1138,15 @@ function renderOTReport(){
     });
   });
 
-  // Calculate net OT and total OT percentage
+  // Calculate net OT and OT percentages (all based on dollars)
   const netOTHours = Math.max(0, totalOT - preApprovedHours);
   const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
   const totalPayroll = totalRegularDollars + totalOTDollars;
   const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
+  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
   const netOTPercent = totalPayroll > 0 ? (netOTDollars / totalPayroll * 100) : 0;
+  const otBudgetPercent = 10.0;
+  const budgetVariance = totalOTPercent - otBudgetPercent;
 
   // Sort employees by OT descending
   employeeDetails.sort((a, b) => b.ot - a.ot);
@@ -1179,7 +1182,17 @@ function renderOTReport(){
       <div class="stat-card">
         <div class="stat-label">Total % OT</div>
         <div class="stat-value">${totalOTPercent.toFixed(1)}%</div>
-        <div class="stat-sub">${fmt$(totalPayroll)} payroll</div>
+        <div class="stat-sub">Of total payroll $</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pre-Approved OT %</div>
+        <div class="stat-value">${preApprovedOTPercent.toFixed(1)}%</div>
+        <div class="stat-sub">If no unapproved OT</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">OT Budget</div>
+        <div class="stat-value" style="color:${budgetVariance > 0 ? 'var(--brick)' : '#2a7a47'}">${totalOTPercent.toFixed(1)}% / 10%</div>
+        <div class="stat-sub">${budgetVariance > 0 ? '+' : ''}${budgetVariance.toFixed(1)}% vs budget</div>
       </div>
     </div>
 
@@ -1963,6 +1976,23 @@ function sendManagerEmails(rows){
   const totalPayroll = totalRegDollars + totalOTDollars;
   const totalOTPercent = totalPayroll > 0 ? (totalOTDollars / totalPayroll * 100) : 0;
 
+  // Calculate pre-approved OT in dollars
+  let preApprovedDollars = 0;
+  activeEmps.forEach(emp => {
+    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
+  });
+  state.ot.weekend.forEach(r => {
+    const emp = state.employees.find(e => e.name === r.name);
+    if (emp) {
+      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      preApprovedDollars += r.hours * wage * 1.5;
+    }
+  });
+  const preApprovedOTPercent = totalPayroll > 0 ? (preApprovedDollars / totalPayroll * 100) : 0;
+  const otBudgetPercent = 10.0;
+  const budgetVariance = totalOTPercent - otBudgetPercent;
+
   // Find employees who exceeded pre-approved limits
   const exceededEmployees = [];
   Object.entries(empTotals).forEach(([empNum, hrs]) => {
@@ -1991,6 +2021,9 @@ function sendManagerEmails(rows){
       totalPreApprovedHours: totalPreApproved.toFixed(2),
       netOTHours: netOT.toFixed(2),
       totalOTPercent: totalOTPercent.toFixed(1),
+      preApprovedOTPercent: preApprovedOTPercent.toFixed(1),
+      otBudgetPercent: otBudgetPercent.toFixed(1),
+      budgetVariance: budgetVariance.toFixed(1),
       totalPayroll: totalPayroll.toFixed(2),
       employeeCount: empCount,
       uploadTime: new Date().toLocaleString(),
