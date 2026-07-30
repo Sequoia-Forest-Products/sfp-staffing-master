@@ -1135,18 +1135,34 @@ function renderOTReport(){
           <th style="width:80px">Pre-App OT</th>
           <th style="width:80px">Variance</th>
           <th style="width:80px">OT $</th>
+          <th style="width:80px">OT %</th>
         </tr></thead>
         <tbody>
-          ${employeeDetails.map(e => `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
-            <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
-            <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
-            <td style="text-align:right">${e.regular.toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(e.regularDoll)}</td>
-            <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
-            <td style="text-align:right">${e.preApprovedOT.toFixed(2)}</td>
-            <td style="text-align:right;font-weight:600;color:${e.variance > 0.1 ? 'var(--brick)' : 'inherit'}">${e.variance.toFixed(2)}</td>
-            <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
-          </tr>`).join('')}
+          ${employeeDetails.map(e => {
+            const otPct = e.regularDoll > 0 ? (e.otDoll / e.regularDoll * 100) : 0;
+            return `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
+              <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
+              <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
+              <td style="text-align:right">${e.regular.toFixed(2)}</td>
+              <td style="text-align:right">${fmt$(e.regularDoll)}</td>
+              <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
+              <td style="text-align:right">${e.preApprovedOT.toFixed(2)}</td>
+              <td style="text-align:right;font-weight:600;color:${e.variance > 0.1 ? 'var(--brick)' : 'inherit'}">${e.variance.toFixed(2)}</td>
+              <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
+              <td style="text-align:right">${otPct.toFixed(1)}%</td>
+            </tr>`;
+          }).join('')}
+          <tr style="background:var(--surface2);font-weight:700;border-top:2px solid var(--border)">
+            <td>TOTAL</td>
+            <td></td>
+            <td style="text-align:right">${totalRegular.toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(totalRegularDollars)}</td>
+            <td style="text-align:right">${totalOT.toFixed(2)}</td>
+            <td style="text-align:right">${preApprovedHours.toFixed(2)}</td>
+            <td style="text-align:right">${(totalOT - preApprovedHours).toFixed(2)}</td>
+            <td style="text-align:right">${fmt$(totalOTDollars)}</td>
+            <td style="text-align:right">${totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100).toFixed(1) : '0'}%</td>
+          </tr>
         </tbody>
       </table>
     </div>
