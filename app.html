@@ -562,6 +562,14 @@ function openEdit(idx){
 function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
+function setSyncStatus(s){
+  const el=document.getElementById('syncStatus');
+  if(!el) return;
+  if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
+  else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
+  else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
+}
+
 async function saveEdit(){
   const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
   delete e._idx;delete e._isNew;
