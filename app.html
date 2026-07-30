@@ -1410,6 +1410,7 @@ function removeManager(idx){
 
 function setSyncStatus(s){
   const el=document.getElementById('syncStatus');
+  if(!el) return; // Element doesn't exist, skip
   if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
   else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
   else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
@@ -1667,6 +1668,7 @@ function removeManager(idx){
 
 function setSyncStatus(s){
   const el=document.getElementById('syncStatus');
+  if(!el) return; // Element doesn't exist, skip
   if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
   else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
   else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
