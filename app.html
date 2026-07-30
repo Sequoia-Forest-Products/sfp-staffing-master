@@ -1192,7 +1192,7 @@ function renderOTReport(){
       <div class="stat-card">
         <div class="stat-label">OT Budget</div>
         <div class="stat-value" style="color:${budgetVariance > 0 ? 'var(--brick)' : '#2a7a47'}">${totalOTPercent.toFixed(1)}% / 10%</div>
-        <div class="stat-sub">${budgetVariance > 0 ? '+' : ''}${budgetVariance.toFixed(1)}% vs budget</div>
+        <div class="stat-sub">Net OT: ${(totalOTPercent - preApprovedOTPercent).toFixed(1)}%</div>
       </div>
     </div>
 
@@ -2010,6 +2010,9 @@ function sendManagerEmails(rows){
   });
   exceededEmployees.sort((a, b) => parseFloat(b.unapprovedHours) - parseFloat(a.unapprovedHours));
 
+  // Calculate net OT percentage for email
+  const netOTPercent = totalOTPercent - preApprovedOTPercent;
+
   // Prepare email data for backend
   const emailData = {
     to: state.emailSettings.managers,
@@ -2022,6 +2025,7 @@ function sendManagerEmails(rows){
       netOTHours: netOT.toFixed(2),
       totalOTPercent: totalOTPercent.toFixed(1),
       preApprovedOTPercent: preApprovedOTPercent.toFixed(1),
+      netOTPercent: netOTPercent.toFixed(1),
       otBudgetPercent: otBudgetPercent.toFixed(1),
       budgetVariance: budgetVariance.toFixed(1),
       totalPayroll: totalPayroll.toFixed(2),
