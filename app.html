@@ -1391,6 +1391,18 @@ async function syncToSheet(){
         if(d.data?.[0]?.id) e.id=d.data[0].id;
       }
     }
+    // Reload employees from database to ensure OT report has latest wages
+    const empRes = await fetch('/api/data?table=employees');
+    const empJson = await empRes.json();
+    state.employees = (empJson.data||[]).map(r=>({
+      id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
+      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
+      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
+      birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
+      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      empNum:r.employee_number||''
+    }));
+
     state.dirty=false;
     btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
     setSyncStatus('idle');
@@ -1636,6 +1648,18 @@ async function syncToSheet(){
         if(d.data?.[0]?.id) e.id=d.data[0].id;
       }
     }
+    // Reload employees from database to ensure OT report has latest wages
+    const empRes = await fetch('/api/data?table=employees');
+    const empJson = await empRes.json();
+    state.employees = (empJson.data||[]).map(r=>({
+      id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
+      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
+      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
+      birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
+      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      empNum:r.employee_number||''
+    }));
+
     state.dirty=false;
     btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
     setSyncStatus('idle');
