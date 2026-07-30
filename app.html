@@ -1701,22 +1701,21 @@ function showOTFilePreview(rows){
 
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
-          <button class="btn btn-primary btn-sm" id="otConfirmBtn" data-rows='${JSON.stringify(rows).replace(/'/g, "&apos;")}'>Confirm and upload</button>
+          <button class="btn btn-primary btn-sm" id="otConfirmBtn">Confirm and upload</button>
         </div>
       </div>
     </div>
   `;
 
   document.body.insertAdjacentHTML('beforeend',html);
+  window.otPreviewRows = rows;
   document.getElementById('otConfirmBtn').addEventListener('click', async function(){
-    const rowsJson = this.getAttribute('data-rows');
-    await confirmOTUpload(rowsJson);
+    await confirmOTUpload(window.otPreviewRows);
   });
 }
 
-async function confirmOTUpload(rowsJson){
+async function confirmOTUpload(rows){
   try{
-    const rows=JSON.parse(rowsJson);
     const uploadBatchId='batch-'+Date.now()+'-'+Math.random().toString(36).substr(2,9);
 
     document.getElementById('otPreview')?.remove();
