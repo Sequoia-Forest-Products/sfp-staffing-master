@@ -574,7 +574,6 @@ async function saveEdit(){
   const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
   delete e._idx;delete e._isNew;
 
-  console.log('saveEdit started', {idx, isNew, name:e.name, wage:e.wage, id:e.id});
   setSyncStatus('saving');
   try{
     // Normalize wage: convert formatted string to number if needed
@@ -587,7 +586,6 @@ async function saveEdit(){
       }
     }
     e.wage = wage; // Update the editing object with normalized wage
-    console.log('Normalized wage:', wage);
 
     const row={
       name:e.name, wage:wage, dept:e.dept, status:e.status,
@@ -597,32 +595,25 @@ async function saveEdit(){
       email:e.email, text_bolt:e.textBolt||'',
       drive_folder_id:e.driveFolderId||null
     };
-    console.log('Sending to API:', row);
 
     if(e.id){
-      console.log('PATCH to /api/data?table=employees&id='+e.id);
       const res=await fetch('/api/data?table=employees&id='+e.id,{
         method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
       });
-      console.log('Response status:', res.status);
       if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
     } else {
-      console.log('POST to /api/data?table=employees');
       const res=await fetch('/api/data?table=employees',{
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
       });
-      console.log('Response status:', res.status);
       if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
       const d=await res.json();
       if(d.data?.[0]?.id) e.id=d.data[0].id;
     }
 
-    console.log('API call succeeded, updating state.employees['+idx+']');
     if(isNew)state.employees.push(e);else state.employees[idx]=e;
     state.editing=null;
     setSyncStatus('idle');
     toast('Saved','success');
-    console.log('State updated, calling render()');
 
     // Auto-create Drive folder for new employees in the background
     if(isNew && e.name){
@@ -633,7 +624,6 @@ async function saveEdit(){
   }catch(err){
     setSyncStatus('error');
     toast('Save failed: '+err.message,'error');
-    console.error('saveEdit error:', err);
   }
 }
 
