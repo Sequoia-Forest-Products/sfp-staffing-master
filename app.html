@@ -577,13 +577,15 @@ async function saveEdit(){
       drive_folder_id:e.driveFolderId||null
     };
     if(e.id){
-      await fetch('/api/data?table=employees&id='+e.id,{
+      const res=await fetch('/api/data?table=employees&id='+e.id,{
         method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
       });
+      if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
     } else {
       const res=await fetch('/api/data?table=employees',{
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
       });
+      if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
       const d=await res.json();
       if(d.data?.[0]?.id) e.id=d.data[0].id;
     }
