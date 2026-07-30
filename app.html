@@ -1037,18 +1037,24 @@ function renderOTReport(){
     totalRegularDollars += regularDoll;
     totalOTDollars += otDoll;
 
+    const preApp = preApprovedMap[emp.name] || {hours: 0, dollars: 0};
     employeeDetails.push({
       empNum, name: emp.name, regular: hrs.regular, ot: hrs.ot,
-      wage, regularDoll, otDoll, matched: true
+      wage, regularDoll, otDoll,
+      preApprovedOT: preApp.hours,
+      variance: hrs.ot - preApp.hours,
+      matched: true
     });
   });
 
-  // Get pre-approved OT from overtime table (Weekend only)
+  // Get pre-approved OT from overtime table (Weekend only) - per employee
+  const preApprovedMap = {};
   let preApprovedHours = 0, preApprovedDollars = 0;
   state.ot.weekend.forEach(r => {
     const emp = state.employees.find(e => e.name === r.name);
     if (emp) {
       const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      preApprovedMap[r.name] = {hours: r.hours, dollars: r.hours * wage * 1.5};
       preApprovedHours += r.hours;
       preApprovedDollars += r.hours * wage * 1.5;
     }
@@ -1123,15 +1129,19 @@ function renderOTReport(){
           <th style="width:80px">Reg. hrs</th>
           <th style="width:80px">Reg. $</th>
           <th style="width:80px">OT hrs</th>
+          <th style="width:80px">Pre-App OT</th>
+          <th style="width:80px">Variance</th>
           <th style="width:80px">OT $</th>
         </tr></thead>
         <tbody>
-          ${employeeDetails.map(e => `<tr style="${!e.matched ? 'background:#fef5e8' : ''}">
+          ${employeeDetails.map(e => `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
             <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
             <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
             <td style="text-align:right">${e.regular.toFixed(2)}</td>
             <td style="text-align:right">${fmt$(e.regularDoll)}</td>
             <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
+            <td style="text-align:right">${e.preApprovedOT.toFixed(2)}</td>
+            <td style="text-align:right;font-weight:600;color:${e.variance > 0.1 ? 'var(--brick)' : 'inherit'}">${e.variance.toFixed(2)}</td>
             <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
           </tr>`).join('')}
         </tbody>
