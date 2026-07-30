@@ -1016,6 +1016,20 @@ function renderOTReport(){
 
   // Calculate totals and dollar amounts
   let totalRegular = 0, totalOT = 0, totalRegularDollars = 0, totalOTDollars = 0;
+
+  // Get pre-approved OT from overtime table (Weekend only) - per employee
+  const preApprovedMap = {};
+  let preApprovedHours = 0, preApprovedDollars = 0;
+  state.ot.weekend.forEach(r => {
+    const emp = state.employees.find(e => e.name === r.name);
+    if (emp) {
+      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
+      preApprovedMap[r.name] = {hours: r.hours, dollars: r.hours * wage * 1.5};
+      preApprovedHours += r.hours;
+      preApprovedDollars += r.hours * wage * 1.5;
+    }
+  });
+
   const employeeDetails = [];
 
   Object.entries(empTotals).forEach(([empNum, hrs]) => {
@@ -1023,7 +1037,9 @@ function renderOTReport(){
     if (!emp) {
       employeeDetails.push({
         empNum, name: `UNMATCHED (#${empNum})`, regular: hrs.regular, ot: hrs.ot,
-        wage: 0, regularDoll: 0, otDoll: 0, matched: false
+        wage: 0, regularDoll: 0, otDoll: 0,
+        preApprovedOT: 0, variance: hrs.ot,
+        matched: false
       });
       return;
     }
@@ -1045,19 +1061,6 @@ function renderOTReport(){
       variance: hrs.ot - preApp.hours,
       matched: true
     });
-  });
-
-  // Get pre-approved OT from overtime table (Weekend only) - per employee
-  const preApprovedMap = {};
-  let preApprovedHours = 0, preApprovedDollars = 0;
-  state.ot.weekend.forEach(r => {
-    const emp = state.employees.find(e => e.name === r.name);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      preApprovedMap[r.name] = {hours: r.hours, dollars: r.hours * wage * 1.5};
-      preApprovedHours += r.hours;
-      preApprovedDollars += r.hours * wage * 1.5;
-    }
   });
 
   // Calculate net OT
