@@ -47,37 +47,51 @@ function generateEmailHTML(data) {
   return `<!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { font-family: 'Montserrat', Arial, sans-serif; line-height: 1.6; color: #27211E; max-width: 700px; margin: 0 auto; }
-    .container { background: #F5F5F5; padding: 20px; }
-    .email { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-    .header { background: #27211E; color: white; padding: 32px 24px; text-align: center; }
-    .logo { font-size: 28px; font-weight: 900; letter-spacing: 2px; margin-bottom: 16px; color: #EE7425; }
-    .header h1 { margin: 0; font-size: 26px; font-weight: 700; }
-    .header p { margin: 12px 0 0 0; font-size: 15px; opacity: 0.9; color: #EAD9CA; }
-    .content { padding: 32px; }
-    .date-range { background: #27211E; color: white; padding: 12px 16px; border-radius: 6px; margin-bottom: 24px; text-align: center; font-weight: 600; font-size: 14px; }
-    .section { margin-bottom: 32px; }
-    .section-title { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; color: #27211E; margin-bottom: 16px; border-bottom: 3px solid #AD4C25; padding-bottom: 8px; }
-    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-    .stat-box { background: #F9F9F9; padding: 16px; border-radius: 6px; border-left: 5px solid #27211E; }
-    .stat-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 6px; }
-    .stat-value { font-size: 24px; font-weight: 900; color: #27211E; }
-    .stat-sub { font-size: 12px; color: #999; margin-top: 4px; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Montserrat', Arial, sans-serif; line-height: 1.6; color: #27211E; background: #F5F5F5; }
+    .container { max-width: 600px; margin: 0 auto; background: #F5F5F5; padding: 16px; }
+    .email { background: white; border-radius: 8px; overflow: hidden; }
+    .header { background: #27211E; color: white; padding: 24px 16px; text-align: center; }
+    .logo { font-size: 24px; font-weight: 900; letter-spacing: 2px; margin-bottom: 12px; color: #EE7425; }
+    .header h1 { margin: 0; font-size: 22px; font-weight: 700; }
+    .header p { margin: 8px 0 0 0; font-size: 13px; opacity: 0.9; color: #EAD9CA; }
+    .content { padding: 20px; }
+    .date-range { background: #27211E; color: white; padding: 12px; border-radius: 6px; margin-bottom: 20px; text-align: center; font-weight: 600; font-size: 13px; }
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; color: #27211E; margin-bottom: 12px; border-bottom: 3px solid #AD4C25; padding-bottom: 6px; }
+    .stat-row { margin-bottom: 12px; }
+    .stat-box { background: #F9F9F9; padding: 12px; border-radius: 6px; border-left: 4px solid #27211E; margin-bottom: 12px; display: inline-block; width: calc(33.333% - 8px); margin-right: 12px; vertical-align: top; }
+    .stat-box:nth-child(3n) { margin-right: 0; }
+    .stat-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
+    .stat-value { font-size: 20px; font-weight: 900; color: #27211E; }
+    .stat-sub { font-size: 11px; color: #999; margin-top: 2px; }
     .stat-value.over-budget { color: #902423; }
     .stat-value.under-budget { color: #2a7a47; }
-    .employee-list { width: 100%; border-collapse: collapse; }
-    .employee-list thead { background: #27211E; color: white; border-bottom: 2px solid #27211E; }
-    .employee-list th { padding: 12px; text-align: left; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-    .employee-list td { padding: 10px 12px; border-bottom: 1px solid #EEE; font-size: 13px; }
-    .employee-list tbody tr:hover { background: #F9F9F9; }
-    .employee-list .hours { text-align: right; font-weight: 700; color: #902423; }
-    .cta-box { background: #27211E; border: 2px solid #27211E; border-radius: 6px; padding: 20px; text-align: center; margin-bottom: 24px; }
-    .cta-box p { color: white; }
-    .cta-link { display: inline-block; background: #EE7425; color: white; padding: 12px 28px; border-radius: 4px; text-decoration: none; font-weight: 700; font-size: 14px; }
-    .cta-link:hover { background: #AD4C25; }
-    .footer { background: #27211E; color: #EAD9CA; padding: 24px 32px; text-align: center; font-size: 12px; }
-    .footer p { margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    thead { background: #27211E; color: white; }
+    th { padding: 10px 8px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 8px; border-bottom: 1px solid #EEE; font-size: 12px; }
+    .hours { text-align: right; font-weight: 700; color: #902423; }
+    .cta-box { background: #27211E; padding: 16px; text-align: center; margin-bottom: 20px; border-radius: 6px; }
+    .cta-box p { color: white; margin: 0 0 12px 0; font-size: 13px; }
+    .cta-link { display: inline-block; background: #EE7425; color: white; padding: 10px 24px; border-radius: 4px; text-decoration: none; font-weight: 700; font-size: 13px; }
+    .footer { background: #27211E; color: #EAD9CA; padding: 16px; text-align: center; font-size: 11px; }
+    .footer p { margin: 4px 0; }
+    @media (max-width: 480px) {
+      .container { padding: 8px; }
+      .content { padding: 12px; }
+      .header { padding: 16px 12px; }
+      .logo { font-size: 20px; }
+      .header h1 { font-size: 18px; }
+      .stat-box { width: 100%; margin-right: 0; margin-bottom: 10px; }
+      .stat-box:nth-child(3n) { margin-right: 0; }
+      .stat-value { font-size: 18px; }
+      th, td { padding: 6px 4px; font-size: 11px; }
+      .cta-link { padding: 8px 20px; font-size: 12px; }
+    }
   </style>
 </head>
 <body>
@@ -90,13 +104,11 @@ function generateEmailHTML(data) {
       </div>
 
       <div class="content">
-        <div class="date-range">
-          📅 ${dateRange}
-        </div>
+        <div class="date-range">📅 ${dateRange}</div>
 
         <div class="section">
           <div class="section-title">Summary</div>
-          <div class="stats">
+          <div class="stat-row">
             <div class="stat-box">
               <div class="stat-label">All OT (hours)</div>
               <div class="stat-value">${totalOTHours}</div>
@@ -113,7 +125,7 @@ function generateEmailHTML(data) {
               <div class="stat-sub">Unapproved overtime</div>
             </div>
           </div>
-          <div class="stats" style="margin-top: 20px;">
+          <div class="stat-row">
             <div class="stat-box">
               <div class="stat-label">Extra OT</div>
               <div class="stat-value">${netOTPercent}%</div>
@@ -135,11 +147,11 @@ function generateEmailHTML(data) {
         ${exceededEmployees.length > 0 ? `
         <div class="section">
           <div class="section-title">Employees Exceeding Pre-Approved Limits</div>
-          <table class="employee-list">
+          <table>
             <thead>
               <tr>
                 <th>Employee</th>
-                <th>Unapproved Hours</th>
+                <th class="hours">Unapproved Hours</th>
               </tr>
             </thead>
             <tbody>
@@ -150,14 +162,12 @@ function generateEmailHTML(data) {
         ` : ''}
 
         <div class="cta-box">
-          <p style="margin: 0 0 16px 0; font-size: 14px;">
-            <strong>View the full detailed report:</strong>
-          </p>
+          <p><strong>View the full detailed report:</strong></p>
           <a href="${reportLink}" class="cta-link">Open OT Report →</a>
         </div>
 
-        <div class="section" style="background: #F9F9F9; padding: 16px; border-radius: 6px; margin-bottom: 0;">
-          <p style="margin: 0; font-size: 13px; color: #666;">
+        <div class="section" style="background: #F9F9F9; padding: 12px; border-radius: 6px; margin-bottom: 0;">
+          <p style="margin: 0; font-size: 12px; color: #666; line-height: 1.5;">
             <strong>Generated:</strong> ${uploadTime}<br>
             <strong>Employees:</strong> ${employeeCount} · <strong>Hours:</strong> ${totalRegularHours} reg + ${totalOTHours} OT
           </p>
@@ -166,8 +176,8 @@ function generateEmailHTML(data) {
 
       <div class="footer">
         <p>Sequoia Forest Products — Staffing Master</p>
-        <p style="font-size: 11px; margin-top: 12px; opacity: 0.8;">Automated report — do not reply</p>
-        <p style="font-size: 11px; opacity: 0.6;">© 2026 Sequoia Forest Products</p>
+        <p style="font-size: 10px; margin-top: 8px; opacity: 0.8;">Automated report — do not reply</p>
+        <p style="font-size: 10px; opacity: 0.6;">© 2026 Sequoia Forest Products</p>
       </div>
     </div>
   </div>
