@@ -49,6 +49,10 @@ function generateEmailHTML(data) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Gmail preview text -->
+  <div style="display:none;font-size:1px;color:#fefefe;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">
+    OT Report ${dateRange} • Extra OT: ${netOTPercent}% • Pre-Approved: ${preApprovedOTPercent}% • Budget: ${totalOTPercent}% / ${otBudgetPercent}%
+  </div>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Montserrat', Arial, sans-serif; line-height: 1.6; color: #27211E; background: #F5F5F5; }
