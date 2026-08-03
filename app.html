@@ -1171,7 +1171,7 @@ function renderOTReport(){
   const unmatched = employeeDetails.filter(e => !e.matched);
 
   return `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
+    <div id="otUploadForm" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
       <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
         Supported formats: XLS, XLSX, CSV<br>
