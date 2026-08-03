@@ -1226,6 +1226,7 @@ function renderOTReport(){
             return `<option value="${bId}" ${bId === selectedBatch ? 'selected' : ''}>${dStr}</option>`;
           }).join('')}
         </select>
+        <button class="btn btn-primary btn-sm" onclick="sendOTEmailNow()" style="margin-left:0">📧 Send email</button>
         <div style="font-size:11px;color:var(--muted);margin-left:auto">
           ${batchData.length} total rows · ${dates.length} days · ${employeeDetails.length} employees
         </div>
@@ -1948,6 +1949,29 @@ function fileToBase64(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function sendOTEmailNow(){
+  if(!state.emailSettings.managers.length){
+    toast('No managers configured in Settings','error');
+    return;
+  }
+
+  const selectedBatch = state.selectedOTBatch;
+  if(!selectedBatch){
+    toast('No data to send','error');
+    return;
+  }
+
+  // Get the data for the current batch
+  const batchData = state.weeklyHours.filter(r => r.batchId === selectedBatch);
+  if(!batchData.length){
+    toast('No data for selected week','error');
+    return;
+  }
+
+  toast('Sending emails to '+state.emailSettings.managers.length+' manager(s)...','');
+  sendManagerEmails(batchData);
 }
 
 function sendManagerEmails(rows){
