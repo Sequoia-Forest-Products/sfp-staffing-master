@@ -1391,33 +1391,63 @@ async function savePoints(){
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
-function saveEmailSettings(){
-  localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+async function saveEmailSettings(){
+  try {
+    // Save to database
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        key: 'emailSettings',
+        value: state.emailSettings
+      })
+    });
+    if (!res.ok) {
+      console.error('Failed to save settings to database');
+      localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    }
+  } catch (err) {
+    console.error('Settings save error:', err);
+    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+  }
 }
 
-function loadEmailSettings(){
+async function loadEmailSettings(){
+  try {
+    const res = await fetch('/api/settings?key=emailSettings');
+    if (res.ok) {
+      const json = await res.json();
+      if (json.data && json.data.value) {
+        state.emailSettings = json.data.value;
+        return;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load settings from database:', err);
+  }
+  // Fallback to localStorage
   const saved = localStorage.getItem('emailSettings');
-  if(saved){
+  if (saved) {
     state.emailSettings = JSON.parse(saved);
   }
 }
 
-function addManager(){
+async function addManager(){
   const input=document.getElementById('newManagerEmail');
   const email=input.value.trim();
   if(!email){toast('Please enter a valid email','error');return;}
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
   if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
   state.emailSettings.managers.push(email);
-  saveEmailSettings();
+  await saveEmailSettings();
   input.value='';
   render();
   toast('Manager added and saved','success');
 }
 
-function removeManager(idx){
+async function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
-  saveEmailSettings();
+  await saveEmailSettings();
   render();
   toast('Manager removed','success');
 }
@@ -1656,33 +1686,63 @@ async function savePoints(){
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
-function saveEmailSettings(){
-  localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+async function saveEmailSettings(){
+  try {
+    // Save to database
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        key: 'emailSettings',
+        value: state.emailSettings
+      })
+    });
+    if (!res.ok) {
+      console.error('Failed to save settings to database');
+      localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    }
+  } catch (err) {
+    console.error('Settings save error:', err);
+    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+  }
 }
 
-function loadEmailSettings(){
+async function loadEmailSettings(){
+  try {
+    const res = await fetch('/api/settings?key=emailSettings');
+    if (res.ok) {
+      const json = await res.json();
+      if (json.data && json.data.value) {
+        state.emailSettings = json.data.value;
+        return;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load settings from database:', err);
+  }
+  // Fallback to localStorage
   const saved = localStorage.getItem('emailSettings');
-  if(saved){
+  if (saved) {
     state.emailSettings = JSON.parse(saved);
   }
 }
 
-function addManager(){
+async function addManager(){
   const input=document.getElementById('newManagerEmail');
   const email=input.value.trim();
   if(!email){toast('Please enter a valid email','error');return;}
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
   if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
   state.emailSettings.managers.push(email);
-  saveEmailSettings();
+  await saveEmailSettings();
   input.value='';
   render();
   toast('Manager added and saved','success');
 }
 
-function removeManager(idx){
+async function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
-  saveEmailSettings();
+  await saveEmailSettings();
   render();
   toast('Manager removed','success');
 }
