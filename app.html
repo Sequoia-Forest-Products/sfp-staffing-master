@@ -1391,6 +1391,17 @@ async function savePoints(){
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
+function saveEmailSettings(){
+  localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+}
+
+function loadEmailSettings(){
+  const saved = localStorage.getItem('emailSettings');
+  if(saved){
+    state.emailSettings = JSON.parse(saved);
+  }
+}
+
 function addManager(){
   const input=document.getElementById('newManagerEmail');
   const email=input.value.trim();
@@ -1398,13 +1409,17 @@ function addManager(){
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
   if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
   state.emailSettings.managers.push(email);
+  saveEmailSettings();
   input.value='';
   render();
+  toast('Manager added and saved','success');
 }
 
 function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
+  saveEmailSettings();
   render();
+  toast('Manager removed','success');
 }
 
 async function syncToSheet(){
@@ -1641,6 +1656,17 @@ async function savePoints(){
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
+function saveEmailSettings(){
+  localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+}
+
+function loadEmailSettings(){
+  const saved = localStorage.getItem('emailSettings');
+  if(saved){
+    state.emailSettings = JSON.parse(saved);
+  }
+}
+
 function addManager(){
   const input=document.getElementById('newManagerEmail');
   const email=input.value.trim();
@@ -1648,13 +1674,17 @@ function addManager(){
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
   if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
   state.emailSettings.managers.push(email);
+  saveEmailSettings();
   input.value='';
   render();
+  toast('Manager added and saved','success');
 }
 
 function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
+  saveEmailSettings();
   render();
+  toast('Manager removed','success');
 }
 
 async function syncToSheet(){
@@ -2108,7 +2138,7 @@ function renderSettings(){
 
         <div style="margin-bottom:20px">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
-            <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
+            <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;saveEmailSettings();render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
             <span style="font-size:14px;font-weight:600">Auto-send OT reports to managers when files are uploaded</span>
           </label>
           <div style="font-size:12px;color:var(--muted);margin-top:6px;margin-left:26px">Automatically email OT reports to all configured manager recipients</div>
@@ -2144,6 +2174,7 @@ function renderSettings(){
   `;
 }
 
+loadEmailSettings();
 loadData();
 </script>
 </body>
