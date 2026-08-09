@@ -39,9 +39,19 @@ ORDER BY name;
 
 -- Step 4: who is announced but cannot be texted — no address, or opted out.
 -- This is expected and supported; the message names them either way.
-SELECT name, birthday, COALESCE(NULLIF(btrim(text_bolt), ''), '(none)') AS address
+-- Opting out no longer clears text_bolt, so an opted-out employee normally still
+-- has an address on file; see SCHEMA_SMS_OPTOUT.sql.
+SELECT
+  name,
+  birthday,
+  COALESCE(NULLIF(btrim(text_bolt), ''), '(none)') AS address,
+  sms_opted_out,
+  CASE
+    WHEN sms_opted_out THEN 'opted out'
+    ELSE 'no address on file'
+  END AS reason
 FROM employees
 WHERE status = 'Active'
   AND btrim(COALESCE(birthday, '')) <> ''
-  AND (text_bolt IS NULL OR btrim(text_bolt) = '' OR upper(btrim(text_bolt)) = 'STOP')
+  AND (sms_opted_out OR text_bolt IS NULL OR btrim(text_bolt) = '')
 ORDER BY name;

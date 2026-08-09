@@ -22,7 +22,7 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-- **Employees tab** — roster with search, filter, sort, inline edit modals, SMS opt-out toggle, Drive folder linking
+- **Employees tab** — roster with search, filter, sort, inline edit modals, TextBolt address field, SMS opt-out toggle, Drive folder linking
 - **Staffing Economics tab** — position assignment with wage, burdened cost, max wage, and variance
 - **Overtime tab** — view/edit for Before Shift, After Shift, and Weekend Pre-Approved OT
 - **Points Tracker tab** — attendance points with disciplinary flags, full CRUD
@@ -40,6 +40,11 @@ sfp-staffing-master/
 ├── netlify.toml                # Config, redirects, scheduled functions
 ├── package.json
 ├── .env.example                # Environment variable template
+├── SCHEMA_CHANGES.sql          # OT report schema
+├── SCHEMA_BIRTHDAY.sql         # Birthday data audit queries
+├── SCHEMA_SMS_OPTOUT.sql       # sms_opted_out migration
+├── tests/
+│   └── birthday.test.js        # Unit tests (npm test)
 └── netlify/
     └── functions/
         ├── auth.js             # Google OAuth flow
@@ -78,7 +83,7 @@ sfp-staffing-master/
 ## Database Schema (Supabase)
 
 ### employees
-`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, text_bolt, drive_folder_id`
+`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, text_bolt, sms_opted_out, drive_folder_id, employee_number`
 
 ### economics
 `id, num, section, position, name, max_wage`
@@ -124,24 +129,35 @@ weekend):
 | Thursday | that day + 3 (Fri, Sat, Sun) |
 | Fri/Sat/Sun | never runs — cron skips it, and the code exits anyway |
 
-**There is deliberately no Friday run.** Thursday's 3-day look-ahead already
-covers Fri/Sat/Sun, so a Friday run announced weekend birthdays a second time.
-The day guard rejects Friday as well as the weekend, so a manual trigger or a
-mocked Friday date cannot produce a send either.
+**SFP runs a Mon–Thu work week.** Friday is a non-workday, which is why there is
+deliberately no Friday run and why "over the upcoming weekend" correctly covers
+Friday birthdays — for the mill, the weekend starts Friday. Thursday's 3-day
+look-ahead already covers Fri/Sat/Sun, so a Friday run would also announce the
+same people twice. The day guard rejects Friday as well as Sat/Sun, so a manual
+trigger or a mocked Friday date cannot produce a send either.
 
 All date math is done in `America/Boise`, never the server's UTC clock.
 
-**Who gets a message:** every `Active` employee with a usable `text_bolt`
-address, minus the birthday people themselves. `STOP`, `#ERROR!`, blank, and
-non-address values are skipped.
+**Who gets a message:** every `Active` employee who has a usable `text_bolt`
+address and has not opted out, minus the birthday people themselves. Blank,
+`#ERROR!`, and other non-address values are skipped.
 
 **Being named vs. receiving are separate things.** An address is required to
 *receive* the message, never to be *named* in it. An employee with a birthday but
 no `text_bolt` — or an opted-out one — is still announced to everyone else; they
 just get nothing themselves.
 
-**Opt-out:** there is no separate opt-out column — the SMS opt-out toggle on the
-Employees tab writes the literal string `STOP` into `text_bolt`.
+**Opt-out:** `employees.sms_opted_out` (BOOLEAN). The Employees tab toggle flips
+this flag and **never touches `text_bolt`**, so opting out preserves the number
+and opting back in resumes texting with nothing to re-enter.
+
+> Historically the toggle overwrote `text_bolt` with the literal string `STOP`,
+> which permanently destroyed the address — at least one number was lost that
+> way. `SCHEMA_SMS_OPTOUT.sql` migrates those rows to the new column. Numbers
+> already overwritten cannot be recovered and must be re-entered in the
+> Employees tab; step 4 of that script lists exactly who. Both the app and the
+> notifier still treat a leftover `STOP` as opted out, so an unmigrated database
+> will not start texting people who opted out.
 
 **Birthday format:** `birthday` is TEXT and only month/day is ever read (year
 ignored). Three shapes are accepted:
