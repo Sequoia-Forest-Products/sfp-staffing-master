@@ -48,7 +48,9 @@ sfp-staffing-master/
         ├── data.js             # Supabase CRUD API
         ├── db.js               # Supabase REST helper
         ├── documents.js        # Google Drive folder management
-        └── birthday.js         # Scheduled birthday notifications
+        ├── birthday-lib.js     # Birthday notification logic (shared)
+        ├── birthday-notifications.js  # Scheduled birthday notifications
+        └── birthday-test.js    # Manual / dry-run birthday trigger
 ```
 
 ---
@@ -68,6 +70,8 @@ sfp-staffing-master/
 | `SHARED_DRIVE_ID` | `0AKnhIL1gZ8TmUk9PVA` |
 | `GMAIL_USER` | Gmail address for birthday emails |
 | `GMAIL_APP_PASSWORD` | Gmail app password |
+| `BIRTHDAY_TRIGGER_SECRET` | Shared secret for the manual birthday trigger (optional) |
+| `DRY_RUN` | Set to `true` to make the scheduled birthday run log without sending (optional) |
 
 ---
 
@@ -103,12 +107,101 @@ API rules:
 
 ## Birthday Notifications
 
-Runs daily at 7 AM Pacific via Netlify scheduled function.
-- Queries Supabase for active employees
-- Sends bilingual email to TextBolt address on birthday match
-- Skips STOP, missing, or #ERROR! TextBolt values
+Announces birthdays to the whole crew — **everyone except the birthday person**
+gets one bilingual (EN/ES) text via their TextBolt address.
+
+**Schedule:** `30 13 * * 1-5` (in `netlify.toml`) — weekdays at 13:30 UTC.
+Netlify cron is UTC and does not follow DST, so this lands at **7:30 AM Mountain
+in summer (MDT) and 6:30 AM in winter (MST)**. Shift the cron hour to `30 14`
+over the winter if the earlier send is a problem.
+
+**Look-ahead** (carried over from the old Apps Script, so nobody is missed over a
+weekend):
+
+| Run day | Covers |
+|---------|--------|
+| Mon–Wed | that day only |
+| Thursday | that day + 3 (Fri, Sat, Sun) |
+| Friday | that day + 2 (Sat, Sun) |
+| Sat/Sun | never runs — cron skips it, and the code exits anyway |
+
+All date math is done in `America/Boise`, never the server's UTC clock.
+
+**Who gets a message:** every `Active` employee with a usable `text_bolt`
+address, minus the birthday people themselves. `STOP`, `#ERROR!`, blank, and
+non-address values are skipped.
+
+**Being named vs. receiving are separate things.** An address is required to
+*receive* the message, never to be *named* in it. An employee with a birthday but
+no `text_bolt` — or an opted-out one — is still announced to everyone else; they
+just get nothing themselves.
+
+**Opt-out:** there is no separate opt-out column — the SMS opt-out toggle on the
+Employees tab writes the literal string `STOP` into `text_bolt`.
+
+**Birthday format:** `birthday` is TEXT and only month/day is ever read (year
+ignored). Three shapes are accepted:
+
+| Shape | Example |
+|-------|---------|
+| Full JS date string (what the live data holds) | `Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)` |
+| ISO / Postgres `DATE` | `1990-11-12` |
+| Hand-entered free text | `3/15`, `3/15/1990` |
+
+The first two shapes are parsed straight out of the string so no timezone can
+shift the day. JS date strings go through `Date.parse`, which reads the numeric
+offset and ignores the parenthesised label — the label is mislabelled on some
+rows (`GMT-0800 (Pacific Daylight Time)`) and that is harmless. Every value is
+midnight Pacific, i.e. 08:00 UTC the same calendar day, so reading month/day in
+UTC never rolls the date.
+
+Anything that matches none of the three logs a `WARNING:` line naming the
+employee and the offending value. A blank birthday is normal data and is skipped
+without a warning. `SCHEMA_BIRTHDAY.sql` has queries to audit both cases.
 
 TextBolt format: `+1XXXXXXXXXX@sendemailtotext.com`
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `netlify/functions/birthday-lib.js` | All logic — dates, roster, message, sending |
+| `netlify/functions/birthday-notifications.js` | The scheduled function |
+| `netlify/functions/birthday-test.js` | Manual / dry-run trigger |
+| `tests/birthday.test.js` | Unit tests (`npm test`) |
+
+### Testing
+
+Netlify **does not expose scheduled functions over HTTP**, which is why the
+manual trigger is a separate function.
+
+```bash
+# Unit tests — no network, no credentials needed
+npm test
+
+# Dry run for today: composes the message, logs it, sends nothing
+curl https://seq-staffing.netlify.app/api/birthday-test \
+  -H "x-birthday-secret: $BIRTHDAY_TRIGGER_SECRET"
+
+# Dry run pretending it is a given date (weekday logic included)
+curl "https://seq-staffing.netlify.app/api/birthday-test?date=2026-03-13" \
+  -H "x-birthday-secret: $BIRTHDAY_TRIGGER_SECRET"
+
+# Actually send
+curl "https://seq-staffing.netlify.app/api/birthday-test?send=true" \
+  -H "x-birthday-secret: $BIRTHDAY_TRIGGER_SECRET"
+```
+
+A bare call is **always a dry run** — sending requires `?send=true`. The response
+includes the composed subject, body, and full recipient list.
+
+Instead of the header you can just open `/api/birthday-test` in a browser while
+logged into the app; a valid `sfp_session` cookie is accepted too.
+
+The real scheduled function can also be fired from the Netlify UI → Functions →
+`birthday-notifications` → **Run now**, or with
+`netlify functions:invoke birthday-notifications`. Set `DRY_RUN=true` in the
+Netlify env vars to make even the scheduled run compose-and-log only.
 
 ---
 
