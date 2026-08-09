@@ -242,7 +242,7 @@ async function loadData(){
       status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
       empNum:r.employee_number||''
     }));
 
@@ -447,7 +447,7 @@ function renderEmployees(){
             const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
             return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
           }).join('')}
-          <th style="width:60px">SMS</th><th style="width:60px"></th>
+          <th style="width:96px">SMS</th><th style="width:60px"></th>
         </tr></thead>
         <tbody>
           ${filtered.length?filtered.map(e=>`
@@ -459,7 +459,7 @@ function renderEmployees(){
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
               <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
               <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
-              <td style="font-size:10px;color:#c0392b;font-weight:700">${e.textBolt==='STOP'?'NO SMS':''}</td>
+              <td>${smsCell(e)}</td>
               <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
             </tr>`).join(''):
             '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
@@ -531,26 +531,59 @@ function renderEmployeeList() {
       <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
       <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
       <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
-      <td style="font-size:10px;color:#c0392b;font-weight:700">${e.textBolt==='STOP'?'NO SMS':''}</td>
+      <td>${smsCell(e)}</td>
       <td><button class="btn btn-outline btn-sm" onclick="openEdit(${idx})">Edit</button></td>
     </tr>`;
   }).join('');
 }
 
+// Opting out sets a flag and never touches the address, so opting back in
+// resumes texting with nothing to re-enter. The old version overwrote textBolt
+// with 'STOP', which destroyed the number permanently.
 function toggleSmsOptOut(checkbox) {
-  const fg = checkbox.closest('.form-group');
-  const isStop = checkbox.checked;
-  // If opting out, set STOP. If opting back in, restore original address.
-  if (isStop) {
-    state.editing.textBolt = 'STOP';
-  } else {
-    // Restore original from the employee record
-    const orig = state.employees[state.editing._idx]?.textBolt || '';
-    state.editing.textBolt = (orig && orig !== 'STOP') ? orig : '';
+  state.editing.smsOptedOut = checkbox.checked;
+  const status = document.getElementById('smsOptOutStatus');
+  if (status) {
+    status.textContent = smsStatusText(state.editing);
+    status.style.color = checkbox.checked ? '#c0392b' : 'var(--muted)';
   }
-  fg.querySelector('.sms-track').style.background = isStop ? '#c0392b' : 'var(--border)';
-  fg.querySelector('.sms-thumb').style.left = isStop ? '18px' : '2px';
-  fg.querySelector('.sms-label').textContent = isStop ? 'Opted out' : 'Receiving texts';
+}
+
+// Rows written before the sms_opted_out migration may still carry the 'STOP'
+// sentinel. Normalise it here so the rest of the app only sees the boolean.
+function normalizeSms(r) {
+  const raw = String(r.text_bolt || '').trim();
+  const isLegacyStop = raw.toUpperCase() === 'STOP';
+  return {
+    textBolt: isLegacyStop ? '' : raw,
+    smsOptedOut: r.sms_opted_out === true || isLegacyStop
+  };
+}
+
+// +15095550001@sendemailtotext.com -> (509) 555-0001
+function fmtTextBolt(addr) {
+  const m = String(addr || '').match(/\+1(\d{10})/);
+  if (!m) return '';
+  const d = m[1];
+  return '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6);
+}
+
+function smsStatusText(e) {
+  const num = fmtTextBolt(e.textBolt);
+  if (e.smsOptedOut) return num ? 'Opted out \u2014 ' + num + ' kept on file' : 'Opted out \u2014 no number on file';
+  return num ? 'Receiving texts at ' + num : 'No TextBolt number on file';
+}
+
+// Employees-table SMS cell: opted-out employees still show their stored number,
+// struck through and flagged, so the roster never looks like the number is gone.
+function smsCell(e) {
+  const num = fmtTextBolt(e.textBolt);
+  if (e.smsOptedOut) {
+    return '<div style="font-size:10px;color:#c0392b;font-weight:700">NO SMS</div>' +
+           (num ? '<div style="font-size:10px;color:var(--muted);text-decoration:line-through">' + num + '</div>' : '');
+  }
+  return num ? '<div style="font-size:10px;color:var(--muted)">' + num + '</div>'
+             : '<span style="color:var(--muted)">\u2014</span>';
 }
 
 function openEdit(idx){
@@ -559,7 +592,7 @@ function openEdit(idx){
   // Load Drive folder link after render
   setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
 }
-function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',_isNew:true};render();}
+function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',textBolt:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 function setSyncStatus(s){
@@ -592,7 +625,7 @@ async function saveEdit(){
       days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
-      email:e.email, text_bolt:e.textBolt||'',
+      email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
       drive_folder_id:e.driveFolderId||null
     };
 
@@ -654,14 +687,16 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Birthday</label><input type="text" value="${e.birthday}" oninput="state.editing.birthday=this.value"></div>
           <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value"></div>
           <div class="form-group full"><label class="form-label">Email</label><input type="text" value="${e.email}" oninput="state.editing.email=this.value"></div>
+          <div class="form-group full"><label class="form-label">TextBolt address</label><input type="text" value="${e.textBolt||''}" placeholder="+15095550123@sendemailtotext.com" oninput="state.editing.textBolt=this.value;const s=document.getElementById('smsOptOutStatus');if(s)s.textContent=smsStatusText(state.editing)"></div>
           <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
             <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
               <div>
                 <div style="font-size:12px;font-weight:700;color:var(--text)">SMS opt-out</div>
-                <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee. The number above is kept on file either way.</div>
               </div>
-              <input type="checkbox" ${e.textBolt==='STOP'?'checked':''} onchange="state.editing.textBolt=this.checked?'STOP':(state.employees[state.editing._idx]?.textBolt&&state.employees[state.editing._idx].textBolt!=='STOP'?state.employees[state.editing._idx].textBolt:'')" style="width:18px;height:18px;cursor:pointer;accent-color:#c0392b">
+              <input type="checkbox" ${e.smsOptedOut?'checked':''} onchange="toggleSmsOptOut(this)" style="width:18px;height:18px;cursor:pointer;accent-color:#c0392b">
             </label>
+            <div id="smsOptOutStatus" style="font-size:11px;margin-top:8px;color:${e.smsOptedOut?'#c0392b':'var(--muted)'}">${smsStatusText(e)}</div>
           </div>
         </div>
 
@@ -1463,7 +1498,7 @@ async function syncToSheet(){
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, text_bolt:e.textBolt||'',
+        email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){
@@ -1486,7 +1521,7 @@ async function syncToSheet(){
       status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
       empNum:r.employee_number||''
     }));
 
@@ -1519,8 +1554,8 @@ function copyTextBoltList() {
   const addresses = state.employees
     .filter(e =>
       e.status === 'Active' &&
+      !e.smsOptedOut &&
       e.textBolt &&
-      e.textBolt !== 'STOP' &&
       e.textBolt.includes('@')
     )
     .map(e => e.textBolt);
@@ -1758,7 +1793,7 @@ async function syncToSheet(){
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, text_bolt:e.textBolt||'',
+        email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){
@@ -1781,7 +1816,7 @@ async function syncToSheet(){
       status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', textBolt:r.text_bolt||'', driveFolderId:r.drive_folder_id||'',
+      email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
       empNum:r.employee_number||''
     }));
 

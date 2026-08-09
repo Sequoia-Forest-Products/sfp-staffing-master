@@ -10,8 +10,9 @@
 //   birthday   — month/day source. Stored as free text today ("3/15", "3/15/1990");
 //                parseBirthday() also accepts a Postgres DATE ("1990-03-15").
 //   text_bolt  — TextBolt email-to-SMS address, +1XXXXXXXXXX@sendemailtotext.com
-//                Doubles as the SMS opt-out flag: the Employees tab writes the
-//                literal string 'STOP' here when the toggle is switched on.
+//                NULL when none is on file. Never used as an opt-out flag.
+//   sms_opted_out — BOOLEAN. The Employees tab opt-out toggle. Set independently
+//                of text_bolt so opting out never destroys the address.
 //   status     — 'Active' | 'Inactive'
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -47,8 +48,11 @@ function buildTargetDates(base) {
   const anchor    = Date.UTC(base.year, base.month - 1, base.day);
   const dayOfWeek = new Date(anchor).getUTCDay();
 
-  // Fri/Sat/Sun never run. Thursday's 3-day window already covers the weekend,
-  // so a Friday run would announce the same people a second time.
+  // SFP runs a Mon-Thu work week, so Friday is a non-workday alongside Sat/Sun —
+  // there is nobody at the mill to read a Friday text. Thursday's 3-day window
+  // already covers Fri/Sat/Sun, so a Friday run would also announce the same
+  // people a second time. This is why "the upcoming weekend" correctly includes
+  // Friday in the message wording.
   if (dayOfWeek === 0 || dayOfWeek === 5 || dayOfWeek === 6) return null;
 
   const daysToLookAhead = dayOfWeek === 4 ? 3 : 0;
@@ -109,8 +113,10 @@ function parseBirthday(value) {
 // ROSTER SELECTION
 // ============================================================
 
-// An address is sendable unless it is missing, opted out ('STOP'), a spreadsheet
-// error value, or not an address at all.
+// An address is sendable unless it is missing, a spreadsheet error value, or not
+// an address at all. 'STOP' is rejected explicitly: it is no longer written by
+// the app, but rows predating the sms_opted_out migration may still hold it, and
+// it must never be treated as a deliverable address.
 function isSendableAddress(value) {
   const v = String(value || '').trim();
   if (!v) return false;
@@ -119,9 +125,16 @@ function isSendableAddress(value) {
   return v.includes('@');
 }
 
+// The opt-out now lives in its own column. Legacy 'STOP' rows are still honoured
+// so an unmigrated database cannot start texting people who opted out.
+function isOptedOut(emp) {
+  if (emp.sms_opted_out === true) return true;
+  return String(emp.text_bolt || '').trim().toUpperCase() === 'STOP';
+}
+
 // Birthday people need a name and a parseable birthday — nothing else.
 // An address is required to *receive* the message, never to be named in it:
-// employees with no text_bolt at all, and opted-out employees ('STOP'), are
+// employees with no text_bolt at all, and employees who opted out of SMS, are
 // both announced to everyone else and simply receive nothing themselves.
 function selectBirthdayPeople(employees, targets, log = console.log) {
   const todayPeople = [];
@@ -156,7 +169,8 @@ function selectBirthdayPeople(employees, targets, log = console.log) {
   return { todayPeople, upcomingPeople };
 }
 
-// Everyone with a live, opted-in address — minus the birthday people themselves.
+// Everyone with a live address who has not opted out — minus the birthday people
+// themselves.
 function buildRecipients(employees, birthdayPeople) {
   // Birthday people with no address on file contribute nothing to exclude.
   const excluded = new Set(
@@ -168,6 +182,8 @@ function buildRecipients(employees, birthdayPeople) {
   const recipients = [];
 
   for (const emp of employees) {
+    if (isOptedOut(emp)) continue;
+
     const textBolt = String(emp.text_bolt || '').trim();
     if (!isSendableAddress(textBolt)) continue;
 
@@ -228,7 +244,7 @@ async function fetchActiveEmployees() {
   }
 
   const url = `${SUPABASE_URL}/rest/v1/employees` +
-    `?status=eq.Active&select=name,birthday,text_bolt,status&order=name.asc`;
+    `?status=eq.Active&select=name,birthday,text_bolt,sms_opted_out,status&order=name.asc`;
 
   const res = await fetch(url, {
     headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
@@ -343,6 +359,7 @@ module.exports = {
   buildTargetDates,
   parseBirthday,
   isSendableAddress,
+  isOptedOut,
   selectBirthdayPeople,
   buildRecipients,
   composeMessage,

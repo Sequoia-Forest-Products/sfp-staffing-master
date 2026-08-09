@@ -11,6 +11,7 @@ const {
   buildTargetDates,
   parseBirthday,
   isSendableAddress,
+  isOptedOut,
   buildRecipients,
   runBirthdayNotifications
 } = require('../netlify/functions/birthday-lib');
@@ -29,7 +30,7 @@ const ROSTER = [
   { name: 'Cara Lopez',    birthday: jsDate('Sat Mar 14 1992 00:00:00 GMT-0800 (Pacific Daylight Time)'), text_bolt: tb(3), status: 'Active' },
   { name: 'Dan Whitfield', birthday: jsDate('Fri Mar 15 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(4), status: 'Active' },
   { name: 'Eve Nakamura',  birthday: jsDate('Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)'), text_bolt: tb(5), status: 'Active' },
-  { name: 'Frank Osei',    birthday: jsDate('Mon Jan 20 1975 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: 'STOP', status: 'Active' },
+  { name: 'Frank Osei',    birthday: jsDate('Mon Jan 20 1975 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(6), sms_opted_out: true, status: 'Active' },
   { name: 'Gina Alvarez',  birthday: jsDate('Sat Feb 02 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: '#ERROR!', status: 'Active' },
   { name: 'Hank Moore',    birthday: '',                                                                 text_bolt: tb(8), status: 'Active' }
 ];
@@ -261,7 +262,7 @@ test('an empty address never sneaks into the recipient list', () => {
 
 test('a birthday person who opted out is still named but receives nothing', async () => {
   const roster = [
-    { name: 'Frank Osei', birthday: '1975-03-11', text_bolt: 'STOP', status: 'Active' },
+    { name: 'Frank Osei', birthday: '1975-03-11', text_bolt: tb(6), sms_opted_out: true, status: 'Active' },
     { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
   ];
   const { result, sends } = await harness('2026-03-11T13:30:00Z', roster);
@@ -273,9 +274,39 @@ test('a birthday person who opted out is still named but receives nothing', asyn
 
 test('opted-out and error addresses never receive', () => {
   const recipients = buildRecipients(ROSTER, []);
-  assert.ok(!recipients.includes('STOP'));
+  // Frank holds a perfectly valid address, tb(6), but has opted out.
+  assert.ok(!recipients.includes(tb(6)), 'opted-out employee must not receive');
   assert.ok(!recipients.some(r => r.includes('ERROR')));
   assert.strictEqual(recipients.length, 6); // tb(1..5) plus tb(8)
+});
+
+test('opting out no longer destroys the address', () => {
+  // The whole point of sms_opted_out: the number survives the opt-out, so
+  // opting back in resumes texting with nothing to re-enter.
+  const frank = ROSTER.find(e => e.name === 'Frank Osei');
+  assert.strictEqual(frank.text_bolt, tb(6));
+  assert.ok(isOptedOut(frank));
+  assert.ok(isSendableAddress(frank.text_bolt), 'the stored address is still valid');
+
+  const optedBackIn = { ...frank, sms_opted_out: false };
+  assert.deepStrictEqual(buildRecipients([optedBackIn], []), [tb(6)]);
+});
+
+test('isOptedOut reads the boolean and still honours legacy STOP rows', () => {
+  assert.strictEqual(isOptedOut({ sms_opted_out: true, text_bolt: tb(1) }), true);
+  assert.strictEqual(isOptedOut({ sms_opted_out: false, text_bolt: tb(1) }), false);
+  assert.strictEqual(isOptedOut({ text_bolt: tb(1) }), false);
+  // Pre-migration rows must not start receiving texts again.
+  assert.strictEqual(isOptedOut({ text_bolt: 'STOP' }), true);
+  assert.strictEqual(isOptedOut({ text_bolt: ' stop ' }), true);
+});
+
+test('an unmigrated STOP row is still excluded from recipients', () => {
+  const roster = [
+    { name: 'Legacy Larry', text_bolt: 'STOP', status: 'Active' },
+    { name: 'Eve Nakamura', text_bolt: tb(5), status: 'Active' }
+  ];
+  assert.deepStrictEqual(buildRecipients(roster, []), [tb(5)]);
 });
 
 test('duplicate addresses are only messaged once', () => {
