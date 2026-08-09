@@ -88,6 +88,19 @@ function parseBirthday(value) {
   m = raw.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/);
   if (m) return validMonthDay(+m[1], +m[2]);
 
+  // Full JS date strings — what the live column actually holds, e.g.
+  // "Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)".
+  // The numeric offset carries the meaning; Date.parse ignores the
+  // parenthesised label, which is sometimes mislabelled in the data
+  // (PDT written against a -0800 offset and vice versa).
+  // Every value is midnight Pacific = 08:00 UTC the same calendar day, so
+  // reading month/day in UTC cannot roll the date forward or back.
+  const parsed = Date.parse(raw);
+  if (!isNaN(parsed)) {
+    const d = new Date(parsed);
+    return validMonthDay(d.getUTCMonth() + 1, d.getUTCDate());
+  }
+
   return null;
 }
 
@@ -105,25 +118,37 @@ function isSendableAddress(value) {
   return v.includes('@');
 }
 
-// Birthday people need a name, a parseable birthday, and a non-empty text_bolt —
-// same gate as the legacy script. 'STOP' still counts here: an opted-out employee
-// is announced to everyone else, they just receive nothing themselves.
-function selectBirthdayPeople(employees, targets) {
+// Birthday people need a name and a parseable birthday — nothing else.
+// An address is required to *receive* the message, never to be named in it:
+// employees with no text_bolt at all, and opted-out employees ('STOP'), are
+// both announced to everyone else and simply receive nothing themselves.
+function selectBirthdayPeople(employees, targets, log = console.log) {
   const todayPeople = [];
   const upcomingPeople = [];
 
   for (const emp of employees) {
-    const name     = String(emp.name || '').trim();
-    const textBolt = String(emp.text_bolt || '').trim();
-    if (!name || !textBolt) continue;
+    const name = String(emp.name || '').trim();
+    if (!name) continue;
 
-    const bday = parseBirthday(emp.birthday);
-    if (!bday) continue;
+    const rawBirthday = emp.birthday instanceof Date
+      ? emp.birthday
+      : String(emp.birthday || '').trim();
+    if (!rawBirthday) continue; // no birthday on file — not a parse failure
+
+    const bday = parseBirthday(rawBirthday);
+    if (!bday) {
+      log(`WARNING: unparseable birthday for ${name}: ${JSON.stringify(String(rawBirthday))}`);
+      continue;
+    }
 
     const match = targets.find(t => t.month === bday.month && t.date === bday.day);
     if (!match) continue;
 
-    const person = { full: name, first: name.split(' ')[0], address: textBolt };
+    const person = {
+      full: name,
+      first: name.split(' ')[0],
+      address: String(emp.text_bolt || '').trim()
+    };
     (match.isUpcoming ? upcomingPeople : todayPeople).push(person);
   }
 
@@ -132,7 +157,12 @@ function selectBirthdayPeople(employees, targets) {
 
 // Everyone with a live, opted-in address — minus the birthday people themselves.
 function buildRecipients(employees, birthdayPeople) {
-  const excluded = new Set(birthdayPeople.map(p => p.address.trim().toLowerCase()));
+  // Birthday people with no address on file contribute nothing to exclude.
+  const excluded = new Set(
+    birthdayPeople
+      .map(p => String(p.address || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
   const seen = new Set();
   const recipients = [];
 
@@ -254,7 +284,7 @@ async function runBirthdayNotifications({
   }
 
   const roster = employees || await fetchActiveEmployees();
-  const { todayPeople, upcomingPeople } = selectBirthdayPeople(roster, window.targets);
+  const { todayPeople, upcomingPeople } = selectBirthdayPeople(roster, window.targets, log);
 
   if (todayPeople.length === 0 && upcomingPeople.length === 0) {
     log(`No birthdays for ${stamp} (looking ahead ${window.daysToLookAhead} day(s)).`);

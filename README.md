@@ -131,15 +131,33 @@ All date math is done in `America/Boise`, never the server's UTC clock.
 address, minus the birthday people themselves. `STOP`, `#ERROR!`, blank, and
 non-address values are skipped.
 
-**Opt-out:** there is no separate opt-out column — the SMS opt-out toggle on the
-Employees tab writes the literal string `STOP` into `text_bolt`. An opted-out
-employee receives nothing, but is still **named** in the message when it is their
-birthday.
+**Being named vs. receiving are separate things.** An address is required to
+*receive* the message, never to be *named* in it. An employee with a birthday but
+no `text_bolt` — or an opted-out one — is still announced to everyone else; they
+just get nothing themselves.
 
-**Birthday format:** `birthday` is read as month/day only (year ignored). Both
-`YYYY-MM-DD` and free text like `3/15` or `3/15/1990` are accepted, parsed from
-the string directly so no timezone can shift the day. See `SCHEMA_BIRTHDAY.sql`
-to audit for unparseable values.
+**Opt-out:** there is no separate opt-out column — the SMS opt-out toggle on the
+Employees tab writes the literal string `STOP` into `text_bolt`.
+
+**Birthday format:** `birthday` is TEXT and only month/day is ever read (year
+ignored). Three shapes are accepted:
+
+| Shape | Example |
+|-------|---------|
+| Full JS date string (what the live data holds) | `Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)` |
+| ISO / Postgres `DATE` | `1990-11-12` |
+| Hand-entered free text | `3/15`, `3/15/1990` |
+
+The first two shapes are parsed straight out of the string so no timezone can
+shift the day. JS date strings go through `Date.parse`, which reads the numeric
+offset and ignores the parenthesised label — the label is mislabelled on some
+rows (`GMT-0800 (Pacific Daylight Time)`) and that is harmless. Every value is
+midnight Pacific, i.e. 08:00 UTC the same calendar day, so reading month/day in
+UTC never rolls the date.
+
+Anything that matches none of the three logs a `WARNING:` line naming the
+employee and the offending value. A blank birthday is normal data and is skipped
+without a warning. `SCHEMA_BIRTHDAY.sql` has queries to audit both cases.
 
 TextBolt format: `+1XXXXXXXXXX@sendemailtotext.com`
 

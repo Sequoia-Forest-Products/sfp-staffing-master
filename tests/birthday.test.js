@@ -17,16 +17,21 @@ const {
 
 const tb = n => `+1509555${String(n).padStart(4, '0')}@sendemailtotext.com`;
 
+// The live birthday column stores full JS date strings — midnight Pacific with
+// the numeric offset embedded. Note the label is decorative and occasionally
+// wrong in the real data (see Cara: PDT written against a -0800 offset).
+const jsDate = (str) => str;
+
 // Mar 11 2026 = Wed, Mar 12 = Thu, Mar 13 = Fri, Mar 14 = Sat, Mar 15 = Sun.
 const ROSTER = [
-  { name: 'Ana Reyes',      birthday: '1990-03-11', text_bolt: tb(1), status: 'Active' },
-  { name: 'Ben Carter',     birthday: '3/11/1985',  text_bolt: tb(2), status: 'Active' },
-  { name: 'Cara Lopez',     birthday: '1992-03-14', text_bolt: tb(3), status: 'Active' },
-  { name: 'Dan Whitfield',  birthday: '3/15',       text_bolt: tb(4), status: 'Active' },
-  { name: 'Eve Nakamura',   birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' },
-  { name: 'Frank Osei',     birthday: '1975-01-20', text_bolt: 'STOP', status: 'Active' },
-  { name: 'Gina Alvarez',   birthday: '1991-02-02', text_bolt: '#ERROR!', status: 'Active' },
-  { name: 'Hank Moore',     birthday: '',           text_bolt: tb(8), status: 'Active' }
+  { name: 'Ana Reyes',     birthday: jsDate('Sun Mar 11 1990 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(1), status: 'Active' },
+  { name: 'Ben Carter',    birthday: jsDate('Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(2), status: 'Active' },
+  { name: 'Cara Lopez',    birthday: jsDate('Sat Mar 14 1992 00:00:00 GMT-0800 (Pacific Daylight Time)'), text_bolt: tb(3), status: 'Active' },
+  { name: 'Dan Whitfield', birthday: jsDate('Fri Mar 15 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(4), status: 'Active' },
+  { name: 'Eve Nakamura',  birthday: jsDate('Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)'), text_bolt: tb(5), status: 'Active' },
+  { name: 'Frank Osei',    birthday: jsDate('Mon Jan 20 1975 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: 'STOP', status: 'Active' },
+  { name: 'Gina Alvarez',  birthday: jsDate('Sat Feb 02 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: '#ERROR!', status: 'Active' },
+  { name: 'Hank Moore',    birthday: '',                                                                 text_bolt: tb(8), status: 'Active' }
 ];
 
 // Collect log output instead of printing it, and never allow a real send.
@@ -50,6 +55,42 @@ test('a Postgres DATE string matches its literal month/day with no UTC shift', (
   assert.deepStrictEqual(parseBirthday('1990-08-09'), { month: 8, day: 9 });
   assert.deepStrictEqual(parseBirthday('2001-01-01'), { month: 1, day: 1 });
   assert.deepStrictEqual(parseBirthday('1999-12-31'), { month: 12, day: 31 });
+});
+
+test('full JS date strings — the live column format — parse as month/day', () => {
+  assert.deepStrictEqual(
+    parseBirthday('Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)'),
+    { month: 11, day: 12 }
+  );
+  assert.deepStrictEqual(
+    parseBirthday('Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)'),
+    { month: 7, day: 4 }
+  );
+});
+
+test('a mismatched timezone label does not shift the day', () => {
+  // The data contains "(Pacific Daylight Time)" against a -0800 offset. Date.parse
+  // reads the numeric offset and ignores the label, so the day must hold.
+  assert.deepStrictEqual(
+    parseBirthday('Sun Aug 09 1992 00:00:00 GMT-0800 (Pacific Daylight Time)'),
+    { month: 8, day: 9 }
+  );
+  assert.deepStrictEqual(
+    parseBirthday('Wed Jun 15 1994 00:00:00 GMT-0700 (Pacific Standard Time)'),
+    { month: 6, day: 15 }
+  );
+});
+
+test('year-boundary JS date strings do not roll into an adjacent day', () => {
+  // Midnight PT is 08:00 UTC the same day, so Jan 1 and Dec 31 must stay put.
+  assert.deepStrictEqual(
+    parseBirthday('Mon Jan 01 1990 00:00:00 GMT-0800 (Pacific Standard Time)'),
+    { month: 1, day: 1 }
+  );
+  assert.deepStrictEqual(
+    parseBirthday('Thu Dec 31 1987 00:00:00 GMT-0800 (Pacific Standard Time)'),
+    { month: 12, day: 31 }
+  );
 });
 
 test('free-text birthdays from the Employees tab parse as month/day', () => {
@@ -182,6 +223,27 @@ test('today and upcoming birthdays combine into one message', async () => {
   assert.strictEqual(sends[0].to, tb(5));
 });
 
+test('a birthday person with no address is still named but receives nothing', async () => {
+  const roster = [
+    { name: 'Tony Griffith', birthday: 'Wed Mar 11 1970 00:00:00 GMT-0800 (Pacific Standard Time)', text_bolt: '', status: 'Active' },
+    { name: 'Eve Nakamura',  birthday: 'Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)', text_bolt: tb(5), status: 'Active' }
+  ];
+  const { result, sends } = await harness('2026-03-11T13:30:00Z', roster);
+
+  assert.deepStrictEqual(result.people, ['Tony']);
+  assert.ok(sends[0].body.includes("It is Tony Griffith's Birthday today!"));
+  assert.deepStrictEqual(sends.map(s => s.to), [tb(5)]);
+});
+
+test('an empty address never sneaks into the recipient list', () => {
+  const roster = [
+    { name: 'Tony Griffith', text_bolt: '', status: 'Active' },
+    { name: 'Eve Nakamura',  text_bolt: tb(5), status: 'Active' }
+  ];
+  const birthdayPeople = [{ full: 'Tony Griffith', first: 'Tony', address: '' }];
+  assert.deepStrictEqual(buildRecipients(roster, birthdayPeople), [tb(5)]);
+});
+
 test('a birthday person who opted out is still named but receives nothing', async () => {
   const roster = [
     { name: 'Frank Osei', birthday: '1975-03-11', text_bolt: 'STOP', status: 'Active' },
@@ -214,6 +276,25 @@ test('isSendableAddress rejects everything that is not a live address', () => {
   for (const v of ['', null, 'STOP', 'stop', '#ERROR!', 'no-at-sign']) {
     assert.strictEqual(isSendableAddress(v), false, `expected false for ${JSON.stringify(v)}`);
   }
+});
+
+test('an unparseable birthday is warned about, not silently dropped', async () => {
+  const roster = [
+    { name: 'Ana Reyes',   birthday: 'sometime in March', text_bolt: tb(1), status: 'Active' },
+    { name: 'Ben Carter',  birthday: 'Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)', text_bolt: tb(2), status: 'Active' },
+    { name: 'Hank Moore',  birthday: '', text_bolt: tb(8), status: 'Active' }
+  ];
+  const { result, logs } = await harness('2026-03-11T13:30:00Z', roster);
+
+  assert.deepStrictEqual(result.people, ['Ben']);
+
+  const warnings = logs.filter(l => l.startsWith('WARNING:'));
+  assert.strictEqual(warnings.length, 1, 'exactly one warning expected');
+  assert.ok(warnings[0].includes('Ana Reyes'));
+  assert.ok(warnings[0].includes('sometime in March'));
+
+  // A blank birthday is normal data, not a parse failure — it must not warn.
+  assert.ok(!warnings.some(l => l.includes('Hank Moore')));
 });
 
 test('weekend invocations exit without sending', async () => {
