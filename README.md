@@ -110,7 +110,7 @@ API rules:
 Announces birthdays to the whole crew — **everyone except the birthday person**
 gets one bilingual (EN/ES) text via their TextBolt address.
 
-**Schedule:** `30 13 * * 1-5` (in `netlify.toml`) — weekdays at 13:30 UTC.
+**Schedule:** `30 13 * * 1-4` (in `netlify.toml`) — Mon–Thu at 13:30 UTC.
 Netlify cron is UTC and does not follow DST, so this lands at **7:30 AM Mountain
 in summer (MDT) and 6:30 AM in winter (MST)**. Shift the cron hour to `30 14`
 over the winter if the earlier send is a problem.
@@ -122,8 +122,12 @@ weekend):
 |---------|--------|
 | Mon–Wed | that day only |
 | Thursday | that day + 3 (Fri, Sat, Sun) |
-| Friday | that day + 2 (Sat, Sun) |
-| Sat/Sun | never runs — cron skips it, and the code exits anyway |
+| Fri/Sat/Sun | never runs — cron skips it, and the code exits anyway |
+
+**There is deliberately no Friday run.** Thursday's 3-day look-ahead already
+covers Fri/Sat/Sun, so a Friday run announced weekend birthdays a second time.
+The day guard rejects Friday as well as the weekend, so a manual trigger or a
+mocked Friday date cannot produce a send either.
 
 All date math is done in `America/Boise`, never the server's UTC clock.
 

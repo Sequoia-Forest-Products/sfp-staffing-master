@@ -123,9 +123,10 @@ test('Mon-Wed looks at today only', () => {
   assert.deepStrictEqual(w.targets, [{ month: 3, date: 11, isUpcoming: false }]);
 });
 
-test('Thursday looks ahead 3 days and Friday 2 days', () => {
-  assert.strictEqual(buildTargetDates({ year: 2026, month: 3, day: 12 }).daysToLookAhead, 3);
-  assert.strictEqual(buildTargetDates({ year: 2026, month: 3, day: 13 }).daysToLookAhead, 2);
+test('Thursday looks ahead 3 days, covering Fri/Sat/Sun', () => {
+  const w = buildTargetDates({ year: 2026, month: 3, day: 12 });
+  assert.strictEqual(w.daysToLookAhead, 3);
+  assert.deepStrictEqual(w.targets.map(t => `${t.month}/${t.date}`), ['3/12', '3/13', '3/14', '3/15']);
 });
 
 test('the look-ahead rolls across a month boundary', () => {
@@ -134,7 +135,9 @@ test('the look-ahead rolls across a month boundary', () => {
   assert.deepStrictEqual(w.targets.map(t => `${t.month}/${t.date}`), ['4/30', '5/1', '5/2', '5/3']);
 });
 
-test('weekends produce no window', () => {
+test('Friday and the weekend produce no window', () => {
+  // Friday is deliberately excluded — Thursday already covered these people.
+  assert.strictEqual(buildTargetDates({ year: 2026, month: 3, day: 13 }), null); // Fri
   assert.strictEqual(buildTargetDates({ year: 2026, month: 3, day: 14 }), null); // Sat
   assert.strictEqual(buildTargetDates({ year: 2026, month: 3, day: 15 }), null); // Sun
 });
@@ -187,39 +190,51 @@ test('Thursday picks up a Saturday birthday as upcoming', async () => {
   assert.deepStrictEqual(result.people, ['Cara']);
   const { subject, body } = sends[0];
   assert.strictEqual(subject, 'Happy Birthday / ¡Feliz Cumpleaños! - Cara');
-  assert.ok(body.includes('We also have Cara Lopez celebrating over the upcoming weekend!'));
-  assert.ok(body.includes('¡También tenemos a Cara Lopez celebrando durante el próximo fin de semana!'));
+  // One upcoming person — singular "a birthday" / "un cumpleaños".
+  assert.ok(body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
+  assert.ok(body.includes('¡También tenemos a Cara Lopez celebrando un cumpleaños durante el próximo fin de semana!'));
   assert.ok(!body.includes('Birthday today'), 'nobody has a birthday on the Thursday itself');
   assert.ok(!sends.some(s => s.to === tb(3)), 'Cara must not receive her own message');
 });
 
-test("Thursday's window also reaches Sunday", async () => {
-  const { result } = await harness('2026-03-12T13:30:00Z');
+test('multiple upcoming people use the plural birthday wording', async () => {
+  const { result, sends } = await harness('2026-03-12T13:30:00Z');
+
   assert.deepStrictEqual(result.people, ['Cara', 'Dan']); // Sat Mar 14 + Sun Mar 15
-});
-
-test('Friday covers both Saturday and Sunday birthdays', async () => {
-  const { result, sends } = await harness('2026-03-13T13:30:00Z');
-
-  assert.deepStrictEqual(result.people, ['Cara', 'Dan']);
-  assert.ok(sends[0].body.includes(
-    'We also have Cara Lopez & Dan Whitfield celebrating over the upcoming weekend!'
+  const { body } = sends[0];
+  assert.ok(body.includes(
+    'We also have Cara Lopez & Dan Whitfield celebrating birthdays over the upcoming weekend!'
+  ));
+  assert.ok(body.includes(
+    '¡También tenemos a Cara Lopez & Dan Whitfield celebrando cumpleaños durante el próximo fin de semana!'
   ));
   const to = sends.map(s => s.to);
   assert.ok(!to.includes(tb(3)) && !to.includes(tb(4)));
 });
 
+test('a Friday birthday is announced by the Thursday run', async () => {
+  const roster = [
+    { name: 'Cara Lopez', birthday: '1992-03-13', text_bolt: tb(3), status: 'Active' },
+    { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
+  ];
+  const { result, sends } = await harness('2026-03-12T13:30:00Z', roster);
+
+  assert.deepStrictEqual(result.people, ['Cara']);
+  assert.ok(sends[0].body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
+  assert.strictEqual(sends[0].to, tb(5));
+});
+
 test('today and upcoming birthdays combine into one message', async () => {
   const roster = [
-    { name: 'Ana Reyes', birthday: '1990-03-13', text_bolt: tb(1), status: 'Active' },
+    { name: 'Ana Reyes', birthday: '1990-03-12', text_bolt: tb(1), status: 'Active' },
     { name: 'Cara Lopez', birthday: '1992-03-14', text_bolt: tb(3), status: 'Active' },
     { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
   ];
-  const { sends } = await harness('2026-03-13T13:30:00Z', roster);
+  const { sends } = await harness('2026-03-12T13:30:00Z', roster);
 
   assert.strictEqual(sends.length, 1);
   assert.ok(sends[0].body.includes("It is Ana Reyes's Birthday today!"));
-  assert.ok(sends[0].body.includes('We also have Cara Lopez celebrating over the upcoming weekend!'));
+  assert.ok(sends[0].body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
   assert.strictEqual(sends[0].to, tb(5));
 });
 
@@ -297,10 +312,12 @@ test('an unparseable birthday is warned about, not silently dropped', async () =
   assert.ok(!warnings.some(l => l.includes('Hank Moore')));
 });
 
-test('weekend invocations exit without sending', async () => {
-  for (const iso of ['2026-03-14T13:30:00Z', '2026-03-15T13:30:00Z']) {
+test('Friday and weekend invocations exit without sending', async () => {
+  // Includes Friday: a manual trigger or mocked Friday date must not re-announce
+  // the people Thursday already covered.
+  for (const iso of ['2026-03-13T13:30:00Z', '2026-03-14T13:30:00Z', '2026-03-15T13:30:00Z']) {
     const { result, sends } = await harness(iso);
-    assert.strictEqual(result.status, 'weekend');
+    assert.strictEqual(result.status, 'no-run-day', `expected no send for ${iso}`);
     assert.strictEqual(sends.length, 0);
   }
 });
