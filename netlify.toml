@@ -5,9 +5,10 @@
 [functions]
   node_bundler = "esbuild"
 
-# Birthday notifications — runs daily at 7 AM Pacific (15:00 UTC)
-[functions.birthday]
-  schedule = "0 15 * * *"
+# Birthday notifications — weekdays only.
+# Netlify cron is UTC: 13:30 UTC = 7:30 AM Mountain (MDT) / 6:30 AM (MST in winter).
+[functions."birthday-notifications"]
+  schedule = "30 13 * * 1-5"
 
 [[redirects]]
   from = "/auth/callback"
