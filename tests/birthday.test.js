@@ -10,12 +10,15 @@ const {
   calendarDateInZone,
   buildTargetDates,
   parseBirthday,
-  isSendableAddress,
+  normalizePhone,
+  textBoltAddress,
   isOptedOut,
   buildRecipients,
   runBirthdayNotifications
 } = require('../netlify/functions/birthday-lib');
 
+// ph(n) is what sits in the phone column; tb(n) is the address derived from it.
+const ph = n => `(509) 555-${String(n).padStart(4, '0')}`;
 const tb = n => `+1509555${String(n).padStart(4, '0')}@sendemailtotext.com`;
 
 // The live birthday column stores full JS date strings — midnight Pacific with
@@ -25,14 +28,14 @@ const jsDate = (str) => str;
 
 // Mar 11 2026 = Wed, Mar 12 = Thu, Mar 13 = Fri, Mar 14 = Sat, Mar 15 = Sun.
 const ROSTER = [
-  { name: 'Ana Reyes',     birthday: jsDate('Sun Mar 11 1990 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(1), status: 'Active' },
-  { name: 'Ben Carter',    birthday: jsDate('Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(2), status: 'Active' },
-  { name: 'Cara Lopez',    birthday: jsDate('Sat Mar 14 1992 00:00:00 GMT-0800 (Pacific Daylight Time)'), text_bolt: tb(3), status: 'Active' },
-  { name: 'Dan Whitfield', birthday: jsDate('Fri Mar 15 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(4), status: 'Active' },
-  { name: 'Eve Nakamura',  birthday: jsDate('Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)'), text_bolt: tb(5), status: 'Active' },
-  { name: 'Frank Osei',    birthday: jsDate('Mon Jan 20 1975 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: tb(6), sms_opted_out: true, status: 'Active' },
-  { name: 'Gina Alvarez',  birthday: jsDate('Sat Feb 02 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), text_bolt: '#ERROR!', status: 'Active' },
-  { name: 'Hank Moore',    birthday: '',                                                                 text_bolt: tb(8), status: 'Active' }
+  { name: 'Ana Reyes',     birthday: jsDate('Sun Mar 11 1990 00:00:00 GMT-0800 (Pacific Standard Time)'), phone: ph(1), status: 'Active' },
+  { name: 'Ben Carter',    birthday: jsDate('Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)'), phone: ph(2), status: 'Active' },
+  { name: 'Cara Lopez',    birthday: jsDate('Sat Mar 14 1992 00:00:00 GMT-0800 (Pacific Daylight Time)'), phone: ph(3), status: 'Active' },
+  { name: 'Dan Whitfield', birthday: jsDate('Fri Mar 15 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), phone: ph(4), status: 'Active' },
+  { name: 'Eve Nakamura',  birthday: jsDate('Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)'), phone: ph(5), status: 'Active' },
+  { name: 'Frank Osei',    birthday: jsDate('Mon Jan 20 1975 00:00:00 GMT-0800 (Pacific Standard Time)'), phone: ph(6), sms_opted_out: true, status: 'Active' },
+  { name: 'Gina Alvarez',  birthday: jsDate('Sat Feb 02 1991 00:00:00 GMT-0800 (Pacific Standard Time)'), phone: 'ext. 4412', status: 'Active' },
+  { name: 'Hank Moore',    birthday: '',                                                                 phone: ph(8), status: 'Active' }
 ];
 
 // Collect log output instead of printing it, and never allow a real send.
@@ -215,8 +218,8 @@ test('multiple upcoming people use the plural birthday wording', async () => {
 
 test('a Friday birthday is announced by the Thursday run', async () => {
   const roster = [
-    { name: 'Cara Lopez', birthday: '1992-03-13', text_bolt: tb(3), status: 'Active' },
-    { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
+    { name: 'Cara Lopez', birthday: '1992-03-13', phone: ph(3), status: 'Active' },
+    { name: 'Eve Nakamura', birthday: '1988-07-04', phone: ph(5), status: 'Active' }
   ];
   const { result, sends } = await harness('2026-03-12T13:30:00Z', roster);
 
@@ -227,9 +230,9 @@ test('a Friday birthday is announced by the Thursday run', async () => {
 
 test('today and upcoming birthdays combine into one message', async () => {
   const roster = [
-    { name: 'Ana Reyes', birthday: '1990-03-12', text_bolt: tb(1), status: 'Active' },
-    { name: 'Cara Lopez', birthday: '1992-03-14', text_bolt: tb(3), status: 'Active' },
-    { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
+    { name: 'Ana Reyes', birthday: '1990-03-12', phone: ph(1), status: 'Active' },
+    { name: 'Cara Lopez', birthday: '1992-03-14', phone: ph(3), status: 'Active' },
+    { name: 'Eve Nakamura', birthday: '1988-07-04', phone: ph(5), status: 'Active' }
   ];
   const { sends } = await harness('2026-03-12T13:30:00Z', roster);
 
@@ -241,8 +244,8 @@ test('today and upcoming birthdays combine into one message', async () => {
 
 test('a birthday person with no address is still named but receives nothing', async () => {
   const roster = [
-    { name: 'Tony Griffith', birthday: 'Wed Mar 11 1970 00:00:00 GMT-0800 (Pacific Standard Time)', text_bolt: '', status: 'Active' },
-    { name: 'Eve Nakamura',  birthday: 'Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)', text_bolt: tb(5), status: 'Active' }
+    { name: 'Tony Griffith', birthday: 'Wed Mar 11 1970 00:00:00 GMT-0800 (Pacific Standard Time)', phone: '', status: 'Active' },
+    { name: 'Eve Nakamura',  birthday: 'Mon Jul 04 1988 00:00:00 GMT-0700 (Pacific Daylight Time)', phone: ph(5), status: 'Active' }
   ];
   const { result, sends } = await harness('2026-03-11T13:30:00Z', roster);
 
@@ -253,8 +256,8 @@ test('a birthday person with no address is still named but receives nothing', as
 
 test('an empty address never sneaks into the recipient list', () => {
   const roster = [
-    { name: 'Tony Griffith', text_bolt: '', status: 'Active' },
-    { name: 'Eve Nakamura',  text_bolt: tb(5), status: 'Active' }
+    { name: 'Tony Griffith', phone: '', status: 'Active' },
+    { name: 'Eve Nakamura',  phone: ph(5), status: 'Active' }
   ];
   const birthdayPeople = [{ full: 'Tony Griffith', first: 'Tony', address: '' }];
   assert.deepStrictEqual(buildRecipients(roster, birthdayPeople), [tb(5)]);
@@ -262,8 +265,8 @@ test('an empty address never sneaks into the recipient list', () => {
 
 test('a birthday person who opted out is still named but receives nothing', async () => {
   const roster = [
-    { name: 'Frank Osei', birthday: '1975-03-11', text_bolt: tb(6), sms_opted_out: true, status: 'Active' },
-    { name: 'Eve Nakamura', birthday: '1988-07-04', text_bolt: tb(5), status: 'Active' }
+    { name: 'Frank Osei', birthday: '1975-03-11', phone: ph(6), sms_opted_out: true, status: 'Active' },
+    { name: 'Eve Nakamura', birthday: '1988-07-04', phone: ph(5), status: 'Active' }
   ];
   const { result, sends } = await harness('2026-03-11T13:30:00Z', roster);
 
@@ -272,30 +275,30 @@ test('a birthday person who opted out is still named but receives nothing', asyn
   assert.deepStrictEqual(sends.map(s => s.to), [tb(5)]);
 });
 
-test('opted-out and error addresses never receive', () => {
-  const recipients = buildRecipients(ROSTER, []);
-  // Frank holds a perfectly valid address, tb(6), but has opted out.
+test('opted-out and unusable-phone employees never receive', () => {
+  const recipients = buildRecipients(ROSTER, [], () => {});
+  // Frank has a perfectly good phone, ph(6), but has opted out.
   assert.ok(!recipients.includes(tb(6)), 'opted-out employee must not receive');
-  assert.ok(!recipients.some(r => r.includes('ERROR')));
-  assert.strictEqual(recipients.length, 6); // tb(1..5) plus tb(8)
+  // Gina's phone ("ext. 4412") does not normalise.
+  assert.strictEqual(recipients.length, 6); // ph(1..5) plus ph(8)
 });
 
-test('opting out no longer destroys the address', () => {
-  // The whole point of sms_opted_out: the number survives the opt-out, so
-  // opting back in resumes texting with nothing to re-enter.
+test('opting out leaves the phone number untouched and reversible', () => {
+  // The point of sms_opted_out: nothing about the number changes, so opting
+  // back in resumes texting with nothing to re-enter.
   const frank = ROSTER.find(e => e.name === 'Frank Osei');
-  assert.strictEqual(frank.text_bolt, tb(6));
+  assert.strictEqual(frank.phone, ph(6));
   assert.ok(isOptedOut(frank));
-  assert.ok(isSendableAddress(frank.text_bolt), 'the stored address is still valid');
+  assert.strictEqual(textBoltAddress(frank.phone), tb(6));
 
   const optedBackIn = { ...frank, sms_opted_out: false };
   assert.deepStrictEqual(buildRecipients([optedBackIn], []), [tb(6)]);
 });
 
 test('isOptedOut reads the boolean and still honours legacy STOP rows', () => {
-  assert.strictEqual(isOptedOut({ sms_opted_out: true, text_bolt: tb(1) }), true);
-  assert.strictEqual(isOptedOut({ sms_opted_out: false, text_bolt: tb(1) }), false);
-  assert.strictEqual(isOptedOut({ text_bolt: tb(1) }), false);
+  assert.strictEqual(isOptedOut({ sms_opted_out: true, phone: ph(1) }), true);
+  assert.strictEqual(isOptedOut({ sms_opted_out: false, phone: ph(1) }), false);
+  assert.strictEqual(isOptedOut({ phone: ph(1) }), false);
   // Pre-migration rows must not start receiving texts again.
   assert.strictEqual(isOptedOut({ text_bolt: 'STOP' }), true);
   assert.strictEqual(isOptedOut({ text_bolt: ' stop ' }), true);
@@ -304,31 +307,80 @@ test('isOptedOut reads the boolean and still honours legacy STOP rows', () => {
 test('an unmigrated STOP row is still excluded from recipients', () => {
   const roster = [
     { name: 'Legacy Larry', text_bolt: 'STOP', status: 'Active' },
-    { name: 'Eve Nakamura', text_bolt: tb(5), status: 'Active' }
+    { name: 'Eve Nakamura', phone: ph(5), status: 'Active' }
   ];
   assert.deepStrictEqual(buildRecipients(roster, []), [tb(5)]);
 });
 
 test('duplicate addresses are only messaged once', () => {
   const roster = [
-    { name: 'A One', text_bolt: tb(1), status: 'Active' },
-    { name: 'B Two', text_bolt: tb(1).toUpperCase(), status: 'Active' }
+    { name: 'A One', phone: ph(1), status: 'Active' },
+    { name: 'B Two', phone: '509-555-0001', status: 'Active' }
   ];
   assert.strictEqual(buildRecipients(roster, []).length, 1);
 });
 
-test('isSendableAddress rejects everything that is not a live address', () => {
-  assert.ok(isSendableAddress(tb(1)));
-  for (const v of ['', null, 'STOP', 'stop', '#ERROR!', 'no-at-sign']) {
-    assert.strictEqual(isSendableAddress(v), false, `expected false for ${JSON.stringify(v)}`);
+test('normalizePhone strips whatever format the free-text column holds', () => {
+  for (const v of ['(509) 555-0123', '509-555-0123', '509.555.0123', '5095550123',
+                   ' 509 555 0123 ', '+1 (509) 555-0123', '1-509-555-0123']) {
+    assert.strictEqual(normalizePhone(v), '5095550123', `failed for ${JSON.stringify(v)}`);
   }
+});
+
+test('normalizePhone rejects anything that is not 10 digits', () => {
+  for (const v of ['', null, undefined, '555-0123', '12345', 'ext. 4412',
+                   'n/a', '509-555-01234', '2-509-555-0123']) {
+    assert.strictEqual(normalizePhone(v), null, `expected null for ${JSON.stringify(v)}`);
+  }
+});
+
+test('textBoltAddress derives the address from the phone number', () => {
+  assert.strictEqual(textBoltAddress('(509) 555-0123'), '+15095550123@sendemailtotext.com');
+  assert.strictEqual(textBoltAddress('1-509-555-0123'), '+15095550123@sendemailtotext.com');
+  assert.strictEqual(textBoltAddress('ext. 4412'), null);
+  assert.strictEqual(textBoltAddress(''), null);
+});
+
+test('an unusable phone number is warned about and skipped', async () => {
+  const roster = [
+    { name: 'Ana Reyes',    birthday: '1990-03-11', phone: ph(1), status: 'Active' },
+    { name: 'Gina Alvarez', birthday: '1991-02-02', phone: 'ext. 4412', status: 'Active' },
+    { name: 'Hank Moore',   birthday: '', phone: '', status: 'Active' }
+  ];
+  const { sends, logs } = await harness('2026-03-11T13:30:00Z', roster);
+
+  // Ana is the birthday person; Gina is unreachable; Hank has no phone at all.
+  assert.strictEqual(sends.length, 0);
+
+  const warnings = logs.filter(l => l.startsWith('WARNING:') && l.includes('phone'));
+  assert.strictEqual(warnings.length, 1, 'exactly one phone warning expected');
+  assert.ok(warnings[0].includes('Gina Alvarez'));
+  assert.ok(warnings[0].includes('ext. 4412'));
+
+  // A blank phone is ordinary data, not an error — it must not warn.
+  assert.ok(!warnings.some(l => l.includes('Hank Moore')));
+});
+
+test('the Nolan case: opted out, valid phone, named but not texted', async () => {
+  const roster = [
+    { name: "Nolan O'Kelly", birthday: '1980-03-11', phone: ph(7), sms_opted_out: true, status: 'Active' },
+    { name: 'Eve Nakamura',  birthday: '1988-07-04', phone: ph(5), status: 'Active' }
+  ];
+  const { result, sends } = await harness('2026-03-11T13:30:00Z', roster);
+
+  // Named on his birthday...
+  assert.deepStrictEqual(result.people, ['Nolan']);
+  assert.ok(sends[0].body.includes("It is Nolan O'Kelly's Birthday today!"));
+  // ...but never texted, even though his phone derives a perfectly good address.
+  assert.strictEqual(textBoltAddress(ph(7)), tb(7));
+  assert.deepStrictEqual(sends.map(s => s.to), [tb(5)]);
 });
 
 test('an unparseable birthday is warned about, not silently dropped', async () => {
   const roster = [
-    { name: 'Ana Reyes',   birthday: 'sometime in March', text_bolt: tb(1), status: 'Active' },
-    { name: 'Ben Carter',  birthday: 'Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)', text_bolt: tb(2), status: 'Active' },
-    { name: 'Hank Moore',  birthday: '', text_bolt: tb(8), status: 'Active' }
+    { name: 'Ana Reyes',   birthday: 'sometime in March', phone: ph(1), status: 'Active' },
+    { name: 'Ben Carter',  birthday: 'Mon Mar 11 1985 00:00:00 GMT-0800 (Pacific Standard Time)', phone: ph(2), status: 'Active' },
+    { name: 'Hank Moore',  birthday: '', phone: ph(8), status: 'Active' }
   ];
   const { result, logs } = await harness('2026-03-11T13:30:00Z', roster);
 

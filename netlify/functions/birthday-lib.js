@@ -9,10 +9,15 @@
 //   name       — full name
 //   birthday   — month/day source. Stored as free text today ("3/15", "3/15/1990");
 //                parseBirthday() also accepts a Postgres DATE ("1990-03-15").
-//   text_bolt  — TextBolt email-to-SMS address, +1XXXXXXXXXX@sendemailtotext.com
-//                NULL when none is on file. Never used as an opt-out flag.
-//   sms_opted_out — BOOLEAN. The Employees tab opt-out toggle. Set independently
-//                of text_bolt so opting out never destroys the address.
+//   phone      — the single source of truth for SMS. Free text in any format;
+//                normalizePhone() strips it to 10 digits and textBoltAddress()
+//                builds +1XXXXXXXXXX@sendemailtotext.com from that at send time.
+//   sms_opted_out — BOOLEAN. The Employees tab opt-out toggle.
+//   text_bolt  — DEPRECATED. No longer the address source and no longer written.
+//                Still selected for one release solely so a database that has
+//                not run SCHEMA_SMS_OPTOUT.sql is not treated as opted-in when
+//                it still holds the legacy 'STOP' sentinel. Drop the column and
+//                the isOptedOut() fallback together.
 //   status     — 'Active' | 'Inactive'
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -113,29 +118,37 @@ function parseBirthday(value) {
 // ROSTER SELECTION
 // ============================================================
 
-// An address is sendable unless it is missing, a spreadsheet error value, or not
-// an address at all. 'STOP' is rejected explicitly: it is no longer written by
-// the app, but rows predating the sms_opted_out migration may still hold it, and
-// it must never be treated as a deliverable address.
-function isSendableAddress(value) {
-  const v = String(value || '').trim();
-  if (!v) return false;
-  if (v.toUpperCase() === 'STOP') return false;
-  if (v.toUpperCase().includes('ERROR')) return false;
-  return v.includes('@');
+// Phone is the single source of truth for SMS. Strip everything that is not a
+// digit, since the column is free text and holds a mix of "(509) 555-0123",
+// "509-555-0123", "5095550123" and so on.
+//
+// A leading US country code is tolerated: "1-509-555-0123" normalises to the
+// same 10 digits rather than being dropped as an 11-digit number.
+// Anything else that does not land on exactly 10 digits is rejected.
+function normalizePhone(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  const local  = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  return local.length === 10 ? local : null;
 }
 
-// The opt-out now lives in its own column. Legacy 'STOP' rows are still honoured
-// so an unmigrated database cannot start texting people who opted out.
+// The TextBolt address is derived, never stored. text_bolt is no longer read.
+function textBoltAddress(phone) {
+  const local = normalizePhone(phone);
+  return local ? `+1${local}@sendemailtotext.com` : null;
+}
+
+// The opt-out lives in sms_opted_out. The legacy 'STOP' sentinel in text_bolt is
+// still honoured so a database that has not yet run SCHEMA_SMS_OPTOUT.sql cannot
+// start texting people who opted out. Delete this fallback when text_bolt goes.
 function isOptedOut(emp) {
   if (emp.sms_opted_out === true) return true;
   return String(emp.text_bolt || '').trim().toUpperCase() === 'STOP';
 }
 
 // Birthday people need a name and a parseable birthday — nothing else.
-// An address is required to *receive* the message, never to be named in it:
-// employees with no text_bolt at all, and employees who opted out of SMS, are
-// both announced to everyone else and simply receive nothing themselves.
+// A usable phone number is required to *receive* the message, never to be named
+// in it: employees with no phone, an unusable phone, or an SMS opt-out are all
+// announced to everyone else and simply receive nothing themselves.
 function selectBirthdayPeople(employees, targets, log = console.log) {
   const todayPeople = [];
   const upcomingPeople = [];
@@ -161,7 +174,7 @@ function selectBirthdayPeople(employees, targets, log = console.log) {
     const person = {
       full: name,
       first: name.split(' ')[0],
-      address: String(emp.text_bolt || '').trim()
+      address: textBoltAddress(emp.phone)
     };
     (match.isUpcoming ? upcomingPeople : todayPeople).push(person);
   }
@@ -169,10 +182,10 @@ function selectBirthdayPeople(employees, targets, log = console.log) {
   return { todayPeople, upcomingPeople };
 }
 
-// Everyone with a live address who has not opted out — minus the birthday people
-// themselves.
-function buildRecipients(employees, birthdayPeople) {
-  // Birthday people with no address on file contribute nothing to exclude.
+// Every Active employee with a usable phone who has not opted out — minus the
+// birthday people themselves. Addresses are derived from phone at send time.
+function buildRecipients(employees, birthdayPeople, log = console.log) {
+  // Birthday people whose phone does not normalise contribute nothing to exclude.
   const excluded = new Set(
     birthdayPeople
       .map(p => String(p.address || '').trim().toLowerCase())
@@ -184,14 +197,21 @@ function buildRecipients(employees, birthdayPeople) {
   for (const emp of employees) {
     if (isOptedOut(emp)) continue;
 
-    const textBolt = String(emp.text_bolt || '').trim();
-    if (!isSendableAddress(textBolt)) continue;
+    const name  = String(emp.name || '').trim() || '(unnamed)';
+    const phone = String(emp.phone || '').trim();
+    if (!phone) continue; // no phone on file is ordinary data, not an error
 
-    const key = textBolt.toLowerCase();
+    const address = textBoltAddress(phone);
+    if (!address) {
+      log(`WARNING: unusable phone number for ${name}: ${JSON.stringify(phone)} — no text sent`);
+      continue;
+    }
+
+    const key = address.toLowerCase();
     if (excluded.has(key) || seen.has(key)) continue;
 
     seen.add(key);
-    recipients.push(textBolt);
+    recipients.push(address);
   }
 
   return recipients;
@@ -244,7 +264,7 @@ async function fetchActiveEmployees() {
   }
 
   const url = `${SUPABASE_URL}/rest/v1/employees` +
-    `?status=eq.Active&select=name,birthday,text_bolt,sms_opted_out,status&order=name.asc`;
+    `?status=eq.Active&select=name,birthday,phone,sms_opted_out,text_bolt,status&order=name.asc`;
 
   const res = await fetch(url, {
     headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
@@ -314,7 +334,7 @@ async function runBirthdayNotifications({
   const allPeople = [...todayPeople, ...upcomingPeople];
   const names     = allPeople.map(p => p.first);
   const { subject, body } = composeMessage(todayPeople, upcomingPeople);
-  const recipients = buildRecipients(roster, allPeople);
+  const recipients = buildRecipients(roster, allPeople, log);
 
   if (dryRun) {
     log(`DRY RUN ${stamp} — would send to ${recipients.length} recipient(s).`);
@@ -358,7 +378,8 @@ module.exports = {
   calendarDateInZone,
   buildTargetDates,
   parseBirthday,
-  isSendableAddress,
+  normalizePhone,
+  textBoltAddress,
   isOptedOut,
   selectBirthdayPeople,
   buildRecipients,
