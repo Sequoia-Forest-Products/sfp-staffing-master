@@ -37,20 +37,21 @@ function calendarDateInZone(now = new Date(), timeZone = TIME_ZONE) {
   return { year: +parts.year, month: +parts.month, day: +parts.day };
 }
 
-// Look-ahead window, matching the legacy Apps Script exactly:
+// Look-ahead window:
 //   Mon-Wed  today only
 //   Thursday today + 3 (covers Fri/Sat/Sun)
-//   Friday   today + 2 (covers Sat/Sun)
-//   Sat/Sun  no run
-// Returns null on weekends. Day arithmetic runs on a UTC-anchored calendar date,
-// so it is immune to DST shifts.
+//   Fri/Sat/Sun  no run
+// Returns null on any non-running day. Day arithmetic runs on a UTC-anchored
+// calendar date, so it is immune to DST shifts.
 function buildTargetDates(base) {
   const anchor    = Date.UTC(base.year, base.month - 1, base.day);
   const dayOfWeek = new Date(anchor).getUTCDay();
 
-  if (dayOfWeek === 0 || dayOfWeek === 6) return null;
+  // Fri/Sat/Sun never run. Thursday's 3-day window already covers the weekend,
+  // so a Friday run would announce the same people a second time.
+  if (dayOfWeek === 0 || dayOfWeek === 5 || dayOfWeek === 6) return null;
 
-  const daysToLookAhead = dayOfWeek === 4 ? 3 : dayOfWeek === 5 ? 2 : 0;
+  const daysToLookAhead = dayOfWeek === 4 ? 3 : 0;
   const targets = [];
 
   for (let i = 0; i <= daysToLookAhead; i++) {
@@ -200,9 +201,11 @@ function composeMessage(todayPeople, upcomingPeople) {
   }
 
   if (upcomingPeople.length > 0) {
-    const names = upcomingPeople.map(p => p.full).join(' & ');
-    englishParts.push(`We also have ${names} celebrating over the upcoming weekend!`);
-    spanishParts.push(`¡También tenemos a ${names} celebrando durante el próximo fin de semana!`);
+    const names       = upcomingPeople.map(p => p.full).join(' & ');
+    const birthdayEN  = upcomingPeople.length === 1 ? 'a birthday' : 'birthdays';
+    const birthdayES  = upcomingPeople.length === 1 ? 'un cumpleaños' : 'cumpleaños';
+    englishParts.push(`We also have ${names} celebrating ${birthdayEN} over the upcoming weekend!`);
+    spanishParts.push(`¡También tenemos a ${names} celebrando ${birthdayES} durante el próximo fin de semana!`);
   }
 
   const subject = `Happy Birthday / ¡Feliz Cumpleaños! - ${allFirstNames.join(' & ')}`;
@@ -276,11 +279,12 @@ async function runBirthdayNotifications({
   const today = calendarDateInZone(now);
   const stamp = `${today.year}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}`;
 
-  // Cron is already Mon-Fri; this also protects manual invocations on a weekend.
+  // Cron is already Mon-Thu; this also protects manual invocations and mocked
+  // dates from producing a send on a Friday or over the weekend.
   const window = buildTargetDates(today);
   if (!window) {
-    log(`Birthday run skipped: ${stamp} is a weekend in ${TIME_ZONE}.`);
-    return { status: 'weekend', date: stamp, sent: 0, failed: 0, recipients: 0, people: [] };
+    log(`Birthday run skipped: ${stamp} is not a send day in ${TIME_ZONE} (Mon-Thu only).`);
+    return { status: 'no-run-day', date: stamp, sent: 0, failed: 0, recipients: 0, people: [] };
   }
 
   const roster = employees || await fetchActiveEmployees();
