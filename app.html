@@ -604,6 +604,13 @@ function smsCell(e) {
   return '<div style="font-size:10px;color:#2a7a47;font-weight:700">SMS OK</div>';
 }
 
+function openEdit(idx){
+  state.editing={...state.employees[idx],_idx:idx,_isNew:false};
+  render();
+  // Load Drive folder link after render
+  setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
+}
+
 function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
@@ -613,6 +620,34 @@ function setSyncStatus(s){
   if(s==='saving'){el.textContent='● Saving…';el.className='sfp-sync-status saving';}
   else if(s==='error'){el.textContent='● Sync error';el.className='sfp-sync-status error';}
   else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
+}
+
+// Employee writes go through here so a database that has not yet run
+// SCHEMA_SMS_OPTOUT.sql cannot break saving. PostgREST rejects the whole row
+// when sms_opted_out does not exist (surfacing as a 500 from /api/data), so
+// retry once without that field rather than losing the user's edit.
+async function writeEmployeeRow(url, method, row){
+  const send = body => fetch(url, {
+    method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+
+  let res = await send(row);
+  if(res.ok || !('sms_opted_out' in row)) return res;
+
+  const detail = await res.clone().text().catch(()=>'');
+  if(!detail.includes('sms_opted_out')) return res;
+
+  console.warn('employees.sms_opted_out is missing — run SCHEMA_SMS_OPTOUT.sql. Saving without the SMS opt-out flag for now.');
+  // Say so out loud: everything else saves, but the opt-out toggle will not
+  // stick until the migration runs, and silently dropping it is what caused
+  // the last round of lost data.
+  if(!writeEmployeeRow._warned){
+    writeEmployeeRow._warned = true;
+    setTimeout(()=>toast('Saved — but the SMS opt-out needs SCHEMA_SMS_OPTOUT.sql to persist','error'), 400);
+  }
+  const fallback = {...row};
+  delete fallback.sms_opted_out;
+  return send(fallback);
 }
 
 async function saveEdit(){
@@ -642,14 +677,10 @@ async function saveEdit(){
     };
 
     if(e.id){
-      const res=await fetch('/api/data?table=employees&id='+e.id,{
-        method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-      });
+      const res=await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
       if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
     } else {
-      const res=await fetch('/api/data?table=employees',{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-      });
+      const res=await writeEmployeeRow('/api/data?table=employees','POST',row);
       if(!res.ok) throw new Error(`Save failed with status ${res.status}`);
       const d=await res.json();
       if(d.data?.[0]?.id) e.id=d.data[0].id;
@@ -1513,13 +1544,9 @@ async function syncToSheet(){
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){
-        await fetch('/api/data?table=employees&id='+e.id,{
-          method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-        });
+        await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
       } else {
-        const res=await fetch('/api/data?table=employees',{
-          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-        });
+        const res=await writeEmployeeRow('/api/data?table=employees','POST',row);
         const d=await res.json();
         if(d.data?.[0]?.id) e.id=d.data[0].id;
       }
@@ -1804,13 +1831,9 @@ async function syncToSheet(){
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){
-        await fetch('/api/data?table=employees&id='+e.id,{
-          method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-        });
+        await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
       } else {
-        const res=await fetch('/api/data?table=employees',{
-          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)
-        });
+        const res=await writeEmployeeRow('/api/data?table=employees','POST',row);
         const d=await res.json();
         if(d.data?.[0]?.id) e.id=d.data[0].id;
       }
