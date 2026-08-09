@@ -537,62 +537,74 @@ function renderEmployeeList() {
   }).join('');
 }
 
-// Opting out sets a flag and never touches the address, so opting back in
-// resumes texting with nothing to re-enter. The old version overwrote textBolt
-// with 'STOP', which destroyed the number permanently.
+// Opting out sets a flag and never touches the phone number, so opting back in
+// resumes texting with nothing to re-enter. The old version overwrote the
+// text_bolt column with 'STOP', destroying the stored address.
 function toggleSmsOptOut(checkbox) {
   state.editing.smsOptedOut = checkbox.checked;
-  const status = document.getElementById('smsOptOutStatus');
-  if (status) {
-    status.textContent = smsStatusText(state.editing);
-    status.style.color = checkbox.checked ? '#c0392b' : 'var(--muted)';
-  }
+  refreshSmsStatus();
 }
 
-// Rows written before the sms_opted_out migration may still carry the 'STOP'
-// sentinel. Normalise it here so the rest of the app only sees the boolean.
+function refreshSmsStatus() {
+  const status = document.getElementById('smsOptOutStatus');
+  if (!status) return;
+  const e = state.editing;
+  status.textContent = smsStatusText(e);
+  const bad = !normalizePhone(e.phone);
+  status.style.color = e.smsOptedOut ? '#c0392b' : (bad ? '#b8860b' : 'var(--muted)');
+}
+
+// The opt-out lives in sms_opted_out. A leftover 'STOP' in the deprecated
+// text_bolt column still counts as opted out until that column is dropped.
 function normalizeSms(r) {
-  const raw = String(r.text_bolt || '').trim();
-  const isLegacyStop = raw.toUpperCase() === 'STOP';
   return {
-    textBolt: isLegacyStop ? '' : raw,
-    smsOptedOut: r.sms_opted_out === true || isLegacyStop
+    smsOptedOut: r.sms_opted_out === true ||
+                 String(r.text_bolt || '').trim().toUpperCase() === 'STOP'
   };
 }
 
-// +15095550001@sendemailtotext.com -> (509) 555-0001
-function fmtTextBolt(addr) {
-  const m = String(addr || '').match(/\+1(\d{10})/);
-  if (!m) return '';
-  const d = m[1];
-  return '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6);
+// Phone is the single source of truth for SMS. Free-text column, so strip to
+// digits; a leading US country code is tolerated. Returns 10 digits or ''.
+function normalizePhone(v) {
+  const digits = String(v || '').replace(/\D/g, '');
+  const local = (digits.length === 11 && digits.startsWith('1')) ? digits.slice(1) : digits;
+  return local.length === 10 ? local : '';
+}
+
+// The TextBolt address is derived, never stored.
+function textBoltAddress(phone) {
+  const local = normalizePhone(phone);
+  return local ? '+1' + local + '@sendemailtotext.com' : '';
+}
+
+function fmtPhone(phone) {
+  const d = normalizePhone(phone);
+  return d ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6) : '';
 }
 
 function smsStatusText(e) {
-  const num = fmtTextBolt(e.textBolt);
-  if (e.smsOptedOut) return num ? 'Opted out \u2014 ' + num + ' kept on file' : 'Opted out \u2014 no number on file';
-  return num ? 'Receiving texts at ' + num : 'No TextBolt number on file';
+  const num = fmtPhone(e.phone);
+  if (!num) return String(e.phone || '').trim()
+    ? 'Phone number is not a valid 10-digit number \u2014 cannot text'
+    : 'No phone number on file \u2014 cannot text';
+  return e.smsOptedOut ? 'Opted out \u2014 not receiving texts' : 'Receiving texts at ' + num;
 }
 
-// Employees-table SMS cell: opted-out employees still show their stored number,
-// struck through and flagged, so the roster never looks like the number is gone.
+// Employees-table SMS cell. The phone number lives in its own column and stays
+// visible and editable either way; this cell reports only SMS reachability.
 function smsCell(e) {
-  const num = fmtTextBolt(e.textBolt);
   if (e.smsOptedOut) {
-    return '<div style="font-size:10px;color:#c0392b;font-weight:700">NO SMS</div>' +
-           (num ? '<div style="font-size:10px;color:var(--muted);text-decoration:line-through">' + num + '</div>' : '');
+    return '<div style="font-size:10px;color:#c0392b;font-weight:700">OPTED OUT</div>';
   }
-  return num ? '<div style="font-size:10px;color:var(--muted)">' + num + '</div>'
-             : '<span style="color:var(--muted)">\u2014</span>';
+  if (!normalizePhone(e.phone)) {
+    return String(e.phone || '').trim()
+      ? '<div style="font-size:10px;color:#b8860b;font-weight:700" title="Phone does not normalize to 10 digits">BAD PHONE</div>'
+      : '<span style="color:var(--muted)">\u2014</span>';
+  }
+  return '<div style="font-size:10px;color:#2a7a47;font-weight:700">SMS OK</div>';
 }
 
-function openEdit(idx){
-  state.editing={...state.employees[idx],_idx:idx,_isNew:false};
-  render();
-  // Load Drive folder link after render
-  setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
-}
-function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',textBolt:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 function setSyncStatus(s){
@@ -625,7 +637,7 @@ async function saveEdit(){
       days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
-      email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
+      email:e.email, sms_opted_out:e.smsOptedOut===true,
       drive_folder_id:e.driveFolderId||null
     };
 
@@ -685,18 +697,17 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Clock in</label><input type="text" value="${e.clockIn}" oninput="state.editing.clockIn=this.value"></div>
           <div class="form-group"><label class="form-label">Clock out</label><input type="text" value="${e.clockOut}" oninput="state.editing.clockOut=this.value"></div>
           <div class="form-group"><label class="form-label">Birthday</label><input type="text" value="${e.birthday}" oninput="state.editing.birthday=this.value"></div>
-          <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
           <div class="form-group full"><label class="form-label">Email</label><input type="text" value="${e.email}" oninput="state.editing.email=this.value"></div>
-          <div class="form-group full"><label class="form-label">TextBolt address</label><input type="text" value="${e.textBolt||''}" placeholder="+15095550123@sendemailtotext.com" oninput="state.editing.textBolt=this.value;const s=document.getElementById('smsOptOutStatus');if(s)s.textContent=smsStatusText(state.editing)"></div>
           <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
             <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
               <div>
                 <div style="font-size:12px;font-weight:700;color:var(--text)">SMS opt-out</div>
-                <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee. The number above is kept on file either way.</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee. Their phone number is untouched either way.</div>
               </div>
               <input type="checkbox" ${e.smsOptedOut?'checked':''} onchange="toggleSmsOptOut(this)" style="width:18px;height:18px;cursor:pointer;accent-color:#c0392b">
             </label>
-            <div id="smsOptOutStatus" style="font-size:11px;margin-top:8px;color:${e.smsOptedOut?'#c0392b':'var(--muted)'}">${smsStatusText(e)}</div>
+            <div id="smsOptOutStatus" style="font-size:11px;margin-top:8px;color:${e.smsOptedOut?'#c0392b':(normalizePhone(e.phone)?'var(--muted)':'#b8860b')}">${smsStatusText(e)}</div>
           </div>
         </div>
 
@@ -1498,7 +1509,7 @@ async function syncToSheet(){
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
+        email:e.email, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){
@@ -1552,13 +1563,9 @@ function toast(msg,type){
 // ============================================================
 function copyTextBoltList() {
   const addresses = state.employees
-    .filter(e =>
-      e.status === 'Active' &&
-      !e.smsOptedOut &&
-      e.textBolt &&
-      e.textBolt.includes('@')
-    )
-    .map(e => e.textBolt);
+    .filter(e => e.status === 'Active' && !e.smsOptedOut)
+    .map(e => textBoltAddress(e.phone))
+    .filter(Boolean);
 
   if (!addresses.length) {
     toast('No active opted-in employees found', 'error');
@@ -1793,7 +1800,7 @@ async function syncToSheet(){
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, text_bolt:(e.textBolt||'').trim()||null, sms_opted_out:e.smsOptedOut===true,
+        email:e.email, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null
       };
       if(e.id){

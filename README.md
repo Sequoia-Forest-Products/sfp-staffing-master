@@ -22,12 +22,12 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-- **Employees tab** — roster with search, filter, sort, inline edit modals, TextBolt address field, SMS opt-out toggle, Drive folder linking
+- **Employees tab** — roster with search, filter, sort, inline edit modals, SMS reachability column, SMS opt-out toggle, Drive folder linking
 - **Staffing Economics tab** — position assignment with wage, burdened cost, max wage, and variance
 - **Overtime tab** — view/edit for Before Shift, After Shift, and Weekend Pre-Approved OT
 - **Points Tracker tab** — attendance points with disciplinary flags, full CRUD
 - **Birthday notifications** — daily scheduled function sends bilingual TextBolt texts
-- **Copy TextBolt list** — copies all active opted-in addresses for manual bulk texts
+- **Copy TextBolt list** — derives addresses from phone for all active, opted-in employees
 
 ---
 
@@ -83,7 +83,8 @@ sfp-staffing-master/
 ## Database Schema (Supabase)
 
 ### employees
-`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, text_bolt, sms_opted_out, drive_folder_id, employee_number`
+`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, sms_opted_out, drive_folder_id, employee_number`  
+`text_bolt` — deprecated, no longer read or written; kept one release as a fallback.
 
 ### economics
 `id, num, section, position, name, max_wage`
@@ -138,26 +139,44 @@ trigger or a mocked Friday date cannot produce a send either.
 
 All date math is done in `America/Boise`, never the server's UTC clock.
 
-**Who gets a message:** every `Active` employee who has a usable `text_bolt`
-address and has not opted out, minus the birthday people themselves. Blank,
-`#ERROR!`, and other non-address values are skipped.
+**Who gets a message:** every `Active` employee whose `phone` normalises to 10
+digits and who has not opted out, minus the birthday people themselves. A phone
+that will not normalise logs a `WARNING:` and is skipped; a blank phone is
+ordinary data and is skipped quietly.
 
-**Being named vs. receiving are separate things.** An address is required to
-*receive* the message, never to be *named* in it. An employee with a birthday but
-no `text_bolt` — or an opted-out one — is still announced to everyone else; they
-just get nothing themselves.
+**Being named vs. receiving are separate things.** A usable phone number is
+required to *receive* the message, never to be *named* in it. An employee with a
+birthday but no phone, an unusable phone, or an SMS opt-out is still announced to
+everyone else; they just get nothing themselves.
+
+**Address derivation:** `phone` is the single source of truth for SMS. The
+TextBolt address is built at send time and never stored:
+
+```
+phone "(509) 555-0123"  ->  strip to digits  ->  5095550123
+                        ->  +15095550123@sendemailtotext.com
+```
+
+`phone` is a free-text column, so anything goes in — parens, dashes, dots,
+spaces. A leading US country code is tolerated (`1-509-555-0123` works). Anything
+that does not land on exactly 10 digits is skipped with a warning.
 
 **Opt-out:** `employees.sms_opted_out` (BOOLEAN). The Employees tab toggle flips
-this flag and **never touches `text_bolt`**, so opting out preserves the number
-and opting back in resumes texting with nothing to re-enter.
+this flag and never touches the phone number, so opting out and back in is fully
+reversible with nothing to re-enter.
 
-> Historically the toggle overwrote `text_bolt` with the literal string `STOP`,
-> which permanently destroyed the address — at least one number was lost that
-> way. `SCHEMA_SMS_OPTOUT.sql` migrates those rows to the new column. Numbers
-> already overwritten cannot be recovered and must be re-entered in the
-> Employees tab; step 4 of that script lists exactly who. Both the app and the
-> notifier still treat a leftover `STOP` as opted out, so an unmigrated database
-> will not start texting people who opted out.
+> **`text_bolt` is deprecated.** It used to hold the address, and the opt-out
+> toggle used to overwrite it with the literal string `STOP`, destroying it.
+> Nothing derives an address from it any more and nothing writes to it, so that
+> damage no longer matters — the number still lives in `phone`. The column stays
+> for one release as a fallback, and its `STOP` sentinel is still read by
+> `isOptedOut()` so a database that has not yet run `SCHEMA_SMS_OPTOUT.sql`
+> cannot start texting people who opted out. Drop the column and that fallback
+> together.
+>
+> Before trusting the derivation, run **step 6 of `SCHEMA_SMS_OPTOUT.sql`** — it
+> lists any employee whose stored `text_bolt` disagrees with the address derived
+> from their `phone`. Zero rows means nobody's texts change destination.
 
 **Birthday format:** `birthday` is TEXT and only month/day is ever read (year
 ignored). Three shapes are accepted:

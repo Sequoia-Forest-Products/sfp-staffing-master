@@ -37,21 +37,25 @@ WHERE status = 'Active'
   AND btrim(birthday) !~ '^[A-Za-z]{3} [A-Za-z]{3} \d{1,2} \d{4}'          -- JS date string
 ORDER BY name;
 
--- Step 4: who is announced but cannot be texted — no address, or opted out.
--- This is expected and supported; the message names them either way.
--- Opting out no longer clears text_bolt, so an opted-out employee normally still
--- has an address on file; see SCHEMA_SMS_OPTOUT.sql.
+-- Step 4: who is announced but cannot be texted. Expected and supported — the
+-- message names them either way. The address is derived from phone at send time,
+-- so reachability now depends on phone and sms_opted_out only; text_bolt is not
+-- consulted. See SCHEMA_SMS_OPTOUT.sql.
 SELECT
   name,
   birthday,
-  COALESCE(NULLIF(btrim(text_bolt), ''), '(none)') AS address,
+  COALESCE(NULLIF(btrim(phone), ''), '(none)') AS phone,
   sms_opted_out,
   CASE
     WHEN sms_opted_out THEN 'opted out'
-    ELSE 'no address on file'
+    WHEN COALESCE(btrim(phone), '') = '' THEN 'no phone on file'
+    ELSE 'phone does not normalize to 10 digits'
   END AS reason
 FROM employees
 WHERE status = 'Active'
   AND btrim(COALESCE(birthday, '')) <> ''
-  AND (sms_opted_out OR text_bolt IS NULL OR btrim(text_bolt) = '')
+  AND (
+    sms_opted_out
+    OR length(regexp_replace(COALESCE(phone, ''), '\D', '', 'g')) NOT IN (10, 11)
+  )
 ORDER BY name;
