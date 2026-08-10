@@ -37,6 +37,8 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 sfp-staffing-master/
 ├── app.html                    # Main protected dashboard
 ├── index.html                  # Login page
+├── icons/
+│   └── staffing-and-hr.svg     # Favicon (SVG, referenced by both pages)
 ├── netlify.toml                # Config, redirects, scheduled functions
 ├── package.json
 ├── .env.example                # Environment variable template
