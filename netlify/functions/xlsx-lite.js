@@ -308,10 +308,14 @@ function columnLetter(index) {
 // PUBLIC API
 // ============================================================
 
-function readWorkbook(buf) {
+// Opens the container and resolves the sheet index without parsing any cells.
+function openWorkbook(buf) {
   const files = unzip(buf);
-  const sharedStrings = readSharedStrings(files);
-  const { order, byName } = sheetPaths(files);
+  return { files, sharedStrings: readSharedStrings(files), ...sheetPaths(files) };
+}
+
+function readWorkbook(buf) {
+  const { files, sharedStrings, order, byName } = openWorkbook(buf);
 
   const sheets = {};
   for (const name of order) {
@@ -326,17 +330,23 @@ function readWorkbook(buf) {
 // readSheet(buf) reads the first sheet; readSheet(buf, name) reads that sheet
 // and raises with the available names if it is not there, because a renamed
 // sheet is the most likely way the vendor's export changes shape on us.
+//
+// Only the requested sheet is parsed. Going through readWorkbook would parse
+// every sheet in the file, so an unrelated malformed one — a stray empty tab
+// the vendor left in the workbook — would fail an import whose actual data
+// sheet is perfectly fine.
 function readSheet(buf, sheetName) {
-  const workbook = readWorkbook(buf);
-  const name = sheetName || workbook.sheetNames[0];
+  const { files, sharedStrings, order, byName } = openWorkbook(buf);
+  const name = sheetName || order[0];
+  const part = byName[name] && files[byName[name]];
 
-  if (!workbook.sheets[name]) {
+  if (!part) {
     throw new Error(
-      `Sheet "${name}" not found. This file contains: ${workbook.sheetNames.join(', ') || '(none)'}`
+      `Sheet "${name}" not found. This file contains: ${order.join(', ') || '(none)'}`
     );
   }
 
-  return { sheetName: name, ...workbook.sheets[name] };
+  return { sheetName: name, ...readSheetPart(part, sharedStrings) };
 }
 
 module.exports = { readSheet, readWorkbook, unzip, decodeXml, columnIndex, columnLetter, rowNumber };

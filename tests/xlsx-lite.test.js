@@ -217,3 +217,25 @@ test('an unsupported compression method is refused, not silently skipped', () =>
   buf.writeUInt16LE(99, centralStart + 10);
   assert.throws(() => readSheet(buf), /compression method 99/);
 });
+
+test('a malformed unrelated sheet does not fail the sheet we asked for', () => {
+  // The vendor's workbook could gain a stray empty tab at any time. Parsing
+  // every sheet to read one of them would turn that into a failed import.
+  const buf = buildXlsx({
+    sheetName: 'Work Summary Payroll',
+    rows: [PAYROLL_HEADERS, ['0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 245]],
+    extraSheets: [{ name: 'Leftover', rows: [] }]
+  });
+
+  const sheet = readSheet(buf, 'Work Summary Payroll');
+  assert.strictEqual(sheet.rows.length, 1);
+  assert.strictEqual(sheet.rows[0]['Emp #'], '0319');
+
+  // The broken sheet is still an error if you actually ask for it.
+  assert.throws(() => readSheet(buf, 'Leftover'), /empty/i);
+});
+
+test('a sheet listed in the workbook but missing its part names the alternatives', () => {
+  const buf = buildPayrollXlsx([['0319', 'A', 'B', 'No', 10, 10, 0, 10, 100]]);
+  assert.throws(() => readSheet(buf, 'Nope'), /Nope[\s\S]*Work Summary Payroll/);
+});
