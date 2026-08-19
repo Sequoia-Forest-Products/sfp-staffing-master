@@ -4,11 +4,14 @@
 -- Run this whole file in the Supabase SQL editor. It is idempotent — every
 -- statement is guarded, so re-running it is safe.
 --
--- Order matters: back-fill employees.department (Employees tab -> "Backfill
+-- Order matters: back-fill employees.department (Employees tab -> "Back-fill
 -- payroll fields") BEFORE importing any payroll data. daily_hours snapshots
 -- the department at import time (see the comment on daily_hours.department),
 -- so rows imported before the back-fill land with a null department and have
 -- to be re-stamped afterwards.
+--
+-- The older employees.dept column is being retired once that back-fill is
+-- complete; SCHEMA_DROP_DEPT.sql holds the gates and the drop.
 -- ============================================================================
 
 
@@ -42,10 +45,14 @@ create unique index if not exists employees_employee_number_key
   on employees (employee_number)
   where employee_number is not null;
 
--- The reporting department for the OT report. Deliberately separate from the
--- existing employees.dept column, which carries a different, older taxonomy
--- (Sawmill / Filing Room / Log Yard / SG&A / ...). Nothing maps one onto the
--- other automatically: department is set explicitly, per employee.
+-- The one department column. It replaces the older employees.dept, which
+-- carried a different taxonomy (Sawmill / Filing Room / Log Yard / SG&A / ...)
+-- and is retired by SCHEMA_DROP_DEPT.sql once the back-fill is verified.
+--
+-- Nothing maps one onto the other, and nothing can: Maintenance and Shipping
+-- do not exist in the old value set at all, so the people now in them are
+-- currently tagged Sawmill or Log Yard. Every employee is assigned by hand.
+-- Filing Room -> Saw Filing is the single honest rename.
 alter table employees add column if not exists department text;
 
 -- Guarded through pg_constraint rather than information_schema: a CHECK
@@ -187,6 +194,8 @@ create index if not exists processed_emails_hash_idx      on processed_emails (f
 
 -- 4a. Employees still missing a payroll id or a department. Both must be
 --     filled in before any import, or those rows snapshot a null department.
+--     Drop the `dept` column from the select once SCHEMA_DROP_DEPT.sql has run;
+--     until then it is the reference for deciding what the department should be.
 -- select name, dept, employee_number, department
 -- from employees
 -- where status = 'Active' and (employee_number is null or department is null)
@@ -220,14 +229,6 @@ create index if not exists processed_emails_hash_idx      on processed_emails (f
 -- from daily_hours where file_hash is not null
 -- group by file_hash having count(distinct work_date) > 1;
 
--- 4g. The ingestion queue: anything still waiting on a person. 'resolved' rows
---     are closed and never alert again; 'duplicate_file' and 'rejected' are
---     logged and need nothing.
--- select processed_emails.received_at, status, subject, error, flags
--- from processed_emails
--- where status in ('pending_review', 'error')
--- order by received_at desc;
-
 -- 4f. Scheduled work days (Mon-Thu) in the last 30 days with no data at all.
 --     Every one of these is a missed delivery.
 -- select d::date as missing_day
@@ -235,3 +236,11 @@ create index if not exists processed_emails_hash_idx      on processed_emails (f
 -- where extract(isodow from d) between 1 and 4
 --   and not exists (select 1 from daily_hours where work_date = d::date)
 -- order by missing_day;
+
+-- 4g. The ingestion queue: anything still waiting on a person. 'resolved' rows
+--     are closed and never alert again; 'duplicate_file' and 'rejected' are
+--     logged and need nothing.
+-- select processed_emails.received_at, status, subject, error, flags
+-- from processed_emails
+-- where status in ('pending_review', 'error')
+-- order by received_at desc;
