@@ -365,8 +365,60 @@ The existing `overtime` table is `id, name, ot_type ('Pre-Shift' | 'Post-Shift' 
   listed under `rateMissing` rather than being quietly dropped.
 
 All three `ot_type` values count toward pre-approved OT, with a per-type breakdown on the
-report. The older report counted only `Weekend` and added a hardcoded half-hour-per-head
-allowance; both of those are gone.
+report. The older report counted only `Weekend`; that restriction is gone.
+
+### The timeclock grace allowance
+
+Pre-approved OT has a second component, reported separately from the `overtime` table:
+
+```
+grace hours   = graceHoursPerEmployee x (active hourly employees on the roster)
+grace dollars = sum over those employees of (graceHoursPerEmployee x rate x 1.5)
+```
+
+Employees may clock in up to 7.5 minutes early and out up to 7.5 minutes late, which accrues
+to half an hour a week. Under California wage-and-hour law that time is compensable and
+cannot be rounded away, so it is genuinely pre-approved overtime rather than a fudge factor.
+An earlier version of this report carried it as a hardcoded `0.5` and it was removed as
+unexplained; the number was always right, but it was invisible in the source where nobody
+could see or change it.
+
+So it is configurable on the **Settings tab** ("Timeclock Grace"), stored in the same
+`emailSettings` row as the OT budget, and read **server-side** by `/api/payroll-report`. The
+value actually used is echoed back as `preApproved.grace.hoursPerEmployee`, because at ~54
+hourly employees the allowance is worth ~27 hrs/week and a figure that size should never be
+a mystery. Setting it to `0` reproduces the pre-grace behaviour exactly.
+
+Rules, and the reasoning where it is not obvious:
+
+- **Flat per employee per week.** Not prorated by days worked.
+- **Every active hourly employee on the roster**, whether or not they worked. A weekend
+  maintenance worker gets the full allowance; someone out all week still gets it. It is a
+  standing entitlement, not an earned one — which means the pre-approved pool deliberately
+  does *not* shrink on a light week. That consequence is intended.
+- **Headcount is roster-based, not worked-based**, and is shown on the report so the number
+  can be audited.
+- **Hourly only.** Salaried staff are excluded from `daily_hours` at import and carry a $0
+  pay rate in the source file, so there is no basis to compute grace dollars for them.
+- **Rate**: the employee's `pay_rate` from their most recent `daily_hours` row that week,
+  else `employees.wage`. This is deliberately *most recent* rather than the highest rate,
+  unlike the `overtime` table's allowance — a mid-week rate change graces at what the person
+  is paid now. An employee with no determinable rate still accrues the grace **hours**,
+  contributes $0, and is named in `preApproved.grace.rateMissing`; contributing zero silently
+  is what makes a total impossible to reconcile later.
+- Grace is attributed to the same department snapshot as the hours it offsets, and routes
+  through the same roster identity, so one person is graced once no matter how many sources
+  reach them.
+
+The two components are shown as separate lines and only combined in the summary:
+
+```
+Pre-Approved OT = overtime table allowance + grace allowance
+Net OT          = All OT - Pre-Approved OT
+```
+
+Both are standing weekly figures, so they combine cleanly — but they come from different
+places and a merged number cannot be checked against either source.
 
 Pre-approved OT belonging to someone with **no hours that week** — approved but not
 worked — has no `daily_hours` row to inherit a department from. It falls back to the

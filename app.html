@@ -208,6 +208,22 @@ const user = window.__SFP_USER__ || {};
 document.getElementById('userName').textContent = user.name || user.email || '';
 if (user.picture) document.getElementById('userAvatar').src = user.picture;
 
+// The full shape of the emailSettings row. loadEmailSettings merges the stored
+// row over these rather than replacing state wholesale: settings.js stores one
+// JSON blob, so a row written before a field existed simply lacks it, and a
+// straight assignment would drop the field from state — after which the next
+// save writes the row back without it. That is how editing the manager list
+// would silently wipe the configured grace hours and revert the report to its
+// default without saying anything.
+const EMAIL_SETTINGS_DEFAULTS={managers:[], autoSend:false, otBudgetPercent:10, graceHoursPerEmployee:0.5};
+
+// settings.js writes value as a raw object on insert and as a JSON string on
+// update, so both shapes come back from the same key.
+function parseSettingsValue(v){
+  if(typeof v==='string'){try{return JSON.parse(v);}catch{return null;}}
+  return v&&typeof v==='object'?v:null;
+}
+
 let state = {
   tab:'employees', employees:[], economics:[],
   ot:{post:[],weekend:[],pre:[]}, points:[],
@@ -215,7 +231,7 @@ let state = {
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
-  emailSettings:{managers:[], autoSend:false, otBudgetPercent:10},
+  emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
   otEmailSending:false,
   backfill:null, backfillOnlyIncomplete:false,
   dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null, dailyDupAck:false, dailyLastImport:null,
@@ -1167,6 +1183,7 @@ async function loadOTReport(week){
 // so it lives in emailSettings and is editable on the Settings tab.
 const OT_BUDGET_DEFAULT=10;
 function otBudgetPct(){const v=Number(state.emailSettings.otBudgetPercent);return isFinite(v)&&v>=0?v:OT_BUDGET_DEFAULT;}
+function graceHrs(){const v=Number(state.emailSettings.graceHoursPerEmployee);return isFinite(v)&&v>=0?v:EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee;}
 
 function otWeekRangeLabel(a,b){
   const pa=dateParts(a),pb=dateParts(b);
@@ -1272,7 +1289,12 @@ const otReportStyle=`<style>
   .ot-bar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
   .ot-bar select,.ot-bar input{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)}
   .ot-bar-note{margin-left:auto;font-size:11px;color:var(--muted)}
-  .ot-note{font-size:11px;color:var(--textDim);background:var(--surface2);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:4px;padding:8px 12px;margin-bottom:18px;line-height:1.5}
+  .ot-pa{margin-top:10px;padding:12px 14px}
+    .ot-pa-row{display:grid;grid-template-columns:1fr auto auto;gap:14px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--border)}
+    .ot-pa-row span:nth-child(2),.ot-pa-row span:nth-child(3){text-align:right;font-variant-numeric:tabular-nums;min-width:90px}
+    .ot-pa-tot{font-weight:700;border-bottom:none;border-top:2px solid var(--nearBlk);margin-top:2px}
+    .ot-pa-note{font-size:11.5px;color:var(--textDim);margin-top:8px;line-height:1.5}
+    .ot-note{font-size:11px;color:var(--textDim);background:var(--surface2);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:4px;padding:8px 12px;margin-bottom:18px;line-height:1.5}
   .ot-panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px}
   .ot-split{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
   .ot-split-card{border:1px solid var(--border);border-radius:6px;padding:12px 14px;background:var(--surface)}
@@ -1328,6 +1350,7 @@ function renderOTReport(){
 
   const r=state.otReport;
   const s=r.summary||{};
+  const pa=r.preApproved||{}; const gr=pa.grace||{hours:0,dollars:0,headcount:0,hoursPerEmployee:0,rateMissing:[]};
   const split=r.split||{scheduled:{},nonScheduled:{}};
   const sched=split.scheduled||{}, nons=split.nonScheduled||{};
   const days=r.days||[];
@@ -1339,7 +1362,7 @@ function renderOTReport(){
   const cards=`
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">All OT</div><div class="stat-value">${fmtHrs(s.allOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.allOtDollars)}</div></div>
-      <div class="stat-card"><div class="stat-label">Pre-approved OT</div><div class="stat-value">${fmtHrs(s.preApprovedHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.preApprovedDollars)} · standing allowance</div></div>
+      <div class="stat-card"><div class="stat-label">Pre-approved OT</div><div class="stat-value">${fmtHrs(s.preApprovedHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.preApprovedDollars)} · ${fmtHrs(pa.standing&&pa.standing.hours)} OT table + ${fmtHrs(gr.hours)} clock grace</div></div>
       <div class="stat-card"><div class="stat-label">Net OT</div><div class="stat-value" style="color:${(s.netOtHours||0)>0?'var(--brick)':'#2a7a47'}">${fmtHrs(s.netOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.netOtDollars)}</div></div>
       <div class="stat-card"><div class="stat-label">Total hourly payroll</div><div class="stat-value">${fmt$(s.totalHourlyPayroll)}</div><div class="stat-sub">${fmtHrs(s.totalHours)} hrs · ${s.headcount||0} hourly employees</div></div>
       <div class="stat-card"><div class="stat-label">Net OT % of hourly payroll</div><div class="stat-value">${fmtPct(s.netOtPctOfPayroll)}</div><div class="stat-sub">salaried staff are not in the denominator</div></div>
@@ -1349,10 +1372,20 @@ function renderOTReport(){
   // 2. The overtime table carries no week and no dollars, so the number above is
   // not "OT approved for this week" — it is the standing allowance, applied whole
   // to every week, and its dollars are computed here rather than sourced.
+  const graceMissing=(gr.rateMissing||[]);
   const standingNote=`<div class="ot-note"><strong>Pre-approved OT is a standing weekly allowance.</strong>
     The Pre-Approved Overtime table has no week dimension and no dollar amounts, so the same allowance is applied to every week,
     and the dollars are derived as hours × rate × 1.5 — they are not sourced from payroll.
-    Net OT is OT worked minus that allowance, so it goes negative in a week where less OT was worked than was approved; the negative is shown as-is rather than floored at zero.</div>`;
+    Net OT is OT worked minus that allowance, so it goes negative in a week where less OT was worked than was approved; the negative is shown as-is rather than floored at zero.</div>
+    <div class="ot-panel ot-pa">
+      <div class="ot-pa-row"><span>Overtime table</span><span>${fmtHrs(pa.standing&&pa.standing.hours)} hrs</span><span>${fmt$(pa.standing&&pa.standing.dollars)}</span></div>
+      <div class="ot-pa-row"><span>Timeclock grace</span><span>${fmtHrs(gr.hours)} hrs</span><span>${fmt$(gr.dollars)}</span></div>
+      <div class="ot-pa-row ot-pa-tot"><span>Pre-approved OT</span><span>${fmtHrs(s.preApprovedHours)} hrs</span><span>${fmt$(s.preApprovedDollars)}</span></div>
+      <div class="ot-pa-note">Clock grace is ${fmtHrs(gr.hoursPerEmployee)} hrs × ${gr.headcount||0} active hourly employees on the roster.
+        Employees may clock in 7.5 minutes early and out 7.5 minutes late; that time is compensable and cannot be rounded away, so it is pre-approved by policy.
+        It is counted per roster, not per employee who worked, so it does not shrink in a light week — someone out all week still carries their allowance.
+        Change the rate on the Settings tab.${graceMissing.length?` <strong style="color:var(--brick)">${graceMissing.length} employee${graceMissing.length===1?'':'s'} had no rate on file</strong> — their grace hours are counted but contribute $0: ${graceMissing.map(esc).join(', ')}.`:''}</div>
+    </div>`;
 
   // 3. Scheduled vs non-scheduled
   const splitBlock=`
@@ -1510,7 +1543,8 @@ function renderOTReport(){
     ['scheduledHours','Sched hrs'],['scheduledEarnings','Sched $'],
     ['nonScheduledHours','Non-sched hrs'],['nonScheduledEarnings','Non-sched $'],
     ['otHours','OT hrs'],['otDollars','OT $'],
-    ['preApprovedHours','Pre-appr hrs'],['netOtHours','Net OT hrs'],['netOtDollars','Net OT $'],
+    ['preApprovedHours','OT-table hrs'],['graceHours','Grace hrs'],
+    ['netOtHours','Net OT hrs'],['netOtDollars','Net OT $'],
     ['totalHours','Total hrs'],['totalEarnings','Total $']
   ];
   const sortCol=state.otSortCol||'netOtDollars';
@@ -1793,7 +1827,7 @@ async function saveEmailSettings(){
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         key: 'emailSettings',
-        value: state.emailSettings
+        value: {...EMAIL_SETTINGS_DEFAULTS, ...state.emailSettings}
       })
     });
     if (!res.ok) {
@@ -1811,8 +1845,9 @@ async function loadEmailSettings(){
     const res = await fetch('/api/settings?key=emailSettings');
     if (res.ok) {
       const json = await res.json();
-      if (json.data && json.data.value) {
-        state.emailSettings = json.data.value;
+      const stored = parseSettingsValue(json.data && json.data.value);
+      if (stored) {
+        state.emailSettings = {...EMAIL_SETTINGS_DEFAULTS, ...stored};
         return;
       }
     }
@@ -1821,8 +1856,9 @@ async function loadEmailSettings(){
   }
   // Fallback to localStorage
   const saved = localStorage.getItem('emailSettings');
-  if (saved) {
-    state.emailSettings = JSON.parse(saved);
+  const stored = saved ? parseSettingsValue(saved) : null;
+  if (stored) {
+    state.emailSettings = {...EMAIL_SETTINGS_DEFAULTS, ...stored};
   }
 }
 
@@ -1837,6 +1873,22 @@ async function addManager(){
   input.value='';
   render();
   toast('Manager added and saved','success');
+}
+
+// The clock-grace rate. Every hourly employee may clock in 7.5 minutes early and
+// out 7.5 minutes late, which accrues to half an hour a week; that time is
+// compensable under California law and cannot be rounded away, so it counts as
+// pre-approved OT. It lives here rather than in the source because at ~54 hourly
+// employees it is worth ~27 hrs/week — far too material to be a constant nobody
+// can see. The report reads this value server-side from the same settings row.
+async function setGraceHours(v){
+  const n=Number(v);
+  if(!isFinite(n)||n<0||n>8){toast('Enter the grace allowance in hours per employee per week, between 0 and 8','error');render();return;}
+  state.emailSettings.graceHoursPerEmployee=Math.round(n*100)/100;
+  await saveEmailSettings();
+  if(state.otReportWeek) await loadOTReport(state.otReportWeek);
+  render();
+  toast('Timeclock grace saved','success');
 }
 
 async function setOTBudgetPercent(v){
@@ -2622,6 +2674,15 @@ function renderSettings(){
             <span style="font-size:13px;color:var(--muted)">% of hourly payroll</span>
           </div>
           <div style="font-size:12px;color:var(--muted);margin-top:6px">The emailed report flags all-in OT as over or under budget against this number. Default ${OT_BUDGET_DEFAULT}%.</div>
+        </div>
+
+        <div style="margin-bottom:20px">
+          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Timeclock Grace</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="number" min="0" max="8" step="0.05" value="${graceHrs()}" onchange="setGraceHours(this.value)" style="width:90px;font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:8px 10px">
+            <span style="font-size:13px;color:var(--muted)">hours per employee per week</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px">Employees may clock in 7.5 minutes early and out 7.5 minutes late. That time is compensable and cannot be rounded away, so it is pre-approved OT and is added to the Overtime table's allowance on the OT Report. Counted for every active hourly employee on the roster, whether or not they worked. Default ${EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee} hrs — at the current roster that is about ${fmtHrs(graceHrs()*(state.employees||[]).filter(e=>e.status==='Active'&&!isSalaried(e)).length)} hrs a week.</div>
         </div>
 
         <div style="margin-top:24px">

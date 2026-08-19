@@ -151,7 +151,13 @@ offered on the back-fill screen as a marked suggestion that will not commit itse
 Pre-approved OT. Per-employee (keyed by `name`), but with **no week column and no dollars** — the
 Overtime tab replaces the whole table on save, so this is a *standing weekly allowance* applied to
 every week, not a per-week entry. The OT Report says so on the page and derives the dollars as
-`hours x rate x 1.5`. See `PAYROLL_INGESTION.md`.
+`hours x rate x 1.5`.
+
+Pre-approved OT has a **second component** that does not live in this table: a timeclock grace
+allowance of `graceHoursPerEmployee` per active hourly employee per week (default 0.5, editable on
+the Settings tab). Employees may clock in 7.5 minutes early and out 7.5 minutes late; that time is
+compensable under California law, so it is pre-approved by policy. The report shows the two as
+separate lines and combines them only in the summary. See `PAYROLL_INGESTION.md`.
 
 ### points
 `id, name, points, last_point_date, level_up_eligible, disciplinary, disc_date`
