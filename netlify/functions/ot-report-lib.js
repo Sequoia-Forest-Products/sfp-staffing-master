@@ -41,8 +41,34 @@
 // email and completeness says exactly that ('no-data-nonscheduled'). An empty
 // Mon-Thu is 'missing' — a probable missed delivery.
 
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production'];
+// The PRODUCTION departments, in reporting order. This is what the report
+// breaks the mill down by, and it is deliberately NOT the list of values
+// employees.department accepts — see ASSIGNABLE_DEPARTMENTS below.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
 const UNASSIGNED  = 'Unassigned';
+
+// The one value employees.department accepts that is NOT a production
+// department. SG&A / office / salaried staff have no home among the production
+// departments, and the back-fill screen requires a department for every active
+// employee — its "still needs a department" counter is what gates retiring the
+// legacy `dept` column, so with no correct value to pick that counter could
+// never honestly reach zero. Leaving those people blank is not a fix: blank is
+// indistinguishable from "nobody has got to this row yet". Non-Production makes
+// it an explicit, recorded decision.
+//
+// The two lists differ ON PURPOSE and must not be reconciled into one:
+//   DEPARTMENTS             what the report's normal breakdown is over
+//   ASSIGNABLE_DEPARTMENTS  what a person may legally be assigned to
+// Adding Non-Production to DEPARTMENTS would put a non-production row in every
+// production breakdown. Dropping it from ASSIGNABLE_DEPARTMENTS would make the
+// back-fill screen reject a value the database and the roster both accept.
+//
+// Non-Production staff are salaried, so the import drops their rows and this
+// bucket should normally be empty. A bucket that exists is a finding, carried
+// in issues.nonProductionWithHours — never folded away, never silently dropped.
+const NON_PRODUCTION = 'Non-Production';
+const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
+
 const OT_TYPES    = ['Pre-Shift', 'Post-Shift', 'Weekend'];
 
 // Pre-approved dollars use a flat 1.5x. Unlike imported ot_dollars (which is the
@@ -273,13 +299,17 @@ function finishBlock(block) {
   };
 }
 
-// DEPARTMENTS first in their canonical order, then anything unexpected that the
-// data actually contains, then Unassigned last so it reads as the remainder.
+// DEPARTMENTS first in their canonical order, then Non-Production — a real
+// assignable value, but not a production department — then anything unexpected
+// that the data actually contains, then Unassigned last so it reads as the
+// remainder. Non-Production sits between the production departments and the
+// unknowns because it is neither a real department nor an unknown one.
 function sortDepartments(names) {
   const rank = (name) => {
-    if (name === UNASSIGNED) return DEPARTMENTS.length + 1;
+    if (name === UNASSIGNED)      return DEPARTMENTS.length + 2;
+    if (name === NON_PRODUCTION)  return DEPARTMENTS.length;
     const i = DEPARTMENTS.indexOf(name);
-    return i === -1 ? DEPARTMENTS.length : i;
+    return i === -1 ? DEPARTMENTS.length + 1 : i;
   };
   return names.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
@@ -952,10 +982,40 @@ function buildReport({
   const hoursDelta         = round2(departmentHours - summary.totalHours);
   const earningsDelta      = round2(departmentEarnings - totalHourlyPayroll);
 
+  // A Non-Production bucket with anything in it is a FINDING, not a normal row.
+  // These people are salaried and dropped at import, so nothing should reach
+  // this bucket at all. Anything that does means somebody is hourly AND
+  // non-production, and one of those two facts is wrong.
+  //
+  // The grace allowance counts as evidence on its own, with no daily_hours
+  // behind it: clock grace is a policy about hourly staff, not about which
+  // department they sit in, so an hourly Non-Production employee draws it even
+  // in a week they never clocked in — and that allowance is then sitting in a
+  // department that should not have one. hours is 0 for such a row, and
+  // graceHours says where it came from.
+  //
+  // The bucket itself stays in report.departments regardless, so the department
+  // rows still add up to the summary. This list is what makes it legible.
+  const nonProductionWithHours = employeeList
+    .filter(e => e.department === NON_PRODUCTION &&
+                 (e.totalHours !== 0 || e.graceHours !== 0 || e.preApprovedHours !== 0))
+    .map(e => ({
+      employeeNumber: e.employeeNumber,
+      name: e.name,
+      hours: e.totalHours,
+      otHours: e.otHours,
+      otDollars: e.otDollars,
+      earnings: e.totalEarnings,
+      graceHours: e.graceHours,
+      preApprovedHours: e.preApprovedHours
+    }))
+    .sort((a, b) => b.hours - a.hours || b.graceHours - a.graceHours || a.name.localeCompare(b.name));
+
   const issues = {
     unknownEmployeeNumbers,
     unassignedRows,
     unassignedEmployees,
+    nonProductionWithHours,
     flagged,
     reconciliation: {
       departmentHours,
@@ -1010,4 +1070,10 @@ function round2Pct(n) {
   return r === 0 ? 0 : r;
 }
 
-module.exports = { weekStartFor, weekDates, buildReport, DEPARTMENTS, DEFAULT_GRACE_HOURS };
+module.exports = {
+  weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS,
+  // DEPARTMENTS is the production breakdown; ASSIGNABLE_DEPARTMENTS is the full
+  // set of values employees.department may hold. They are different questions
+  // and both are exported so neither caller has to rebuild the other's list.
+  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, UNASSIGNED
+};

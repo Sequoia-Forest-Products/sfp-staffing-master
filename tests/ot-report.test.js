@@ -17,8 +17,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { weekStartFor, weekDates, buildReport, DEPARTMENTS, DEFAULT_GRACE_HOURS } =
-  require('../netlify/functions/ot-report-lib');
+const {
+  weekStartFor, weekDates, buildReport,
+  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, DEFAULT_GRACE_HOURS
+} = require('../netlify/functions/ot-report-lib');
 
 const WEEK = '2026-08-03';
 
@@ -285,10 +287,17 @@ test('a null department produces an Unassigned bucket that is really in the arra
 
 test('Unassigned sorts last, after the canonical departments', () => {
   const r = report();
+  // A department bucket only exists when it carries data, so the canonical
+  // departments this fixture has no rows for (Log Yard) are simply absent —
+  // what is asserted is that the ones present come in DEPARTMENTS order and
+  // that Unassigned is last.
   assert.deepStrictEqual(
     r.departments.map(d => d.department),
     ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Unassigned']
   );
+  const canonical = r.departments.map(d => d.department).filter(n => DEPARTMENTS.includes(n));
+  assert.deepStrictEqual(canonical, DEPARTMENTS.filter(n => canonical.includes(n)));
+  assert.strictEqual(r.departments[r.departments.length - 1].department, 'Unassigned');
 });
 
 test('department rows sum to the summary and reconciliation says so', () => {
@@ -760,6 +769,237 @@ test('the grace allowance is configurable, defaults to DEFAULT_GRACE_HOURS, and 
 
 
 // ============================================================
+// Non-Production
+// ============================================================
+//
+// employees.department has a fifth value, Non-Production, for the SG&A / office
+// / salaried staff who have no home among the four production departments. It
+// exists so the back-fill screen has a correct value to pick for those people:
+// blank is indistinguishable from "nobody has got to this row yet", and the
+// screen's "still needs a department" counter has to be able to reach zero.
+//
+// It is NOT a production department, so it is not in DEPARTMENTS and it is not
+// part of the report's normal breakdown. Everyone in it is salaried, so the
+// import drops their all-zero rows and the bucket should never exist at all.
+// When it does exist, somebody is hourly AND non-production, and that is a
+// finding rather than a row to read past.
+
+const NON_PROD = { id: 'np1', name: 'Nora Ledger', employee_number: '0110',
+                   department: 'Non-Production', wage: '31.00', status: 'Active' };
+
+// Log Yard is the fifth PRODUCTION department — an ordinary one, in DEPARTMENTS,
+// in the normal breakdown, and deliberately nothing to do with the finding below.
+const LOG_YARD_EMPLOYEE = { id: 'ly1', name: 'Lena Yardley', employee_number: '0112',
+                            department: 'Log Yard', wage: '26.00', status: 'Active' };
+
+const LOG_YARD_ROW = dailyRow({
+  work_date: '2026-08-04', employee_number: '0112', first_name: 'Lena', last_name: 'Yardley',
+  department: 'Log Yard', pay_rate: 26, regular_hours: 9, total_hours: 9,
+  total_earnings: 234, regular_dollars: 234
+});
+
+test('Log Yard is an ordinary production department, not an exception', () => {
+  const r = report({
+    dailyRows: DAILY_ROWS.concat([LOG_YARD_ROW]),
+    employees: EMPLOYEES.concat([LOG_YARD_EMPLOYEE])
+  });
+
+  // In its canonical position — after Production, ahead of Unassigned — and
+  // carrying its own hours rather than being folded anywhere.
+  assert.deepStrictEqual(
+    r.departments.map(d => d.department),
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Unassigned']
+  );
+  const logYard = byDept(r.departments, 'Log Yard');
+  assert.strictEqual(logYard.week.hours, 9);
+  assert.strictEqual(logYard.week.earnings, 234);
+  assert.strictEqual(logYard.week.headcount, 1);
+  assert.strictEqual(byName(r.employees, 'Lena Yardley').department, 'Log Yard');
+
+  // It is a real department, so it is never a finding, however many hours it has.
+  assert.deepStrictEqual(r.issues.nonProductionWithHours, []);
+
+  const rec = r.issues.reconciliation;
+  assert.strictEqual(rec.balanced, true);
+  assert.strictEqual(rec.hoursDelta, 0);
+  assert.strictEqual(rec.earningsDelta, 0);
+  assert.strictEqual(rec.departmentHours, 76);       // the fixture's 67 plus Lena's 9
+  assert.strictEqual(rec.summaryHours, 76);
+  assert.strictEqual(r2(r.departments.reduce((s, d) => s + d.week.earnings, 0)),
+    r.summary.totalHourlyPayroll);
+});
+
+test('DEPARTMENTS stays the production departments; ASSIGNABLE_DEPARTMENTS adds Non-Production', () => {
+  assert.strictEqual(NON_PRODUCTION, 'Non-Production');
+
+  // The two lists differ on purpose: one is what the report breaks down by, the
+  // other is what a person may legally be assigned to. Log Yard is an ordinary
+  // production department and belongs in both; Non-Production only in the second.
+  assert.deepStrictEqual(DEPARTMENTS,
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard']);
+  assert.ok(!DEPARTMENTS.includes(NON_PRODUCTION),
+    'Non-Production is not a production department and must not join the breakdown');
+
+  assert.deepStrictEqual(ASSIGNABLE_DEPARTMENTS,
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Non-Production']);
+  assert.ok(!ASSIGNABLE_DEPARTMENTS.includes('Unassigned'),
+    'Unassigned is where a missing department lands, never something to assign');
+});
+
+test('a week with nobody in Non-Production has no such bucket and an empty finding', () => {
+  // The normal case, with the grace allowance off and then on: the bucket only
+  // ever exists because it carries data, and the finding says so by being empty.
+  const off = report();
+  assert.strictEqual(byDept(off.departments, 'Non-Production'), undefined);
+  assert.deepStrictEqual(off.issues.nonProductionWithHours, []);
+
+  const on = graceReport({ graceHoursPerEmployee: 0.5 });
+  assert.strictEqual(byDept(on.departments, 'Non-Production'), undefined);
+  assert.deepStrictEqual(on.issues.nonProductionWithHours, []);
+});
+
+test('a Non-Production employee with hours is surfaced, ordered and still reconciles', () => {
+  // Nora is hourly and sits in Non-Production — the anomaly this finding exists
+  // for. Otto carries a legacy department value that is not assignable at all,
+  // which is a different thing again and sorts after her.
+  const r = buildReport({
+    weekStart: WEEK,
+    dailyRows: DAILY_ROWS.concat([
+      dailyRow({ work_date: '2026-08-04', employee_number: '0110', first_name: 'Nora', last_name: 'Ledger',
+                 department: 'Non-Production', pay_rate: 31, regular_hours: 10, ot_hours: 1, total_hours: 11,
+                 total_earnings: 356.5, regular_dollars: 310, ot_dollars: 46.5 }),
+      dailyRow({ work_date: '2026-08-04', employee_number: '0111', first_name: 'Otto', last_name: 'Kane',
+                 department: 'Kiln', pay_rate: 20, regular_hours: 10, total_hours: 10,
+                 total_earnings: 200, regular_dollars: 200 }),
+      LOG_YARD_ROW
+    ]),
+    overtimeRows: OVERTIME_ROWS,
+    employees: EMPLOYEES.concat([
+      NON_PROD,
+      LOG_YARD_EMPLOYEE,
+      { id: 'np2', name: 'Otto Kane', employee_number: '0111', department: 'Kiln', wage: '20', status: 'Active' }
+    ]),
+    graceHoursPerEmployee: 0
+  });
+
+  // After every production department, before the unrecognised name, and well
+  // before Unassigned: it is neither a real department nor an unknown one.
+  assert.deepStrictEqual(
+    r.departments.map(d => d.department),
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard',
+     'Non-Production', 'Kiln', 'Unassigned']
+  );
+
+  // The bucket is kept, in full, so the department rows still tie to the summary.
+  const np = byDept(r.departments, 'Non-Production');
+  assert.strictEqual(np.week.hours, 11);
+  assert.strictEqual(np.week.otHours, 1);
+  assert.strictEqual(np.week.otDollars, 46.5);
+  assert.strictEqual(np.week.earnings, 356.5);
+  assert.strictEqual(np.week.headcount, 1);
+
+  // Nothing was folded into a production department on the way — including the
+  // newest one, which is an ordinary department and keeps its own hours.
+  assert.strictEqual(byDept(r.departments, 'Production').week.hours, 32);
+  assert.strictEqual(byDept(r.departments, 'Maintenance').week.hours, 18);
+  assert.strictEqual(byDept(r.departments, 'Log Yard').week.hours, 9);
+
+  // Log Yard carries hours in the very same week and is NOT in this finding:
+  // the finding is about the one department that should never have any.
+  assert.deepStrictEqual(r.issues.nonProductionWithHours, [{
+    employeeNumber: '0110',
+    name: 'Nora Ledger',
+    hours: 11,
+    otHours: 1,
+    otDollars: 46.5,
+    earnings: 356.5,
+    graceHours: 0,
+    preApprovedHours: 0
+  }]);
+  // The legacy value is not this finding — it has its own row and nothing else.
+  assert.strictEqual(r.issues.nonProductionWithHours.length, 1);
+
+  const rec = r.issues.reconciliation;
+  assert.strictEqual(rec.balanced, true);
+  assert.strictEqual(rec.hoursDelta, 0);
+  assert.strictEqual(rec.earningsDelta, 0);
+  assert.strictEqual(r2(r.departments.reduce((s, d) => s + d.week.hours, 0)), r.summary.totalHours);
+  assert.strictEqual(r2(r.departments.reduce((s, d) => s + d.week.earnings, 0)), r.summary.totalHourlyPayroll);
+});
+
+test('an hourly Non-Production employee draws grace, and the allowance is surfaced not buried', () => {
+  // Clock grace is a policy about hourly staff, not about which department they
+  // sit in, so Nora draws it in a week she never clocked in. That allowance is
+  // sitting in a department that should not have one — which is the finding,
+  // not something to special-case away.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([NON_PROD])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 4);
+  assert.strictEqual(r.preApproved.grace.hours, 2);
+
+  const nora = byName(r.employees, 'Nora Ledger');
+  assert.strictEqual(nora.department, 'Non-Production');
+  assert.strictEqual(nora.totalHours, 0);
+  assert.strictEqual(nora.graceHours, 0.5);
+  assert.strictEqual(nora.graceDollars, 23.25);   // 0.5 * 31.00 * 1.5
+
+  const np = byDept(r.departments, 'Non-Production');
+  assert.ok(np, 'the allowance needs a department row to be traced to');
+  assert.strictEqual(np.week.hours, 0);
+  assert.strictEqual(np.preApprovedHours, 0.5);
+  assert.strictEqual(np.preApprovedDollars, 23.25);
+  assert.strictEqual(np.netOtHours, -0.5);
+  assert.deepStrictEqual(
+    r.departments.map(d => d.department),
+    ['Maintenance', 'Shipping', 'Production', 'Non-Production']
+  );
+
+  // hours is 0 — the grace allowance is the whole of the evidence, and the
+  // entry says which one it was rather than inflating a department in silence.
+  assert.deepStrictEqual(r.issues.nonProductionWithHours, [{
+    employeeNumber: '0110',
+    name: 'Nora Ledger',
+    hours: 0,
+    otHours: 0,
+    otDollars: 0,
+    earnings: 0,
+    graceHours: 0.5,
+    preApprovedHours: 0
+  }]);
+
+  assert.strictEqual(r.issues.reconciliation.balanced, true);
+  assert.strictEqual(
+    r2(r.departments.reduce((sum, d) => sum + d.preApprovedHours, 0)),
+    r.summary.preApprovedHours);
+  assert.strictEqual(
+    r2(r.departments.reduce((sum, d) => sum + d.preApprovedDollars, 0)),
+    r.summary.preApprovedDollars);
+});
+
+test('a salaried Non-Production employee contributes nothing anywhere', () => {
+  // Which is the whole point of the value: these people are salaried, isSalaryWage
+  // excludes them from grace, and the import never writes them a row. No bucket,
+  // no employee row, no finding.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'np3', name: 'Sam Ledger', employee_number: '0111',
+        department: 'Non-Production', wage: 'Salary', status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 3);
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  assert.strictEqual(byName(r.employees, 'Sam Ledger'), undefined);
+  assert.strictEqual(byDept(r.departments, 'Non-Production'), undefined);
+  assert.deepStrictEqual(r.issues.nonProductionWithHours, []);
+  assert.strictEqual(r.issues.reconciliation.balanced, true);
+});
+
+// ============================================================
 // Employees
 // ============================================================
 
@@ -914,7 +1154,7 @@ test('an empty week still returns the full shape', () => {
 });
 
 test('DEPARTMENTS is the canonical list and does not include the Unassigned bucket', () => {
-  assert.deepStrictEqual(DEPARTMENTS, ['Maintenance', 'Saw Filing', 'Shipping', 'Production']);
+  assert.deepStrictEqual(DEPARTMENTS, ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard']);
   assert.ok(!DEPARTMENTS.includes('Unassigned'));
 });
 
