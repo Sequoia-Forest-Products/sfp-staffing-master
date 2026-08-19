@@ -227,15 +227,30 @@ let state = {
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
-function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).replace(/[$,]/g,'')).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));}
+// Reads the salaried marker through isSalaried so the roster and Staffing
+// Economics cannot disagree about the same employee: a lowercase 'salary'
+// used to render as $NaN here while being correctly excluded there. A blank
+// wage is unknown, not salaried — it used to display as 'Salary', which made a
+// half-entered new hire look like staff they are not.
+function fmtWage(w){
+  if(isSalaried({wage:w}))return 'Salary';
+  const n=parseFloat(String(w==null?'':w).replace(/[$,]/g,''));
+  return isNaN(n)?'—':('$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+}
+
+// employees.wage holds the literal 'Salary' for salaried staff instead of a rate
+// — the same literal fmtWage and formatWageInput key on. Compared trimmed and
+// case-insensitively because the edit form only normalizes casing on blur.
+function isSalaried(emp){return String((emp&&emp.wage)||'').trim().toLowerCase()==='salary';}
 
 // ============================================================
 // PAYROLL SHARED HELPERS
 // ============================================================
 
-// The payroll reporting taxonomy. Deliberately separate from employees.dept
-// (Sawmill / Filing Room / Log Yard / SG&A): nothing maps one onto the other,
-// department is set explicitly per employee.
+// The one department taxonomy, used by both the roster and payroll reporting.
+// The legacy employees.dept column (Sawmill / Filing Room / Log Yard / SG&A) is
+// retired: nothing maps one onto the other, so department is assigned by hand per
+// employee and dept is read for reference only until it is dropped.
 const PAYROLL_DEPARTMENTS=['Maintenance','Saw Filing','Shipping','Production'];
 const DAY_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -369,7 +384,7 @@ function render(){
 function getFiltered(){
   let list = state.employees.filter(e=>
     (state.filterStatus==='all'||e.status===state.filterStatus)&&
-    (state.filterDept==='all'||e.dept===state.filterDept)&&
+    (state.filterDept==='all'||(state.filterDept==='__none__'?!e.department:e.department===state.filterDept))&&
     (!state.filterName||e.name.toLowerCase().includes(state.filterName.toLowerCase()))
   );
   const col = state.sortCol || 'name';
@@ -390,13 +405,14 @@ function renderEmployees(){
   const active=state.employees.filter(e=>e.status==='Active');
   const en=active.filter(e=>e.language==='English').length;
   const es=active.filter(e=>e.language==='Spanish').length;
-  const allDepts=[...new Set(state.employees.map(e=>e.dept))].filter(Boolean).sort();
+  const deptCount=[...new Set(state.employees.map(e=>e.department))].filter(Boolean).length;
+  const noDept=active.filter(e=>!e.department).length;
   const filtered=getFiltered();
   return `
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${active.length}</div><div class="stat-sub">of ${state.employees.length} total</div></div>
       <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${en}</div><div class="stat-sub">${es} Spanish</div></div>
-      <div class="stat-card"><div class="stat-label">Departments</div><div class="stat-value">${allDepts.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Departments</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${PAYROLL_DEPARTMENTS.length} · ${noDept} active unassigned</div></div>
       <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${state.employees.length-active.length}</div><div class="stat-sub">on roster</div></div>
     </div>
     <div class="section-head">
@@ -411,7 +427,8 @@ function renderEmployees(){
       <input type="text" id="empSearch" placeholder="Search by name…" value="${state.filterName}" oninput="state.filterName=this.value;renderEmployeeList()">
       <select onchange="state.filterDept=this.value;renderEmployeeList()">
         <option value="all" ${state.filterDept==='all'?'selected':''}>All departments</option>
-        ${allDepts.map(d=>`<option value="${d}" ${state.filterDept===d?'selected':''}>${d}</option>`).join('')}
+        ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${state.filterDept===d?'selected':''}>${d}</option>`).join('')}
+        <option value="__none__" ${state.filterDept==='__none__'?'selected':''}>— unassigned —</option>
       </select>
       <select onchange="state.filterStatus=this.value;renderEmployeeList()">
         <option value="Active" ${state.filterStatus==='Active'?'selected':''}>Active only</option>
@@ -422,8 +439,8 @@ function renderEmployees(){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          ${['name','wage','dept','department','status','language','days','phone'].map(col=>{
-            const labels={name:'Name',wage:'Wage/hr',dept:'Department',department:'Payroll dept',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
+          ${['name','wage','department','status','language','days','phone'].map(col=>{
+            const labels={name:'Name',wage:'Wage/hr',department:'Department',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
             const active=state.sortCol===col;
             const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
             return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
@@ -435,7 +452,6 @@ function renderEmployees(){
             <tr>
               <td style="font-weight:600">${e.name}</td>
               <td>${fmtWage(e.wage)}</td>
-              <td>${e.dept||'—'}</td>
               <td${e.department?'':' style="color:var(--muted)"'}>${e.department||'—'}</td>
               <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
@@ -444,7 +460,7 @@ function renderEmployees(){
               <td>${smsCell(e)}</td>
               <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
             </tr>`).join(''):
-            '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
+            '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -484,7 +500,7 @@ function renderEmployeeList() {
   // Update stat cards
   const active = state.employees.filter(e => e.status === 'Active');
   const spanish = active.filter(e => e.language === 'Spanish').length;
-  const depts = [...new Set(active.map(e => e.dept).filter(Boolean))].length;
+  const depts = [...new Set(active.map(e => e.department).filter(Boolean))].length;
   const inactive = state.employees.filter(e => e.status === 'Inactive').length;
 
   const statEls = document.querySelectorAll('.stat-value');
@@ -500,7 +516,7 @@ function renderEmployeeList() {
   if (!tbody) return;
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
     return;
   }
 
@@ -509,7 +525,6 @@ function renderEmployeeList() {
     return `<tr>
       <td style="font-weight:600">${e.name}</td>
       <td>${e.wage||'—'}</td>
-      <td style="color:var(--muted)">${e.dept||'—'}</td>
       <td style="color:${e.department?'var(--text)':'var(--muted)'}">${e.department||'—'}</td>
       <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status}</span></td>
       <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
@@ -595,7 +610,7 @@ function openEdit(idx){
   setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
 }
 
-function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.editing={name:'',wage:'',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 function setSyncStatus(s){
@@ -660,7 +675,7 @@ async function saveEdit(){
     e.wage = wage; // Update the editing object with normalized wage
 
     const row={
-      name:e.name, wage:wage, dept:e.dept, status:e.status,
+      name:e.name, wage:wage, status:e.status,
       days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
@@ -698,7 +713,6 @@ async function saveEdit(){
 
 function renderModal(){
   const e=state.editing;
-  const allDepts=[...new Set(state.employees.map(emp=>emp.dept))].filter(Boolean).sort();
   return `
     <div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -714,13 +728,12 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Wage ($/hr or Salary)</label><input type="text" value="${e.wage}" id="wageInput"
             oninput="state.editing.wage=this.value"
             onblur="formatWageInput(this)"></div>
-          <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.dept=this.value">${allDepts.map(d=>`<option value="${d}" ${e.dept===d?'selected':''}>${d}</option>`).join('')}</select></div>
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
-          <div class="form-group"><label class="form-label">Payroll department</label><select onchange="state.editing.department=this.value">
+          <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.department=this.value">
             <option value="" ${e.department?'':'selected'}>— not set —</option>
             ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${e.department===d?'selected':''}>${d}</option>`).join('')}
           </select></div>
-          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Payroll department drive the daily hours import and the OT report. Payroll department is a separate field from Department above and is never filled in automatically.</div></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. Department is never filled in automatically — set it here, or in bulk on the back-fill screen.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
           <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>
@@ -776,8 +789,9 @@ function renderEcon(){
   const burden = state.burden;
   const mhr = state.mhr;
 
-  // Active non-SGA employees
-  const eligible = state.employees.filter(e=>e.status==='Active' && e.dept!=='SG&A');
+  // Active hourly employees. This report is about hourly labour wages, and the
+  // old dept!=='SG&A' test was only ever a proxy for "salaried", so test the wage.
+  const eligible = state.employees.filter(e=>e.status==='Active' && !isSalaried(e));
 
   // Find duplicates
   const nameCount = {};
@@ -1848,7 +1862,7 @@ async function syncToSheet(){
   try{
     for(const e of state.employees){
       const row={
-        name:e.name, wage:e.wage, dept:e.dept, status:e.status,
+        name:e.name, wage:e.wage, status:e.status,
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
@@ -1928,10 +1942,41 @@ function openBackfill(){
 
 function closeBackfill(){state.backfill=null;render();}
 
+// Filing Room -> Saw Filing is the one legacy value with a defensible rename, so
+// it is offered as a SUGGESTION only: the row's department stays blank until the
+// operator accepts it, which means an untouched suggested row saves nothing.
+// Nothing is suggested for Sawmill / Log Yard / SG&A — those never mapped onto the
+// four-value taxonomy and a confident-looking wrong pre-fill is worse than a blank.
+const LEGACY_DEPT_SUGGESTIONS={'filing room':'Saw Filing'};
+function suggestedDept(r){
+  if(!r||r.department||r.sugDismissed) return '';
+  return LEGACY_DEPT_SUGGESTIONS[String(r.dept||'').trim().toLowerCase()]||'';
+}
+
+function acceptSuggestion(idx){
+  const row=(state.backfill||[]).find(r=>r.idx===idx);
+  const sug=suggestedDept(row);
+  if(!sug) return;
+  row.department=sug;
+  render();
+}
+
+function acceptAllSuggestions(){
+  const rows=(state.backfill||[]).filter(r=>suggestedDept(r));
+  if(!rows.length){toast('No suggestions to accept','');return;}
+  rows.forEach(r=>{r.department=suggestedDept(r);});
+  render();
+  toast(rows.length+' suggestion'+(rows.length===1?'':'s')+' applied — still unsaved','success');
+}
+
 function backfillCounts(){
   const rows=state.backfill||[];
+  const act=rows.filter(r=>r.status==='Active');
   return {
     total:rows.length,
+    activeTotal:act.length,
+    activeNoDept:act.filter(r=>!r.department).length,
+    suggested:rows.filter(r=>suggestedDept(r)).length,
     noNum:rows.filter(r=>!String(r.empNum).trim()).length,
     noDept:rows.filter(r=>!r.department).length,
     changed:rows.filter(r=>normEmpNum(r.empNum)!==r.origNum||r.department!==r.origDept).length
@@ -1955,11 +2000,23 @@ function backfillDupes(){
 function backfillMetaHtml(){
   const c=backfillCounts();
   const dupes=backfillDupes();
-  return `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;align-items:center">
+  const gate=c.activeNoDept
+    ? `<div style="font-size:15px;font-weight:800;color:var(--brick);margin-bottom:6px">${c.activeNoDept} of ${c.activeTotal} active employees still need a department</div>
+       <div style="font-size:11px;color:var(--muted);margin-bottom:10px">This has to reach zero before the legacy roster dept column can be dropped.</div>`
+    : `<div style="font-size:15px;font-weight:800;color:#2a7a47;margin-bottom:6px">✓ All ${c.activeTotal} active employees have a department</div>
+       <div style="font-size:11px;color:var(--muted);margin-bottom:10px">The legacy roster dept column is ready to be dropped.</div>`;
+  const suggestBlock=c.suggested?`<div style="margin-top:10px;background:#fff8e6;border:1px solid #e3c789;border-radius:4px;padding:8px 10px;font-size:11px;color:#6b5200;line-height:1.5">
+      <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <span><strong>${c.suggested} suggested value${c.suggested===1?'':'s'}</strong> — a guess from the legacy roster dept, shown in amber. Nothing is saved unless you accept it. Only Filing Room → Saw Filing is suggested; Sawmill, Log Yard and SG&amp;A have no defensible mapping, so those are left blank on purpose.</span>
+        <button class="btn btn-outline btn-sm" style="white-space:nowrap" onclick="acceptAllSuggestions()">Accept all suggestions</button>
+      </div>
+    </div>`:'';
+  return `${gate}<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;align-items:center">
       <span><strong style="color:${c.noNum?'var(--brick)':'#2a7a47'}">${c.noNum}</strong> of ${c.total} still have no employee #</span>
       <span><strong style="color:${c.noDept?'var(--brick)':'#2a7a47'}">${c.noDept}</strong> of ${c.total} still have no payroll department</span>
       <span style="color:var(--muted)">${c.changed} row${c.changed===1?'':'s'} changed</span>
     </div>
+    ${suggestBlock}
     ${dupes.length?`<div style="margin-top:8px;background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 10px;font-size:12px;color:#7a1f1f"><strong>Duplicate employee #:</strong> ${dupes.map(esc).join(', ')} — the database rejects the second one, so fix these before saving.</div>`:''}`;
 }
 
@@ -1971,6 +2028,17 @@ function refreshBackfillMeta(){
     const input=document.getElementById('bf-num-'+r.idx);
     if(input) input.style.borderColor=dupes.indexOf(normEmpNum(r.empNum))>=0?'var(--brick)':'var(--border)';
   });
+}
+
+// The department select re-renders instead of patching in place, so the amber
+// "suggested" affordance disappears the moment the operator makes a real choice.
+// Choosing "— not set —" on a suggested row is an explicit reject: it is dismissed.
+function backfillSetDept(idx,value){
+  const row=(state.backfill||[]).find(r=>r.idx===idx);
+  if(!row) return;
+  row.department=value;
+  if(!value) row.sugDismissed=true;
+  render();
 }
 
 function backfillSet(idx,field,value){
@@ -1992,7 +2060,7 @@ function renderBackfill(){
         <div class="modal-body" style="padding:20px 24px">
           <div style="font-size:12px;color:var(--textDim);line-height:1.55;margin-bottom:12px">
             Employee # is the payroll system id that the daily hours file arrives with, zero-padded to four characters.
-            Payroll department is a separate field from the roster Department shown here for reference — nothing fills it in automatically, not from the roster department, not from wage, not from the job title. Set it explicitly for every employee.
+            Department is the one department field on the roster. The Roster dept column below is the retired legacy taxonomy, kept visible here only as a reference while you assign — nothing is filled in automatically from it, from wage, or from the job title. Set it explicitly for every employee.
             Do this before importing payroll: <code>daily_hours</code> snapshots the department at import, so rows imported first land unassigned and have to be re-stamped.
           </div>
           <div id="bfMeta" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:12px">${backfillMetaHtml()}</div>
@@ -2005,20 +2073,24 @@ function renderBackfill(){
               <thead><tr>
                 <th>Employee</th><th style="width:70px">Status</th>
                 <th style="width:120px">Roster dept<div style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">reference only</div></th>
-                <th style="width:110px">Employee #</th><th style="width:160px">Payroll department</th>
+                <th style="width:110px">Employee #</th><th style="width:180px">Department</th>
               </tr></thead>
               <tbody>
-                ${rows.length?rows.map(r=>`<tr>
+                ${rows.length?rows.map(r=>{
+                const sug=suggestedDept(r);
+                return `<tr>
                   <td style="font-weight:600">${esc(r.name)}</td>
                   <td><span class="badge ${r.status==='Active'?'active':'inactive'}">${esc(r.status||'—')}</span></td>
                   <td style="color:var(--muted);font-size:11px">${esc(r.dept||'—')}</td>
                   <td><input type="text" id="bf-num-${r.idx}" value="${esc(r.empNum)}" placeholder="0319" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%"
                     oninput="backfillSet(${r.idx},'empNum',this.value)" onchange="this.value=normEmpNum(this.value);backfillSet(${r.idx},'empNum',this.value)"></td>
-                  <td><select style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%" onchange="backfillSet(${r.idx},'department',this.value)">
-                    <option value="" ${r.department?'':'selected'}>— not set —</option>
+                  <td><select style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%${sug?';border-color:#b8860b;background:#fff8e6;color:#6b5200;font-style:italic':''}" onchange="backfillSetDept(${r.idx},this.value)">
+                    ${sug?`<option value="" selected>${sug} — suggested</option>`:''}
+                    <option value="" ${(r.department||sug)?'':'selected'}>— not set —</option>
                     ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${r.department===d?'selected':''}>${d}</option>`).join('')}
-                  </select></td>
-                </tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Every employee has both fields filled in.</td></tr>'}
+                  </select>
+                  ${sug?`<button class="btn btn-outline btn-sm" style="margin-top:4px;padding:2px 8px;font-size:11px;border-color:#b8860b;color:#6b5200" onclick="acceptSuggestion(${r.idx})">Accept ${sug}</button>`:''}</td>
+                </tr>`;}).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Every employee has both fields filled in.</td></tr>'}
               </tbody>
             </table>
           </div>
