@@ -215,7 +215,8 @@ let state = {
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
-  emailSettings:{managers:[], autoSend:false},
+  emailSettings:{managers:[], autoSend:false, otBudgetPercent:10},
+  otEmailSending:false,
   backfill:null, backfillOnlyIncomplete:false,
   dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null,
   dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
@@ -1123,6 +1124,77 @@ async function loadOTReport(week){
   state.otReportLoading=false; render();
 }
 
+// ============================================================
+// MANAGER OT EMAIL
+// ============================================================
+
+// The old email hardcoded 10%. It drives an over/under-budget flag managers act on,
+// so it lives in emailSettings and is editable on the Settings tab.
+const OT_BUDGET_DEFAULT=10;
+function otBudgetPct(){const v=Number(state.emailSettings.otBudgetPercent);return isFinite(v)&&v>=0?v:OT_BUDGET_DEFAULT;}
+
+function otWeekRangeLabel(a,b){
+  const pa=dateParts(a),pb=dateParts(b);
+  if(!pa||!pb) return '—';
+  const lbl=(iso,p)=>dayNameOf(iso).slice(0,3)+' '+MONTH_ABBR[p[1]-1]+' '+p[2];
+  return lbl(a,pa)+' – '+lbl(b,pb)+', '+pb[0];
+}
+
+// Every dollar figure here comes straight off the report, which takes OT dollars as the
+// residual of the payroll system's own blended earnings — a flat 1.5x undercounts the
+// 4x10 double-time hours by ~3%, so nothing is recomputed from hours and a rate.
+function otEmailPayload(){
+  const r=state.otReport; if(!r) return null;
+  const s=r.summary||{};
+  const payroll=Number(s.totalHourlyPayroll)||0;
+  const pct=d=>payroll>0?((Number(d)||0)/payroll*100).toFixed(1):'0.0';
+  const exceeded=(r.employees||[]).filter(e=>(Number(e.netOtHours)||0)>0)
+    .sort((a,b)=>(Number(b.netOtHours)||0)-(Number(a.netOtHours)||0));
+  const shown=exceeded.slice(0,15);
+  const regular=(Number(s.totalHours)||0)-(Number(s.allOtHours)||0);
+  return {
+    dateRange:otWeekRangeLabel(r.weekStart,r.weekEnd),
+    totalPayroll:payroll.toFixed(2),
+    totalOTHours:(Number(s.allOtHours)||0).toFixed(2),
+    totalRegularHours:regular.toFixed(2),
+    totalPreApprovedHours:(Number(s.preApprovedHours)||0).toFixed(2),
+    netOTHours:(Number(s.netOtHours)||0).toFixed(2),
+    totalOTPercent:pct(s.allOtDollars),
+    preApprovedOTPercent:pct(s.preApprovedDollars),
+    netOTPercent:pct(s.netOtDollars),
+    otBudgetPercent:otBudgetPct().toFixed(1),
+    employeeCount:Number(s.headcount)||0,
+    exceededEmployees:shown.map(e=>({name:e.name||('#'+e.employeeNumber),unapprovedHours:(Number(e.netOtHours)||0).toFixed(2)})),
+    exceededOmitted:exceeded.length-shown.length,
+    reportLink:'https://seq-staffing.netlify.app/app.html',
+    uploadTime:new Date().toLocaleString('en-US',{timeZone:'America/Los_Angeles',month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})+' PT'
+  };
+}
+
+async function sendOTReportEmail(opts){
+  const auto=!!(opts&&opts.auto);
+  const managers=state.emailSettings.managers||[];
+  if(!managers.length){ if(!auto) toast('No managers configured in Settings','error'); return false; }
+  const data=otEmailPayload();
+  if(!data){ toast('Load the OT report before emailing it','error'); return false; }
+  state.otEmailSending=true; render();
+  let ok=false;
+  try{
+    const res=await fetch('/api/send-ot-email',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to:managers,subject:'OT Report: '+data.dateRange,data})});
+    if(res.status===401){state.otEmailSending=false;location.href='/';return false;}
+    let json=null; try{json=await res.json();}catch(e){json=null;}
+    const sent=(json&&json.sent)||0, failed=(json&&json.failed)||0;
+    if(!res.ok&&!sent) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
+    ok=sent>0;
+    toast(sent+' manager email'+(sent===1?'':'s')+' sent for '+data.dateRange+(failed?(' — '+failed+' failed'):''),failed?'warning':'success');
+  }catch(err){
+    toast('Manager email failed: '+err.message,'error');
+  }
+  state.otEmailSending=false; render();
+  return ok;
+}
+
 function otSort(col){
   if(state.otSortCol===col) state.otSortDir=state.otSortDir==='asc'?'desc':'asc';
   else{state.otSortCol=col;state.otSortDir='desc';}
@@ -1168,6 +1240,9 @@ const otReportStyle=`<style>
 
 function renderOTReport(){
   const weeks=state.otReportWeeks||[];
+  const mgrs=(state.emailSettings.managers||[]).length;
+  const emailBlocked=state.otEmailSending?'Sending…':(!mgrs?'Add manager recipients on the Settings tab first':(!state.otReport?'Load a week before emailing it':''));
+  const emailBtn=`<button class="btn btn-outline btn-sm" onclick="sendOTReportEmail()" ${emailBlocked?'disabled':''} title="${esc(emailBlocked||('Email this week to '+mgrs+' manager'+(mgrs===1?'':'s')))}">${state.otEmailSending?'Sending…':'Email managers'}</button>`;
   const picker=`
     <div class="ot-bar">
       <label class="ot-bar-label">Work week (Mon–Sun)</label>
@@ -1175,6 +1250,7 @@ function renderOTReport(){
         ${weeks.length?weeks.map(w=>`<option value="${w.weekStart}" ${w.weekStart===state.otReportWeek?'selected':''}>${fmtDate(w.weekStart)} – ${fmtDate(w.weekEnd)} · ${w.days} days · ${fmtHrs(w.totalHours)} hrs</option>`).join(''):'<option value="">No week has data yet</option>'}
       </select>
       <button class="btn btn-outline btn-sm" onclick="loadOTReport(state.otReportWeek)">Refresh</button>
+      ${emailBtn}
       <button class="btn btn-outline btn-sm" onclick="goToTab('dailyhours')">Daily Hours</button>
       <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
     </div>`;
@@ -1699,6 +1775,15 @@ async function addManager(){
   toast('Manager added and saved','success');
 }
 
+async function setOTBudgetPercent(v){
+  const n=Number(v);
+  if(!isFinite(n)||n<0||n>100){toast('Enter the OT budget as a percentage between 0 and 100','error');render();return;}
+  state.emailSettings.otBudgetPercent=Math.round(n*10)/10;
+  await saveEmailSettings();
+  render();
+  toast('OT budget saved','success');
+}
+
 async function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
   await saveEmailSettings();
@@ -1962,14 +2047,27 @@ async function commitDailyImport(){
   if(overwrite&&!confirm('Overwrite the '+(p.existing.rowCount||0)+' rows already imported for '+fmtDate(f.workDate)+'?\n\nThe day is deleted and re-inserted, so anyone dropped from a corrected re-send disappears too.')) return;
 
   state.dailyBusy=true; render();
+  let imported=false;
   try{
     const json=await payrollPost({action:'commit',fileName:f.fileName,fileBase64:f.fileBase64,workDate:f.workDate,confirmOverwrite:overwrite});
     toast((json.inserted||0)+' rows imported for '+fmtDate(f.workDate)+(json.replaced?(', '+json.replaced+' replaced'):''),'success');
     state.dailyPreview=null; state.dailyPreviewFile=null;
     state.otReport=null;  // the week that just changed has to be refetched
     await loadDailyDays();
+    imported=true;
   }catch(err){
     toast('Import failed: '+err.message,'error');
+  }
+  // Auto-send is a courtesy on top of the import and never fails it. The week has to be
+  // reloaded first, or the email reports whatever was on screen before this import.
+  if(imported&&state.emailSettings.autoSend&&(state.emailSettings.managers||[]).length){
+    try{
+      await loadOTReport(f.workDate);
+      if(state.otReport) await sendOTReportEmail({auto:true});
+      else toast('Imported, but the OT report would not load — no manager email sent','warning');
+    }catch(err){
+      toast('Imported, but the manager email failed: '+err.message,'warning');
+    }
   }
   state.dailyBusy=false; render();
 }
@@ -2307,9 +2405,18 @@ function renderSettings(){
         <div style="margin-bottom:20px">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
             <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;saveEmailSettings();render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
-            <span style="font-size:14px;font-weight:600">Auto-send OT reports to managers when files are uploaded</span>
+            <span style="font-size:14px;font-weight:600">Auto-send the weekly OT report after a Daily Hours import</span>
           </label>
-          <div style="font-size:12px;color:var(--muted);margin-top:6px;margin-left:26px">Automatically email OT reports to all configured manager recipients</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px;margin-left:26px">When a day is imported on the Daily Hours tab, the whole Mon–Sun week it belongs to is reloaded and emailed to every manager below. You can also send it by hand from the OT Report tab.</div>
+        </div>
+
+        <div style="margin-bottom:20px">
+          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">OT Budget</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="number" min="0" max="100" step="0.1" value="${otBudgetPct()}" onchange="setOTBudgetPercent(this.value)" style="width:90px;font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:8px 10px">
+            <span style="font-size:13px;color:var(--muted)">% of hourly payroll</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px">The emailed report flags all-in OT as over or under budget against this number. Default ${OT_BUDGET_DEFAULT}%.</div>
         </div>
 
         <div style="margin-top:24px">
