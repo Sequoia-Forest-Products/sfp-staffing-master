@@ -418,10 +418,11 @@ test('a failure on one message does not stop the others', async () => {
 // ============================================================
 
 function missedHarness(now, overrides = {}, runOpts = {}) {
-  const calls = { alerts: [], ranges: [], ledgerOpts: [] };
+  const calls = { alerts: [], ranges: [], ledgerOpts: [], stamps: [] };
   const deps = Object.assign({
     fetchDailyHours: async (from, to) => { calls.ranges.push([from, to]); return []; },
     listProcessedEmails: async (opts) => { calls.ledgerOpts.push(opts); return []; },
+    upsertProcessedEmail: async rec => { calls.stamps.push(rec); return rec; },
     sendAlert: async (subject, body) => { calls.alerts.push({ subject, body }); }
   }, overrides);
 
@@ -500,4 +501,364 @@ test('a dry-run missed check sends nothing', async () => {
   assert.strictEqual(result.status, 'dry-run');
   assert.strictEqual(result.notified, false);
   assert.strictEqual(calls.alerts.length, 0);
+});
+
+// ============================================================
+// A failed alert is a failed run
+//
+// Both scheduled functions catch a sendAlert failure. If that stays a log line
+// and an HTTP 200, a rotated GMAIL_APP_PASSWORD looks identical to a quiet
+// week: Netlify records a successful run and nobody learns the payroll data
+// stopped arriving. The status code is the only signal that leaves the process.
+// ============================================================
+
+test('an ingest that cannot deliver its alert reports the run as failed', async () => {
+  const { result, calls } = await harness(
+    [message({ id: '<spam-2@example.com>', from: 'billing@customer.example' })],
+    { sendAlert: async () => { throw new Error('SMTP connection refused'); } }
+  );
+
+  assert.strictEqual(result.notified, false);
+  assert.strictEqual(result.alertRequired, true);
+  assert.strictEqual(result.alertFailed, true);
+  assert.strictEqual(result.failed, true, 'the handler keys its HTTP status off this');
+  assert.match(result.alertError, /SMTP connection refused/);
+  assert.strictEqual(result.status, 'alert-failed');
+  // notified_at must never be stamped for an email that did not go out.
+  assert.strictEqual(calls.ledger[0].notified_at, null);
+});
+
+test('a clean ingest run with nothing to report is not a failure', async () => {
+  const { result } = await harness([message()], {
+    sendAlert: async () => { throw new Error('SMTP connection refused'); }
+  });
+
+  assert.strictEqual(result.alertRequired, false);
+  assert.strictEqual(result.failed, false, 'nothing to say means nothing to fail at');
+  assert.strictEqual(result.status, 'ok');
+});
+
+test('a dry run that cannot alert is not a failure — it never tried', async () => {
+  const { result } = await harness(
+    [message({ id: '<spam-3@example.com>', from: 'billing@customer.example' })],
+    { sendAlert: async () => { throw new Error('SMTP connection refused'); } },
+    { dryRun: true }
+  );
+
+  assert.strictEqual(result.failed, false);
+  assert.strictEqual(result.alertRequired, false);
+});
+
+test('a missed check that cannot deliver its alert reports the run as failed', async () => {
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    sendAlert: async () => { throw new Error('Invalid login: 535 bad credentials'); }
+  });
+
+  assert.strictEqual(result.missing[0].escalate, true, 'there was something to report');
+  assert.strictEqual(result.notified, false);
+  assert.strictEqual(result.alertFailed, true);
+  assert.strictEqual(result.failed, true);
+  assert.strictEqual(result.status, 'error');
+  assert.match(result.alertError, /535 bad credentials/);
+  assert.strictEqual(calls.stamps.length, 0, 'nothing is stamped as notified');
+});
+
+test('a Supabase outage still attempts an alert, and still fails the run', async () => {
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    fetchDailyHours: async () => { throw new Error('supabase 503'); }
+  });
+
+  // The old code let this throw before any alert could be attempted — the
+  // watchdog going down exactly when it is needed.
+  assert.strictEqual(calls.alerts.length, 1, 'a Supabase failure must still send mail');
+  assert.match(calls.alerts[0].subject, /could not confirm whether payroll arrived/i);
+  assert.match(calls.alerts[0].body, /COULD NOT CHECK/);
+  assert.match(calls.alerts[0].body, /supabase 503/);
+
+  assert.deepStrictEqual(result.missing, [], 'nothing may be claimed about days we could not read');
+  assert.match(result.dataError, /supabase 503/);
+  assert.strictEqual(result.notified, true);
+  assert.strictEqual(result.failed, true, 'an unverified pipeline is not a green run');
+  assert.strictEqual(result.status, 'error');
+});
+
+test('a ledger read failure is alerted on and fails the run', async () => {
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    fetchDailyHours: async () => [{ work_date: '2026-08-17' }],
+    listProcessedEmails: async () => { throw new Error('processed_emails timeout'); }
+  });
+
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].body, /processed_emails timeout/);
+  assert.match(result.ledgerError, /processed_emails timeout/);
+  assert.strictEqual(result.failed, true);
+});
+
+// ============================================================
+// Handlers: the status code carries the signal
+// ============================================================
+
+// Both scheduled handlers destructure their runner at require time, so the lib
+// export is swapped before the handler module is (re-)loaded.
+async function invokeHandler(handlerPath, runnerName, fakeRunner) {
+  const libFile = require.resolve('../netlify/functions/payroll-email-lib');
+  const handlerFile = require.resolve(handlerPath);
+  const lib = require(libFile);
+  const original = lib[runnerName];
+  const realError = console.error;
+
+  lib[runnerName] = fakeRunner;
+  delete require.cache[handlerFile];
+  console.error = () => {};
+  try {
+    const { handler } = require(handlerFile);
+    return await handler({}, {});
+  } finally {
+    console.error = realError;
+    lib[runnerName] = original;
+    delete require.cache[handlerFile];
+  }
+}
+
+test('the ingest handler returns 5xx when the alert did not go out', async () => {
+  const failed = await invokeHandler('../netlify/functions/payroll-email-ingest',
+    'runPayrollIngest',
+    async () => ({ status: 'alert-failed', failed: true, alertError: 'SMTP down' }));
+  assert.strictEqual(failed.statusCode, 500);
+  assert.match(failed.body, /SMTP down/);
+
+  const clean = await invokeHandler('../netlify/functions/payroll-email-ingest',
+    'runPayrollIngest',
+    async () => ({ status: 'ok', failed: false }));
+  assert.strictEqual(clean.statusCode, 200);
+});
+
+test('the missed-check handler returns 5xx when it could not do its job', async () => {
+  for (const result of [
+    { status: 'error', failed: true, alertError: 'SMTP down' },
+    { status: 'error', failed: true, dataError: 'supabase 503' }
+  ]) {
+    const res = await invokeHandler('../netlify/functions/payroll-missed-check',
+      'runMissedDeliveryCheck', async () => result);
+    assert.strictEqual(res.statusCode, 500);
+  }
+
+  const clean = await invokeHandler('../netlify/functions/payroll-missed-check',
+    'runMissedDeliveryCheck', async () => ({ status: 'ok', failed: false }));
+  assert.strictEqual(clean.statusCode, 200);
+});
+
+// ============================================================
+// Alert fatigue: what the daily check is allowed to say twice
+// ============================================================
+
+const HOURS = 3600000;
+const MISSED_NOW = '2026-08-18T18:00:00Z';           // Tue 11:00 Pacific
+const HAVE_TUESDAY = async () => [{ work_date: '2026-08-17' }];
+
+function ledgerRow(extra = {}) {
+  return Object.assign({
+    message_id: '<pending-1@centralservers.com>',
+    status: 'pending_review',
+    work_date: '2026-08-16',
+    subject: 'Work Summary Payroll',
+    received_at: '2026-08-17T13:04:00Z',
+    processed_at: '2026-08-17T13:20:00Z',
+    error: 'two different files resolve to 2026-08-16',
+    notified_at: null,
+    flags: ['duplicate_day']
+  }, extra);
+}
+
+test('a resolved email is terminal — never alerted on, never pending', async () => {
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [
+      ledgerRow({ message_id: '<resolved@x>', status: 'resolved' })
+    ]
+  });
+
+  assert.deepStrictEqual(result.pendingReview, [], 'a human already dealt with it');
+  assert.strictEqual(result.notified, false);
+  assert.strictEqual(result.status, 'ok');
+  assert.strictEqual(calls.alerts.length, 0);
+});
+
+test('duplicate_file and rejected are logged-and-fine, not actionable', async () => {
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [
+      ledgerRow({ message_id: '<dupe@x>', status: 'duplicate_file' }),
+      ledgerRow({ message_id: '<nope@x>', status: 'rejected' }),
+      ledgerRow({ message_id: '<dupday@x>', status: 'duplicate_day' })
+    ]
+  });
+
+  assert.deepStrictEqual(result.pendingReview, []);
+  assert.strictEqual(calls.alerts.length, 0, 'the ingest already reported these once');
+});
+
+test('a pending email reported less than 24h ago is not reported again', async () => {
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [
+      ledgerRow({ notified_at: new Date(Date.parse(MISSED_NOW) - 2 * HOURS).toISOString() })
+    ]
+  });
+
+  assert.strictEqual(result.pendingReview.length, 1, 'still visible in the result');
+  assert.strictEqual(result.pendingReview[0].dueForAlert, false);
+  assert.strictEqual(result.pendingAlerted, 0);
+  assert.strictEqual(result.pendingSuppressed, 1);
+  assert.strictEqual(calls.alerts.length, 0, 'nothing ever clears these — daily mail is fatigue');
+  assert.strictEqual(result.notified, false);
+  assert.strictEqual(result.status, 'ok');
+  assert.strictEqual(result.failed, false);
+});
+
+test('a pending email last reported over 24h ago is reported again and re-stamped', async () => {
+  const notifiedAt = new Date(Date.parse(MISSED_NOW) - 26 * HOURS).toISOString();
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [ledgerRow({ notified_at: notifiedAt })]
+  });
+
+  assert.strictEqual(result.pendingAlerted, 1);
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.strictEqual(calls.stamps.length, 1);
+  assert.strictEqual(calls.stamps[0].message_id, '<pending-1@centralservers.com>');
+  assert.strictEqual(calls.stamps[0].status, 'pending_review',
+    'the patch carries status so the NOT NULL column survives the upsert');
+  assert.ok(Date.parse(calls.stamps[0].notified_at) > Date.parse(notifiedAt));
+});
+
+test('a long-unresolved email escalates its wording instead of repeating', async () => {
+  const { calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [
+      ledgerRow({ received_at: '2026-08-10T13:04:00Z', processed_at: '2026-08-10T13:20:00Z' })
+    ]
+  });
+
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].body, /UNRESOLVED SINCE 2026-08-10 \(8 days\)/);
+  assert.match(calls.alerts[0].subject, /oldest unresolved since 2026-08-10/);
+});
+
+test('notified_at is stamped only on rows whose email actually went out', async () => {
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    fetchDailyHours: HAVE_TUESDAY,
+    listProcessedEmails: async () => [ledgerRow()],
+    sendAlert: async () => { throw new Error('SMTP down'); }
+  });
+
+  assert.strictEqual(calls.stamps.length, 0);
+  assert.strictEqual(result.failed, true, 'and the run is not green');
+});
+
+test('a suppressed pending row is still counted in an alert sent for another reason', async () => {
+  // A missing Monday alerts regardless; the recently-reported email is named as
+  // a count, not repeated in full.
+  const { result, calls } = await missedHarness(MISSED_NOW, {
+    listProcessedEmails: async () => [
+      ledgerRow({ notified_at: new Date(Date.parse(MISSED_NOW) - 2 * HOURS).toISOString() })
+    ]
+  });
+
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].subject, /2026-08-17/);
+  assert.match(calls.alerts[0].body, /1 other email\(s\) are still unresolved/);
+  assert.doesNotMatch(calls.alerts[0].body, /two different files resolve/);
+  assert.strictEqual(calls.stamps.length, 0, 'a suppressed row is not re-stamped');
+  assert.strictEqual(result.pendingSuppressed, 1);
+});
+
+// ============================================================
+// A bounded run must never read as a complete one
+// ============================================================
+
+test('a truncated mailbox scan alerts and does not report itself as clean', async () => {
+  const messages = [message()];
+  messages.truncated = true;
+  messages.totalAvailable = 250;
+
+  const { result, calls } = await harness(messages);
+
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.totalAvailable, 250);
+  assert.strictEqual(result.imported, 1);
+  assert.strictEqual(result.status, 'attention', 'not "ok" — messages went unexamined');
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].subject, /truncated/i);
+  assert.match(calls.alerts[0].body, /newest 1 of 250/);
+  assert.match(calls.alerts[0].body, /not a complete pass/);
+});
+
+test('an untruncated run says so', async () => {
+  const { result, calls } = await harness([message()]);
+  assert.strictEqual(result.truncated, false);
+  assert.strictEqual(result.totalAvailable, 1);
+  assert.strictEqual(calls.alerts.length, 0);
+});
+
+// ============================================================
+// payroll-email-test: GET is dry-run only
+// ============================================================
+
+// The endpoint is authorised by the session cookie alone, so before this a link
+// or an <img> on any page could import live payroll out of a signed-in browser.
+// A cross-site POST carries no SameSite=Lax cookie, so writes go over POST.
+function testEndpoint(event) {
+  const file = require.resolve('../netlify/functions/payroll-email-test');
+  delete require.cache[file];
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    return require(file).handler(Object.assign({
+      httpMethod: 'GET', headers: {}, queryStringParameters: {}, body: null
+    }, event));
+  } finally {
+    console.error = realError;
+  }
+}
+
+test('a GET that would import or send is refused', async () => {
+  process.env.PAYROLL_TRIGGER_SECRET = 'test-secret';
+  try {
+    for (const params of [{ send: 'true' }, { commit: 'true' }, { check: 'missed', send: 'true' }]) {
+      const res = await testEndpoint({
+        httpMethod: 'GET',
+        headers: { 'x-payroll-secret': 'test-secret' },
+        queryStringParameters: params
+      });
+      assert.strictEqual(res.statusCode, 405, JSON.stringify(params));
+      assert.match(res.body, /POST/);
+    }
+  } finally {
+    delete process.env.PAYROLL_TRIGGER_SECRET;
+  }
+});
+
+test('the browser dry run still works over GET', async () => {
+  process.env.PAYROLL_TRIGGER_SECRET = 'test-secret';
+  delete process.env.PAYROLL_IMAP_USER;
+  delete process.env.PAYROLL_IMAP_PASSWORD;
+  try {
+    const res = await testEndpoint({
+      httpMethod: 'GET',
+      headers: { 'x-payroll-secret': 'test-secret' },
+      queryStringParameters: {}
+    });
+    // It gets past the method gate and into the run, which then stops at the
+    // missing IMAP credentials — no network, no writes.
+    assert.notStrictEqual(res.statusCode, 405);
+    assert.match(res.body, /PAYROLL_IMAP_USER/);
+  } finally {
+    delete process.env.PAYROLL_TRIGGER_SECRET;
+  }
+});
+
+test('an unauthorised call is still 401 before anything else', async () => {
+  const res = await testEndpoint({ httpMethod: 'POST', queryStringParameters: { send: 'true' } });
+  assert.strictEqual(res.statusCode, 401);
 });

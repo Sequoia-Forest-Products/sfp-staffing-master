@@ -156,8 +156,14 @@ create table if not exists processed_emails (
   message_id text primary key,
   processed_at timestamptz not null default now(),
   work_date date,
-  -- 'imported' | 'duplicate_file' | 'duplicate_day' | 'pending_review'
-  -- | 'rejected' | 'error'
+  -- 'imported'       — rows landed in daily_hours
+  -- 'duplicate_file'  — same bytes already imported; logged, no action needed
+  -- 'rejected'        — labelled but not from the expected sender; logged
+  -- 'pending_review'  — could not be imported safely; needs a person
+  -- 'error'           — parse or write failure; needs a person
+  -- 'resolved'        — a person dealt with it; terminal, never alerts again
+  -- Deliberately unconstrained: a new status must not require a migration, and
+  -- an unrecognised one is surfaced rather than rejected at write time.
   status text not null,
   error text,
   subject text,
@@ -213,6 +219,14 @@ create index if not exists processed_emails_hash_idx      on processed_emails (f
 --        array_agg(distinct work_date order by work_date) as dates
 -- from daily_hours where file_hash is not null
 -- group by file_hash having count(distinct work_date) > 1;
+
+-- 4g. The ingestion queue: anything still waiting on a person. 'resolved' rows
+--     are closed and never alert again; 'duplicate_file' and 'rejected' are
+--     logged and need nothing.
+-- select processed_emails.received_at, status, subject, error, flags
+-- from processed_emails
+-- where status in ('pending_review', 'error')
+-- order by received_at desc;
 
 -- 4f. Scheduled work days (Mon-Thu) in the last 30 days with no data at all.
 --     Every one of these is a missed delivery.

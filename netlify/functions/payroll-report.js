@@ -4,7 +4,7 @@
 //                      Monday). Omitted => the most recent week that has data,
 //                      and the current week when there is none at all.
 //
-// Response: { ok: true, report, availableWeeks: [...] }
+// Response: { ok: true, report, availableWeeks: [...], truncated, dataWindow }
 //
 // This function only fetches and shapes. Every number in `report` comes out of
 // ot-report-lib.js, which is pure, so the arithmetic is tested without a network
@@ -21,10 +21,21 @@ const SESSION_SECRET = process.env.SESSION_SECRET;
 // America/Boise for the mill's own clock — these are two different questions.
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
 
-// availableWeeks is derived in JS from one bounded fetch rather than scanning the
-// whole table. ~57 weeks of history is plenty for a week picker and keeps the
-// request to a single round trip that also serves the selected week's rows.
+// availableWeeks is derived in JS from a bounded window rather than by scanning
+// the whole table. ~57 weeks of history is plenty for a week picker.
 const WINDOW_DAYS = 400;
+
+// The three columns availableWeeks is built from. The window covers ~17,000
+// rows at a full mill, and pulling all 23 daily_hours columns for every one of
+// them just to list the weeks that have data is most of a megabyte of payroll
+// detail nobody reads.
+const WEEK_INDEX_COLUMNS = 'work_date,total_hours,total_earnings';
+
+// Page size for the window scan, and the ceiling on how many pages it will walk
+// before it gives up and says so. 40 pages covers 200,000 rows outright, and
+// still covers 40,000 against a project that caps responses at 1,000 rows.
+const WEEK_INDEX_PAGE_SIZE = 5000;
+const WEEK_INDEX_MAX_PAGES = 40;
 
 const DAY_MS = 86400000;
 
@@ -101,6 +112,98 @@ function num(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// ---- the week index ---------------------------------------------------
+//
+// The one query in this file that talks to PostgREST directly instead of going
+// through payroll-db.js. Its helpers return whole rows, send no limit and never
+// read Content-Range, and this is the query that has to PROVE it saw everything:
+//
+//   * `Prefer: count=exact` makes PostgREST report the true number of matching
+//     rows in Content-Range ("0-4999/17384"), so what arrived can be compared
+//     against what exists instead of trusted.
+//   * `order=work_date.desc` decides which end survives if something does cut
+//     the result short. Ordered ascending — the way fetchDailyHours orders it —
+//     a db-max-rows cap silently drops the NEWEST rows, availableWeeks loses the
+//     current week, and the report quietly defaults to a stale one while still
+//     answering ok:true. A missing current week is worse than a loud error.
+//
+// Completeness is only ever claimed, never assumed: the caller passes the flag
+// straight out to the client so the UI can say the list may be incomplete.
+
+function weekIndexHeaders() {
+  const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!process.env.SUPABASE_URL || !key) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
+  }
+  // The same headers db.js and payroll-db.js send, except that a read asks for
+  // the count rather than for a representation of a write.
+  return {
+    'Content-Type': 'application/json',
+    'apikey': key,
+    'Authorization': `Bearer ${key}`,
+    'Prefer': 'count=exact'
+  };
+}
+
+// "0-4999/17384" -> 17384. A "*" total (the count was not computed) and a
+// missing header both read as null, which means "not proven", never "zero".
+function parseContentRangeTotal(header) {
+  const m = /\/(\d+|\*)\s*$/.exec(String(header == null ? '' : header));
+  if (!m || m[1] === '*') return null;
+  return Number(m[1]);
+}
+
+async function fetchWeekIndexPage(fromDate, toDate, offset, limit) {
+  const path = `daily_hours?select=${WEEK_INDEX_COLUMNS}` +
+    `&work_date=gte.${encodeURIComponent(fromDate)}` +
+    `&work_date=lte.${encodeURIComponent(toDate)}` +
+    `&order=work_date.desc&offset=${offset}&limit=${limit}`;
+
+  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
+    method: 'GET',
+    headers: weekIndexHeaders()
+  });
+  if (!res.ok) throw new Error(`GET ${path} ${res.status}: ${await res.text()}`);
+
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : [];
+  return {
+    rows: Array.isArray(body) ? body : [],
+    total: parseContentRangeTotal(res.headers && res.headers.get('content-range'))
+  };
+}
+
+// Pages the window until it can show it is complete: either the exact count says
+// so, or an empty page proves the offset ran past the end. Anything else — the
+// page ceiling, or a count that insists there is more than paging can reach —
+// comes back as truncated rather than as a shorter answer that looks whole.
+async function fetchWeekIndex(fromDate, toDate) {
+  const rows = [];
+  let total = null;
+  let complete = false;
+
+  for (let page = 0; page < WEEK_INDEX_MAX_PAGES; page++) {
+    // The offset is the number of rows already held, never page * pageSize: a
+    // server-side row cap hands back fewer rows than were asked for, and
+    // stepping by the requested size would skip everything the cap withheld.
+    const result = await fetchWeekIndexPage(fromDate, toDate, rows.length, WEEK_INDEX_PAGE_SIZE);
+    if (result.total !== null) total = result.total;
+
+    if (!result.rows.length) {
+      // Nothing left to read. When the count disagrees with that, believe the
+      // count and report the shortfall — the rows we are missing are exactly
+      // the ones a silent cap would have taken.
+      complete = (total === null || rows.length >= total);
+      break;
+    }
+
+    rows.push(...result.rows);
+    if (total !== null && rows.length >= total) { complete = true; break; }
+  }
+
+  return { rows, total, truncated: !complete };
+}
+
 // Every week in the window that has at least one daily_hours row, newest first —
 // which is also why picking availableWeeks[0] gives "the most recent week with
 // data". Weeks with no rows are simply absent; the picker should not offer them.
@@ -168,13 +271,12 @@ exports.handler = async (event) => {
     }
 
     // The window is snapped to whole weeks — back to a Monday, forward to the
-    // current week's Sunday — so every week it reports is a complete week and
-    // the selected week's rows are already in hand.
+    // current week's Sunday — so every week it reports is a complete week.
     const windowFrom = weekStartFor(shiftDays(today, -WINDOW_DAYS));
     const windowTo   = weekDates(today)[6];
 
-    const windowRows     = await payrollDb.fetchDailyHours(windowFrom, windowTo) || [];
-    const availableWeeks = summarizeWeeks(windowRows);
+    const weekIndex      = await fetchWeekIndex(windowFrom, windowTo);
+    const availableWeeks = summarizeWeeks(weekIndex.rows);
 
     // No ?week=: the most recent week that actually has data, and failing that
     // the current week (which then reports honestly as having nothing in it).
@@ -183,14 +285,24 @@ exports.handler = async (event) => {
 
     const dates = weekDates(weekStart);
 
-    // Inside the window the rows are already loaded; an explicit ?week= outside
-    // it (deep history) costs one extra targeted fetch.
-    const dailyRows = (weekStart >= windowFrom && dates[6] <= windowTo)
-      ? windowRows.filter(r => {
-          const d = dateOnly(r.work_date);
-          return d && d >= dates[0] && d <= dates[6];
-        })
-      : (await payrollDb.fetchDailyHours(dates[0], dates[6]) || []);
+    // The seven days being reported are always fetched in full and on their
+    // own. They are what every number on the page is built from, so they get
+    // every column and their own bounded query — ~60 people across 7 days,
+    // small enough that no row cap can reach it — rather than being sifted out
+    // of the deliberately narrow window scan.
+    const dailyRows = await payrollDb.fetchDailyHours(dates[0], dates[6]) || [];
+
+    // ...and then cross-checked against the window scan, which counted the same
+    // rows a second, cheaper way. If the detail fetch came back with fewer rows
+    // than the index says exist for these seven days, something dropped rows
+    // and every total below is understated. Only meaningful when the index is
+    // itself complete and the week sits inside the window; otherwise there is
+    // nothing to compare against and the answer is an honest null.
+    const indexedWeek = availableWeeks.find(w => w.weekStart === weekStart) || null;
+    const weekRowsExpected = (!weekIndex.truncated && weekStart >= windowFrom && dates[6] <= windowTo)
+      ? (indexedWeek ? indexedWeek.rows : 0)
+      : null;
+    const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
 
     const [overtimeRows, employees] = await Promise.all([
       payrollDb.fetchOvertime(),
@@ -211,7 +323,30 @@ exports.handler = async (event) => {
       expectedDays
     });
 
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, report, availableWeeks }) };
+    // `truncated` is the one flag the page needs to decide whether to show a
+    // "this may be incomplete" banner; dataWindow carries the numbers behind it
+    // so the banner can say which half is short and by how much.
+    const dataWindow = {
+      from: windowFrom,
+      to: windowTo,
+      rowsScanned: weekIndex.rows.length,
+      rowsAvailable: weekIndex.total,        // null when the count could not be read
+      weekIndexTruncated: weekIndex.truncated,
+      weekRowsExpected,                      // null when there is nothing to compare against
+      weekRowsFetched: dailyRows.length,
+      weekDetailTruncated
+    };
+
+    return {
+      statusCode: 200, headers,
+      body: JSON.stringify({
+        ok: true,
+        report,
+        availableWeeks,
+        truncated: weekIndex.truncated || weekDetailTruncated,
+        dataWindow
+      })
+    };
 
   } catch (err) {
     console.error('Payroll report error:', err.message);

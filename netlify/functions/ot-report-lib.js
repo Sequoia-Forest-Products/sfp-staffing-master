@@ -163,6 +163,18 @@ function cleanText(value) {
   return s || null;
 }
 
+// The form a person's name is COMPARED in — never the form it is displayed in.
+// Case and spacing are typing accidents, not identity: the overtime tab is
+// hand-maintained and the payroll export is machine-generated, so the same
+// person arrives as 'Hank Boyd' from one and 'HANK  BOYD' from the other.
+// Collapsing runs of whitespace and lowercasing is as far as this goes —
+// anything cleverer (nicknames, initials, suffixes) would start merging people
+// who really are different, and an unmatched name is reported rather than
+// guessed at.
+function nameKey(value) {
+  return String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 // null department => the "Unassigned" bucket. Never guess a real department.
 function departmentBucket(value) {
   return cleanText(value) || UNASSIGNED;
@@ -233,7 +245,7 @@ function buildReport({
   const sunday   = dates[6];
 
   // ---- roster indexes -------------------------------------------------
-  // employee_number matches daily_hours; the lowercased name matches the
+  // employee_number matches daily_hours; the comparison name matches the
   // overtime table, which has no id and no employee number at all. Duplicate
   // names keep the first roster entry — nothing else can disambiguate them.
   const byNumber = new Map();
@@ -241,9 +253,29 @@ function buildReport({
   for (const emp of employees || []) {
     const number = normalizeEmpNumber(emp.employee_number);
     if (number && !byNumber.has(number)) byNumber.set(number, emp);
-    const name = String(emp.name || '').trim().toLowerCase();
+    const name = nameKey(emp.name);
     if (name && !byName.has(name)) byName.set(name, emp);
   }
+
+  // The identity one person is accumulated under, asked of the ROSTER ENTRY
+  // rather than of whichever table happened to be in hand. Both inputs reach a
+  // person by a different route — daily_hours by employee_number, `overtime` by
+  // name — so they only agree if the last step is the same for both.
+  //
+  // This is what the null-employee_number case used to get wrong: the daily
+  // rows keyed on the payroll file's spelling of the name and the standing
+  // allowance keyed on the overtime tab's spelling, so one person became two
+  // phantom entries — one holding the hours, the other holding the allowance,
+  // which then reported as "approved but never worked". employees.id is the
+  // stable handle for a roster row with no payroll number; the canonical name
+  // is the last resort for a roster that has neither.
+  const rosterKey = (emp) => {
+    const number = normalizeEmpNumber(emp.employee_number);
+    if (number) return number;
+    const id = cleanText(emp.id);
+    if (id) return `emp:${id}`;
+    return `name:${nameKey(emp.name)}`;
+  };
 
   // ---- normalize the daily rows ---------------------------------------
   const rows = [];
@@ -253,9 +285,23 @@ function buildReport({
 
     const isoDow          = isoDowFromMs(dateToUTC(date));
     const employeeNumber  = normalizeEmpNumber(raw.employee_number);
-    const rosterEmp       = employeeNumber ? byNumber.get(employeeNumber) : null;
-    const name            = rosterEmp ? String(rosterEmp.name || '').trim() || displayName(raw) : displayName(raw);
-    const hasDepartment   = cleanText(raw.department) !== null;
+    const fileName        = displayName(raw);
+
+    // The payroll number is the match wherever there is one. A row that carries
+    // no number at all falls back to the name — the same fallback, through the
+    // same roster, that the standing-allowance loop below uses, so the two
+    // cannot disagree about who this is.
+    //
+    // A row whose number is simply not on the roster is deliberately NOT
+    // name-matched: an unrecognised payroll number is a real finding that
+    // issues.unknownEmployeeNumbers exists to surface, and quietly guessing
+    // past it would hide the roster gap it is asking somebody to fix.
+    const rosterEmp = employeeNumber
+      ? (byNumber.get(employeeNumber) || null)
+      : (byName.get(nameKey(fileName)) || null);
+
+    const name          = rosterEmp ? String(rosterEmp.name || '').trim() || fileName : fileName;
+    const hasDepartment = cleanText(raw.department) !== null;
 
     // total_hours is authoritative; regular + ot is only a fallback for a row
     // that somehow arrived without it.
@@ -268,8 +314,9 @@ function buildReport({
       isoDow,
       isScheduledDay: isoDow <= LAST_SCHEDULED_ISO_DOW,
       employeeNumber: employeeNumber || null,
-      // Rows with no employee number still need to count as one person.
-      key: employeeNumber || `name:${name.toLowerCase()}`,
+      // Rows with no employee number still need to count as one person — and
+      // as the SAME person their standing allowance is attributed to.
+      key: rosterEmp ? rosterKey(rosterEmp) : (employeeNumber || `name:${nameKey(name)}`),
       name,
       department: departmentBucket(raw.department),
       hasDepartment,
@@ -351,10 +398,14 @@ function buildReport({
     const name = String(raw.name || '').trim();
     if (!name) continue; // a blank row in the OT tab attributes to nobody
 
-    const hours    = num(raw.hours);
-    const rosterEmp = byName.get(name.toLowerCase()) || null;
+    const hours     = num(raw.hours);
+    const rosterEmp = byName.get(nameKey(name)) || null;
     const number    = rosterEmp ? normalizeEmpNumber(rosterEmp.employee_number) : '';
-    const key       = number || `name:${name.toLowerCase()}`;
+    // Resolved through the roster first, exactly as the daily rows are, so a
+    // person with no employee_number lands on the same key from both sides. An
+    // unmatched name has no roster entry to ask, so it keys on itself and is
+    // reported in unmatchedNames.
+    const key       = rosterEmp ? rosterKey(rosterEmp) : `name:${nameKey(name)}`;
     const worked    = people.get(key);
     const hasHours  = !!(worked && worked.hasHoursThisWeek);
 
@@ -379,12 +430,14 @@ function buildReport({
 
     const dollars = rate ? round2(hours * rate * PRE_APPROVED_MULTIPLIER) : 0;
 
-    if (rateSource === 'none' && !seenRateMissing.has(name.toLowerCase())) {
-      seenRateMissing.add(name.toLowerCase());
+    // Deduped on the comparison form so the same name typed twice with
+    // different spacing is reported once, but reported with its original text.
+    if (rateSource === 'none' && !seenRateMissing.has(nameKey(name))) {
+      seenRateMissing.add(nameKey(name));
       rateMissing.push(name);
     }
-    if (!rosterEmp && !seenUnmatched.has(name.toLowerCase())) {
-      seenUnmatched.add(name.toLowerCase());
+    if (!rosterEmp && !seenUnmatched.has(nameKey(name))) {
+      seenUnmatched.add(nameKey(name));
       unmatchedNames.push(name);
     }
 

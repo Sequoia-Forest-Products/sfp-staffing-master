@@ -543,3 +543,439 @@ test('buildImport refuses to run on nothing at all', () => {
   assert.throws(() => buildImport({ workDate: MONDAY, employees: ROSTER }),
     /fileBuffer or a parsed sheet/);
 });
+
+// ============================================================
+// The /api/payroll-import handler
+// ============================================================
+//
+// The handler is exercised for real — session check, body parsing, action
+// dispatch, status codes — with payroll-db swapped for stubs through the module
+// cache. payroll-import calls db.<fn>() at call time, so replacing the module's
+// exports is enough and nothing reaches Supabase.
+
+process.env.SESSION_SECRET = 'test-session-secret';
+process.env.PAYROLL_TIME_ZONE = TZ;
+// payroll-db reads these once, at require time, so they have to exist before
+// the module is loaded even though every request below goes through a stub.
+process.env.SUPABASE_URL = 'https://example.supabase.co';
+process.env.SUPABASE_SERVICE_KEY = 'service-key';
+
+const { createHmac } = require('node:crypto');
+
+const payrollDb = require('../netlify/functions/payroll-db');
+const REAL_DB = { ...payrollDb };
+const { handler } = require('../netlify/functions/payroll-import');
+
+// Yesterday in Pacific, so validateWorkDate is happy whenever the suite runs.
+const shiftDay = (dateStr, days) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + days * 86400000).toISOString().slice(0, 10);
+};
+const WORK_DATE = shiftDay(workDateInfo(null, TZ).date, -1);
+const OTHER_DATE = shiftDay(WORK_DATE, -1);
+
+const FILE_BASE64 = buildPayrollXlsx([
+  row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 245),
+  row('0063', 'Smith',       'Ana',    'No', 30,   10, 2, 12, 390)
+]).toString('base64');
+
+function sessionCookie() {
+  const b64 = Buffer.from(JSON.stringify({
+    email: 'peter.stroble@sequoiafp.com', exp: Date.now() + 3600000
+  })).toString('base64url');
+  const sig = createHmac('sha256', process.env.SESSION_SECRET).update(b64).digest('base64url');
+  return `sfp_session=${b64}.${sig}`;
+}
+
+const invoke = async body => {
+  const res = await handler({
+    httpMethod: 'POST',
+    headers: { cookie: sessionCookie() },
+    body: JSON.stringify(body)
+  });
+  return { statusCode: res.statusCode, body: JSON.parse(res.body) };
+};
+
+// A stored daily_hours row, as PostgREST hands it back.
+const storedRow = (empNumber, workDate, batch) => ({
+  id: `id-${empNumber}-${workDate}`,
+  work_date: workDate,
+  employee_number: empNumber,
+  upload_batch_id: batch,
+  source: 'manual',
+  created_at: '2026-08-18T09:00:00.000Z',
+  total_hours: 10,
+  total_earnings: 250,
+  file_hash: null,
+  flags: [],
+  department: 'Production'
+});
+
+// Installs stub db functions for one test and restores the real module after.
+function stubDb(t, overrides = {}) {
+  const calls = { order: [], upserts: [], deletedDates: [], pruned: [], ledger: [] };
+  Object.assign(payrollDb, {
+    fetchEmployees: async () => ROSTER,
+    fetchDailyHours: async () => [],
+    fetchDailyHoursForDate: async () => [],
+    findRowsByFileHash: async () => [],
+    upsertDailyHours: async rows => {
+      calls.order.push('upsert');
+      calls.upserts.push(rows);
+      return rows.map((r, i) => ({ id: `new-${i}`, ...r }));
+    },
+    deleteDailyHoursForDate: async date => {
+      calls.order.push('deleteDay');
+      calls.deletedDates.push(date);
+      return 2;
+    },
+    deleteOtherBatchesForDate: async (date, batch) => {
+      calls.order.push('prune');
+      calls.pruned.push({ date, batch });
+      return 1;
+    },
+    getProcessedEmail: async () => null,
+    upsertProcessedEmail: async record => { calls.ledger.push(record); return record; },
+    listProcessedEmails: async () => []
+  }, overrides);
+  t.after(() => { Object.assign(payrollDb, REAL_DB); });
+  return calls;
+}
+
+function captureConsoleError(t) {
+  const original = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args);
+  t.after(() => { console.error = original; });
+  return logged;
+}
+
+const commitBody = extra => ({
+  action: 'commit', fileName: 'payroll.xlsx', fileBase64: FILE_BASE64, workDate: WORK_DATE, ...extra
+});
+
+test('a failed write during an overwrite leaves the existing day intact', async (t) => {
+  // The day is modelled as an array so a delete really removes it. Under the
+  // old delete-then-insert order this ends up empty and unreplaced: a day of
+  // payroll destroyed by one transient 5xx.
+  const day = [storedRow('0319', WORK_DATE, 'old-batch')];
+  const calls = stubDb(t, {
+    fetchDailyHoursForDate: async () => day.slice(),
+    upsertDailyHours: async () => {
+      calls.order.push('upsert');
+      throw new Error('POST daily_hours 503: <html>upstream connect error</html>');
+    },
+    deleteDailyHoursForDate: async () => { calls.order.push('deleteDay'); day.length = 0; return 1; },
+    deleteOtherBatchesForDate: async () => { calls.order.push('prune'); day.length = 0; return 1; }
+  });
+  const logged = captureConsoleError(t);
+
+  const res = await invoke(commitBody({ confirmOverwrite: true }));
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.strictEqual(res.body.ok, false);
+  assert.strictEqual(day.length, 1, 'the previous day must survive a failed write');
+  assert.deepStrictEqual(calls.order, ['upsert'], 'nothing may be deleted before the write lands');
+  assert.strictEqual(logged.length, 1);
+});
+
+test('a successful overwrite writes first, then prunes only the rows the new batch did not write', async (t) => {
+  const calls = stubDb(t, {
+    fetchDailyHoursForDate: async () => [
+      storedRow('0319', WORK_DATE, 'old-batch'),
+      storedRow('0771', WORK_DATE, 'old-batch')
+    ]
+  });
+
+  const res = await invoke(commitBody({ confirmOverwrite: true }));
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(calls.order, ['upsert', 'prune']);
+  assert.deepStrictEqual(calls.deletedDates, [], 'the whole day must never be deleted');
+  assert.strictEqual(calls.pruned.length, 1);
+  assert.strictEqual(calls.pruned[0].date, WORK_DATE);
+  assert.strictEqual(calls.pruned[0].batch, res.body.uploadBatchId);
+  assert.strictEqual(res.body.inserted, 2);
+  assert.strictEqual(res.body.replaced, 2);
+  assert.strictEqual(res.body.removed, 1);
+});
+
+test('a first import of a date writes without pruning anything', async (t) => {
+  const calls = stubDb(t);
+
+  const res = await invoke(commitBody({}));
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(calls.order, ['upsert']);
+  assert.strictEqual(res.body.replaced, 0);
+  assert.strictEqual(res.body.removed, 0);
+  assert.strictEqual(res.body.inserted, 2);
+});
+
+test('an empty representation from a non-empty write is a failure, not a silent no-op', async (t) => {
+  const calls = stubDb(t, { upsertDailyHours: async () => { calls.order.push('upsert'); return []; } });
+  const logged = captureConsoleError(t);
+
+  const res = await invoke(commitBody({}));
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.match(res.body.error, /did not take effect/);
+  assert.deepStrictEqual(calls.order, ['upsert'], 'a failed write must not trigger the prune');
+  assert.strictEqual(logged.length, 1);
+});
+
+test('the same file under a different date is refused, and named, unless confirmed', async (t) => {
+  const stubs = { findRowsByFileHash: async () => [storedRow('0319', OTHER_DATE, 'earlier-batch')] };
+  const calls = stubDb(t, stubs);
+
+  const refused = await invoke(commitBody({}));
+  assert.strictEqual(refused.statusCode, 400);
+  assert.match(refused.body.error, new RegExp(OTHER_DATE));
+  assert.match(refused.body.error, /twice/);
+  assert.strictEqual(calls.upserts.length, 0, 'nothing may be written while the duplicate stands');
+
+  const allowed = await invoke(commitBody({ confirmDuplicateFile: true }));
+  assert.strictEqual(allowed.statusCode, 200);
+  assert.strictEqual(calls.upserts.length, 1);
+});
+
+test('the same file re-uploaded under the SAME date needs no duplicate confirmation', async (t) => {
+  const sameDay = [storedRow('0319', WORK_DATE, 'earlier-batch')];
+  const calls = stubDb(t, {
+    fetchDailyHoursForDate: async () => sameDay.slice(),
+    findRowsByFileHash: async () => sameDay.slice()
+  });
+
+  const res = await invoke(commitBody({ confirmOverwrite: true }));
+
+  assert.strictEqual(res.statusCode, 200, res.body.error);
+  assert.strictEqual(calls.upserts.length, 1);
+});
+
+test('a Supabase failure that mentions a column is a 500 and reaches the log', async (t) => {
+  // PGRST204 is a schema-cache miss — an outage, not bad input. Matching the
+  // word "column" in the message used to answer it as a 400 and log nothing,
+  // so Netlify's alerting never saw it.
+  const calls = stubDb(t, {
+    upsertDailyHours: async () => {
+      calls.order.push('upsert');
+      throw new Error(`POST daily_hours 400: {"code":"PGRST204","message":` +
+        `"Could not find the 'is_scheduled_day' column of 'daily_hours' in the schema cache"}`);
+    }
+  });
+  const logged = captureConsoleError(t);
+
+  const res = await invoke(commitBody({}));
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.strictEqual(logged.length, 1, 'a server failure must be logged');
+  assert.match(String(logged[0][0]), /payroll-import commit failed/);
+});
+
+test('a roster read that fails is a 500 and reaches the log even when it mentions a sheet', async (t) => {
+  stubDb(t, {
+    fetchEmployees: async () => { throw new Error('GET employees 502: bad gateway (sheet cache)'); }
+  });
+  const logged = captureConsoleError(t);
+
+  const res = await invoke(commitBody({}));
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.strictEqual(logged.length, 1);
+});
+
+test('an unreadable upload is still a 400, and is not logged as a server failure', async (t) => {
+  stubDb(t);
+  const logged = captureConsoleError(t);
+
+  const res = await invoke(commitBody({ fileBase64: Buffer.from('not a workbook').toString('base64') }));
+
+  assert.strictEqual(res.statusCode, 400);
+  assert.strictEqual(logged.length, 0);
+});
+
+test('resolveEmail closes a queue entry without losing the audit trail', async (t) => {
+  const stored = {
+    message_id: '<msg-7@centralservers.com>',
+    processed_at: '2026-08-18T13:10:00.000Z',
+    work_date: OTHER_DATE,
+    status: 'pending_review',
+    error: 'two attachments with different bytes — imported neither',
+    subject: 'Work Summary Payroll',
+    from_address: 'no-reply@centralservers.com',
+    received_at: '2026-08-18T13:04:00.000Z',
+    file_hash: 'abc123',
+    upload_batch_id: null,
+    rows_imported: 0,
+    flags: ['duplicate_day'],
+    notified_at: '2026-08-18T13:10:00.000Z'
+  };
+  const calls = stubDb(t, { getProcessedEmail: async () => ({ ...stored }) });
+
+  const res = await invoke({ action: 'resolveEmail', messageId: stored.message_id, note: 'imported by hand' });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(res.body.ok, true);
+  assert.strictEqual(res.body.messageId, stored.message_id);
+  assert.strictEqual(res.body.status, 'resolved');
+
+  const written = calls.ledger[0];
+  assert.strictEqual(written.status, 'resolved');
+  assert.notStrictEqual(written.processed_at, stored.processed_at);
+  assert.match(written.error, /^Resolved /);
+  assert.match(written.error, /imported by hand/);
+  assert.match(written.error, /two attachments/);      // the original detail is kept
+  assert.strictEqual(written.subject, stored.subject); // and so is every other column
+  assert.strictEqual(written.file_hash, stored.file_hash);
+  assert.deepStrictEqual(written.flags, stored.flags);
+});
+
+test('resolveEmail refuses an unknown message id', async (t) => {
+  const calls = stubDb(t, { getProcessedEmail: async () => null });
+  const logged = captureConsoleError(t);
+
+  const res = await invoke({ action: 'resolveEmail', messageId: '<nope@example.com>' });
+
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(res.body.error, /No ingestion record/);
+  assert.strictEqual(calls.ledger.length, 0);
+  assert.strictEqual(logged.length, 0);
+});
+
+test('the pending queue marks which rows are actually waiting on a person', async (t) => {
+  stubDb(t, {
+    listProcessedEmails: async () => [
+      { message_id: '<a>', status: 'pending_review' },
+      { message_id: '<b>', status: 'error' },
+      { message_id: '<c>', status: 'duplicate_file' },
+      { message_id: '<d>', status: 'rejected' },
+      { message_id: '<e>', status: 'resolved' }
+    ]
+  });
+
+  const res = await invoke({ action: 'pending' });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(res.body.emails.length, 5, 'everything is still listed');
+  assert.deepStrictEqual(
+    res.body.emails.map(e => [e.message_id, e.actionable]),
+    [['<a>', true], ['<b>', true], ['<c>', false], ['<d>', false], ['<e>', false]]
+  );
+});
+
+test('an unknown action names the ones that exist, including resolveEmail', async (t) => {
+  stubDb(t);
+  const res = await invoke({ action: 'nope' });
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(res.body.error, /resolveEmail/);
+});
+
+// ============================================================
+// payroll-db against a stubbed fetch
+// ============================================================
+
+// Everything below drives the real Supabase helpers with globalThis.fetch
+// replaced, so the URLs, the request bodies and the chunking are checked
+// exactly as PostgREST would receive them.
+function stubFetch(t, respond) {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const call = {
+      url: String(url),
+      method: opts.method || 'GET',
+      body: opts.body === undefined ? undefined : JSON.parse(opts.body)
+    };
+    calls.push(call);
+    const payload = await respond(call);
+    return { ok: true, status: 200, text: async () => JSON.stringify(payload || []) };
+  };
+  t.after(() => { globalThis.fetch = original; });
+  return calls;
+}
+
+test('deleteOtherBatchesForDate deletes the date except the batch just written', async (t) => {
+  const calls = stubFetch(t, () => [{ id: 'x' }, { id: 'y' }]);
+
+  const deleted = await payrollDb.deleteOtherBatchesForDate('2026-08-17', 'batch-9');
+
+  assert.strictEqual(deleted, 2);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].method, 'DELETE');
+  assert.match(calls[0].url, /daily_hours\?work_date=eq\.2026-08-17/);
+  assert.match(calls[0].url, /upload_batch_id=neq\.batch-9/);
+});
+
+test('a network failure says what actually broke instead of just "fetch failed"', async (t) => {
+  stubFetch(t, () => { throw Object.assign(new TypeError('fetch failed'), {
+    cause: new Error('getaddrinfo ENOTFOUND example.supabase.co')
+  }); });
+
+  await assert.rejects(
+    () => payrollDb.fetchEmployees(),
+    err => {
+      assert.match(err.message, /ENOTFOUND example\.supabase\.co/);
+      assert.match(err.message, /GET employees/);
+      return true;
+    }
+  );
+});
+
+test('a re-stamp clears the flags that said the row had no department', async (t) => {
+  const stored = [
+    { id: 'r1', work_date: '2026-08-17', employee_number: '0884', department: null,
+      flags: ['missing_department'] },
+    { id: 'r2', work_date: '2026-08-17', employee_number: '9999', department: null,
+      flags: ['unknown_employee', 'negative_residual'] }
+  ];
+  const roster = [
+    { id: 'e4', name: 'Rosa Salazar De Leon', employee_number: '0884', department: 'Shipping' },
+    { id: 'e9', name: 'Nadia Nobody',         employee_number: '9999', department: 'Production' }
+  ];
+  const calls = stubFetch(t, call => {
+    if (call.method === 'GET' && call.url.includes('daily_hours')) return stored;
+    if (call.method === 'GET' && call.url.includes('employees')) return roster;
+    return [{ id: 'patched' }];
+  });
+
+  const result = await payrollDb.restampDepartments('2026-08-17', '2026-08-17');
+
+  assert.strictEqual(result.updated, 2);
+  const patches = calls.filter(c => c.method === 'PATCH');
+  assert.strictEqual(patches.length, 2, 'the two rows keep different flags, so two bodies');
+
+  const shipping = patches.find(p => p.body.department === 'Shipping');
+  assert.deepStrictEqual(shipping.body.flags, [],
+    'missing_department is no longer true once a department is stamped on');
+
+  const production = patches.find(p => p.body.department === 'Production');
+  assert.deepStrictEqual(production.body.flags, ['negative_residual'],
+    'unrelated flags must survive');
+});
+
+test('the id filter is chunked small enough to leave the proxy real headroom', async (t) => {
+  const stored = Array.from({ length: 150 }, (_, i) => ({
+    id: `4f1c9d2e-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    work_date: '2026-08-17',
+    employee_number: String(1000 + i),
+    department: null,
+    flags: []
+  }));
+  const roster = stored.map(r => ({
+    id: `e${r.employee_number}`, name: `Person ${r.employee_number}`,
+    employee_number: r.employee_number, department: 'Production'
+  }));
+  const calls = stubFetch(t, call => {
+    if (call.method === 'GET' && call.url.includes('daily_hours')) return stored;
+    if (call.method === 'GET' && call.url.includes('employees')) return roster;
+    return call.url.slice(call.url.indexOf('in.(')).split(',').map(() => ({ id: 'patched' }));
+  });
+
+  await payrollDb.restampDepartments('2026-08-17', '2026-08-17');
+
+  const patches = calls.filter(c => c.method === 'PATCH');
+  assert.strictEqual(patches.length, 2, '150 ids at 100 per request is two requests');
+  const longest = Math.max(...patches.map(p => Buffer.byteLength(p.url, 'utf8')));
+  assert.ok(longest < 4096,
+    `an id filter must stay well inside an 8 KB header buffer, measured ${longest}`);
+});

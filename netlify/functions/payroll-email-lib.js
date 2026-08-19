@@ -541,6 +541,25 @@ function describeItem(item) {
   return lines.join('\n');
 }
 
+// A pending row that has been sitting there for days should read louder each
+// time, not identically — the same sentence every morning is what teaches
+// people to filter the alert away.
+function describePending(p) {
+  const age = p.ageDays !== null && p.ageDays >= 1
+    ? ` — UNRESOLVED SINCE ${p.unresolvedSince} (${p.ageDays} day${p.ageDays === 1 ? '' : 's'})`
+    : '';
+  const lines = [`  - ${p.status} ${p.workDate || '(no date)'} — ${p.subject || '(no subject)'}${age}`];
+  if (p.error) lines.push(`      ${p.error}`);
+  return lines;
+}
+
+function oldestSuffix(pending) {
+  const ages = pending.map(p => p.ageDays).filter(n => Number.isFinite(n) && n >= 1);
+  if (!ages.length) return '';
+  const oldest = pending.find(p => p.ageDays === Math.max(...ages));
+  return `, oldest unresolved since ${oldest.unresolvedSince}`;
+}
+
 // ============================================================
 // INGEST
 // ============================================================
@@ -960,6 +979,16 @@ async function runPayrollIngest({
 // wrong: a missing Mon-Thu scheduled day (nobody may have worked Fri/Sat/Sun,
 // so a missing one of those is reported, never alerted on), plus anything the
 // ingester parked in pending_review or error.
+//
+// This is the only thing that surfaces a broken pipeline, which puts two
+// obligations on it that ordinary code does not carry:
+//   - it must never be quietly wrong. A Supabase failure or an undeliverable
+//     alert returns `failed:true`, and the handler turns that into a non-200 so
+//     Netlify's function-error alerting fires. A green scheduled run has to
+//     mean the check actually ran.
+//   - it must stay worth reading. Pending rows are re-reported once a day at
+//     most, resolved ones never, and long-unresolved ones with wording that
+//     ages — an alert everyone filters is the same as no alert.
 async function runMissedDeliveryCheck({
   now = new Date(),
   timeZone,
@@ -974,56 +1003,113 @@ async function runMissedDeliveryCheck({
   const isDryRun = dryRun === undefined ? conf.dryRun : !!dryRun;
   const d = resolveDeps(deps);
 
+  const today = todayInZone(now, tz);
   const checkedDate = expectedPriorWorkDate(now, tz);
   const fromDate = addDays(checkedDate, -(window - 1));
 
-  const rows = await d.fetchDailyHours(fromDate, checkedDate);
-  const haveData = new Set(
-    (Array.isArray(rows) ? rows : []).map(r => String(r.work_date).slice(0, 10))
-  );
+  // The data read is inside the try on purpose. Supabase being down is exactly
+  // when this check matters most, and letting it throw would take the watchdog
+  // out with it: no alert attempted, and (before the handler change) an HTTP
+  // 500 nobody reads. Instead we lose the ability to answer the question and
+  // say so, loudly.
+  let dataError = null;
+  const haveData = new Set();
+  try {
+    const rows = await d.fetchDailyHours(fromDate, checkedDate);
+    for (const r of Array.isArray(rows) ? rows : []) haveData.add(String(r.work_date).slice(0, 10));
+  } catch (err) {
+    dataError = err.message;
+    log(`Could not read daily_hours: ${err.message}`);
+  }
 
   const missing = [];
-  for (let date = fromDate; date <= checkedDate; date = addDays(date, 1)) {
-    if (haveData.has(date)) continue;
-    const info = dayInfo(date);
-    missing.push({
-      date,
-      dayName: info.dayName,
-      isScheduledDay: info.isScheduledDay,
-      // Only Mon-Thu is a promise. Fri/Sat/Sun with no rows usually means
-      // nobody worked, which is normal and not worth waking anyone for.
-      escalate: info.isScheduledDay
-    });
+  if (!dataError) {
+    for (let date = fromDate; date <= checkedDate; date = addDays(date, 1)) {
+      if (haveData.has(date)) continue;
+      const info = dayInfo(date);
+      missing.push({
+        date,
+        dayName: info.dayName,
+        isScheduledDay: info.isScheduledDay,
+        // Only Mon-Thu is a promise. Fri/Sat/Sun with no rows usually means
+        // nobody worked, which is normal and not worth waking anyone for.
+        escalate: info.isScheduledDay
+      });
+    }
   }
 
   // Anything the ingester could not resolve on its own. payroll-db's filter is
   // single-valued, so ask for "everything that is not imported" and narrow it
   // here — which also keeps this correct if the option shape is ignored.
+  //
+  // The narrowing is the important part: only ACTIONABLE_LEDGER_STATUSES land
+  // in pendingReview, so a 'resolved' row (a human dealt with it via
+  // /api/payroll-import) and the logged-and-fine 'duplicate_file' / 'rejected'
+  // rows never drive an alert again.
+  let ledgerError = null;
   let pendingReview = [];
   try {
     const ledger = await d.listProcessedEmails({ notStatus: 'imported', limit: 200 });
     pendingReview = (Array.isArray(ledger) ? ledger : [])
-      .filter(r => r && (r.status === 'pending_review' || r.status === 'error'))
-      .map(r => ({
-        messageId: r.message_id,
-        status: r.status,
-        workDate: r.work_date ? String(r.work_date).slice(0, 10) : null,
-        subject: r.subject || null,
-        receivedAt: r.received_at || null,
-        error: r.error || null,
-        flags: r.flags || []
-      }));
+      .filter(r => r && ACTIONABLE_LEDGER_STATUSES.includes(r.status))
+      .map(r => {
+        // notified_at is when this row was last reported. Nothing clears a
+        // pending row automatically, so without this a single ambiguous
+        // delivery emails Peter every morning until the heat death of the
+        // universe — and the day a real one arrives, it reads as more of the
+        // same.
+        const lastNotified = r.notified_at ? Date.parse(r.notified_at) : NaN;
+        const hoursSinceNotified = Number.isFinite(lastNotified)
+          ? (now.getTime() - lastNotified) / 3600000
+          : null;
+        const firstSeen = r.received_at || r.processed_at || null;
+        const unresolvedSince = firstSeen ? String(firstSeen).slice(0, 10) : null;
+        const ageDays = unresolvedSince ? daysBetween(unresolvedSince, today) : null;
+
+        return {
+          messageId: r.message_id,
+          status: r.status,
+          workDate: r.work_date ? String(r.work_date).slice(0, 10) : null,
+          subject: r.subject || null,
+          receivedAt: r.received_at || null,
+          error: r.error || null,
+          flags: r.flags || [],
+          notifiedAt: r.notified_at || null,
+          unresolvedSince,
+          ageDays,
+          dueForAlert: hoursSinceNotified === null || hoursSinceNotified >= PENDING_RENOTIFY_HOURS
+        };
+      });
   } catch (err) {
+    ledgerError = err.message;
     log(`Could not read processed_emails: ${err.message}`);
   }
 
   const escalating = missing.filter(m => m.escalate);
-  const shouldAlert = escalating.length > 0 || pendingReview.length > 0;
+  const duePending = pendingReview.filter(p => p.dueForAlert);
+  const quietPending = pendingReview.filter(p => !p.dueForAlert);
+  const shouldAlert = !!dataError || !!ledgerError || escalating.length > 0 || duePending.length > 0;
+
   let notified = false;
+  let notifiedAt = null;
+  let alertError = null;
 
   if (shouldAlert && !isDryRun) {
     const lines = [];
+    if (dataError) {
+      lines.push(`COULD NOT CHECK whether payroll arrived for ${fromDate} .. ${checkedDate}.`);
+      lines.push(`Reading daily_hours failed: ${dataError}`);
+      lines.push('');
+      lines.push('Nothing below has been verified. Treat the pipeline as unconfirmed until this');
+      lines.push('check runs cleanly — open the Daily Hours tab and look at the last few days.');
+    }
+    if (ledgerError) {
+      lines.push('');
+      lines.push(`Could not read the processed_emails ledger: ${ledgerError}`);
+      lines.push('Emails waiting on a decision could not be listed this run.');
+    }
     if (escalating.length) {
+      if (lines.length) lines.push('');
       lines.push(`Scheduled work day(s) with no payroll data (checked ${fromDate} .. ${checkedDate}):`);
       for (const m of escalating) lines.push(`  - ${m.date} (${m.dayName})`);
       lines.push('');
@@ -1031,36 +1117,77 @@ async function runMissedDeliveryCheck({
       lines.push('import failed. Check the "payroll import" label in info@, then import by hand.');
     }
     const nonScheduled = missing.filter(m => !m.escalate);
-    if (nonScheduled.length) {
+    if (nonScheduled.length && (escalating.length || duePending.length)) {
       lines.push('');
       lines.push(`Non-scheduled day(s) with no data (normal if nobody worked): ` +
         nonScheduled.map(m => `${m.date} ${m.dayName}`).join(', '));
     }
-    if (pendingReview.length) {
+    if (duePending.length) {
       lines.push('');
       lines.push('Emails waiting on a decision:');
-      for (const p of pendingReview) {
-        lines.push(`  - ${p.status} ${p.workDate || '(no date)'} — ${p.subject || '(no subject)'}`);
-        if (p.error) lines.push(`      ${p.error}`);
-      }
+      for (const p of duePending) lines.push(...describePending(p));
+      lines.push('');
+      lines.push('Resolve each one from the Daily Hours tab (import it by hand, or mark it');
+      lines.push('resolved). A resolved email is never reported again.');
+    }
+    if (quietPending.length) {
+      lines.push('');
+      lines.push(`${quietPending.length} other email(s) are still unresolved but were already ` +
+        `reported in the last ${PENDING_RENOTIFY_HOURS}h — not repeated here.`);
     }
 
-    const subject = escalating.length
-      ? `Payroll data missing for ${escalating.map(m => m.date).join(', ')}`
-      : `Payroll import: ${pendingReview.length} email(s) waiting on review`;
+    const subject = dataError
+      ? 'Payroll check FAILED — could not confirm whether payroll arrived'
+      : escalating.length
+        ? `Payroll data missing for ${escalating.map(m => m.date).join(', ')}`
+        : duePending.length
+          ? `Payroll import: ${duePending.length} email(s) waiting on review` + oldestSuffix(duePending)
+          : 'Payroll check: the processed_emails ledger could not be read';
 
     try {
       await d.sendAlert(subject, lines.join('\n'));
       notified = true;
+      notifiedAt = new Date().toISOString();
     } catch (err) {
+      alertError = err.message;
       log(`Missed-delivery alert failed: ${err.message}`);
     }
   }
 
-  const status = isDryRun ? 'dry-run' : shouldAlert ? 'attention' : 'ok';
+  // Stamp notified_at only on rows that were actually in an email that actually
+  // went out — same rule as the ingest ledger. A failed stamp is logged and
+  // left alone: the cost is one repeated alert tomorrow, which is the safe
+  // direction to fail in.
+  if (notified && notifiedAt && duePending.length) {
+    for (const p of duePending) {
+      try {
+        // Deliberately a three-column patch. The row was read moments ago and
+        // /api/payroll-import may be resolving it concurrently — sending the
+        // whole row back would undo that.
+        await d.upsertProcessedEmail({
+          message_id: p.messageId,
+          status: p.status,
+          notified_at: notifiedAt
+        });
+        p.notifiedAt = notifiedAt;
+      } catch (err) {
+        log(`Could not stamp notified_at on ${p.messageId}: ${err.message}`);
+      }
+    }
+  }
+
+  const alertFailed = shouldAlert && !isDryRun && !notified;
+  const failed = alertFailed || !!dataError || !!ledgerError;
+
+  const status = isDryRun ? 'dry-run'
+    : failed ? 'error'
+    : shouldAlert ? 'attention'
+    : 'ok';
+
   log(`Missed-delivery check ${status}: prior work day ${checkedDate}, ` +
       `${missing.length} day(s) without data (${escalating.length} scheduled), ` +
-      `${pendingReview.length} email(s) pending review.`);
+      `${pendingReview.length} email(s) pending review (${duePending.length} reported).`);
+  if (alertFailed) log(`Missed-delivery check could not deliver its alert: ${alertError}`);
 
   return {
     status,
@@ -1070,7 +1197,15 @@ async function runMissedDeliveryCheck({
     fromDate,
     missing,
     pendingReview,
-    notified
+    pendingAlerted: duePending.length,
+    pendingSuppressed: quietPending.length,
+    notified,
+    alertRequired: shouldAlert && !isDryRun,
+    alertFailed,
+    alertError,
+    dataError,
+    ledgerError,
+    failed
   };
 }
 
@@ -1079,6 +1214,9 @@ module.exports = {
   DEFAULTS,
   ATTACHMENT_NAME,
   XLSX_MIME,
+  MAX_MESSAGES,
+  ACTIONABLE_LEDGER_STATUSES,
+  PENDING_RENOTIFY_HOURS,
   config,
   // date logic
   zonedParts,

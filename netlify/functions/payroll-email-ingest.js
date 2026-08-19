@@ -22,6 +22,19 @@ const DRY_RUN = String(process.env.PAYROLL_DRY_RUN || '').toLowerCase() === 'tru
 exports.handler = async () => {
   try {
     const result = await runPayrollIngest({ dryRun: DRY_RUN });
+
+    // A run that found something to report and could not send the email has
+    // failed, even though every message was handled correctly. Netlify alerts
+    // on a function ERROR, not on a log line, so the status code is the only
+    // signal that leaves this process — return 200 here and a rotated Gmail
+    // app password looks exactly like a quiet week.
+    if (result.failed) {
+      console.error(
+        `Payroll email ingest could not deliver its alert: ${result.alertError || 'unknown error'}`
+      );
+      return { statusCode: 500, body: JSON.stringify(result) };
+    }
+
     return { statusCode: 200, body: JSON.stringify(result) };
   } catch (err) {
     // A thrown error here is an infrastructure failure (IMAP down, missing

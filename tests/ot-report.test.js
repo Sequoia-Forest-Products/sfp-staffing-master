@@ -563,3 +563,272 @@ test('DEPARTMENTS is the canonical list and does not include the Unassigned buck
   assert.deepStrictEqual(DEPARTMENTS, ['Maintenance', 'Saw Filing', 'Shipping', 'Production']);
   assert.ok(!DEPARTMENTS.includes('Unassigned'));
 });
+
+// ============================================================
+// Identity — one person, one entry
+// ============================================================
+
+test('a roster employee with no employee number is one person, not two', () => {
+  // Hank is on the roster with a null employee_number (nobody has filled his
+  // payroll id in yet), so neither input can key on a number. The payroll export
+  // shouts his name and the hand-typed overtime tab double-spaced it — two
+  // spellings of one man, who both worked 12 hours and holds a 2-hour standing
+  // allowance. Keyed on whichever table's text was in hand, he used to split
+  // into two entries: one with the hours, one with the allowance, and the second
+  // one landed in withoutHoursThisWeek as an allowance nobody worked against.
+  const employees = EMPLOYEES.concat([
+    { id: 'e6', name: 'Hank Boyd', employee_number: null, department: 'Shipping',
+      wage: '30', status: 'Active' }
+  ]);
+  const dailyRows = [
+    dailyRow({ work_date: '2026-08-03', employee_number: '', first_name: 'HANK', last_name: 'BOYD',
+               department: 'Shipping', pay_rate: 30, regular_hours: 10, ot_hours: 2,
+               total_hours: 12, total_earnings: 390, regular_dollars: 300, ot_dollars: 90 })
+  ];
+  const overtimeRows = [
+    { id: 'o9', name: 'Hank  Boyd', ot_type: 'Pre-Shift', hours: 2, description: 'Dock prep' }
+  ];
+
+  const r = buildReport({ weekStart: WEEK, dailyRows, overtimeRows, employees });
+
+  const hanks = r.employees.filter(e => e.name.toLowerCase().replace(/\s+/g, ' ') === 'hank boyd');
+  assert.strictEqual(hanks.length, 1, 'one person must produce exactly one employee row');
+
+  const hank = hanks[0];
+  assert.strictEqual(hank.name, 'Hank Boyd', 'the roster spelling is the canonical one');
+  assert.strictEqual(hank.department, 'Shipping');
+  assert.strictEqual(hank.onRoster, true);
+  assert.strictEqual(hank.totalHours, 12);
+  assert.strictEqual(hank.otHours, 2);
+  assert.strictEqual(hank.preApprovedHours, 2);
+  assert.strictEqual(hank.preApprovedDollars, 90);   // 2 * 30.00 * 1.5
+  assert.strictEqual(hank.netOtHours, 0);
+
+  // He worked, so his allowance is not an "approved but never worked" finding.
+  assert.deepStrictEqual(r.preApproved.withoutHoursThisWeek, []);
+  // And his rate came off the week's rows, which is only possible if the
+  // allowance found the same person the hours were accumulated under.
+  assert.strictEqual(r.preApproved.rows[0].rateSource, 'daily_hours');
+  assert.strictEqual(r.preApproved.rows[0].matched, true);
+  assert.deepStrictEqual(r.preApproved.unmatchedNames, []);
+
+  // Shipping carries the hours and the allowance, once each.
+  const shipping = byDept(r.departments, 'Shipping');
+  assert.strictEqual(shipping.week.hours, 12);
+  assert.strictEqual(shipping.preApprovedHours, 2);
+  assert.strictEqual(shipping.netOtHours, 0);
+  assert.strictEqual(r.summary.headcount, 1);
+});
+
+test('an overtime name that matches nobody still keys on itself', () => {
+  // The other half of the same fix: unmatched names must not be swept into
+  // somebody else. Ghost Worker has no roster entry, so he keys on his own name,
+  // appears in unmatchedNames and lands in Unassigned.
+  const r = report();
+  assert.deepStrictEqual(r.preApproved.unmatchedNames, ['Ghost Worker']);
+  const ghost = byName(r.employees, 'Ghost Worker');
+  assert.ok(ghost, 'an unmatched allowance still gets an employee row');
+  assert.strictEqual(ghost.onRoster, false);
+  assert.strictEqual(ghost.department, 'Unassigned');
+  assert.ok(byName(r.preApproved.withoutHoursThisWeek, 'Ghost Worker'));
+});
+
+test('a daily row whose employee number is unknown is not name-matched past the finding', () => {
+  // Fred's number is not on the roster. Guessing him onto a roster entry by name
+  // would hide exactly the gap issues.unknownEmployeeNumbers exists to report.
+  const r = report({
+    employees: EMPLOYEES.concat([
+      { id: 'e7', name: 'Fred Nobody', employee_number: null, department: 'Production',
+        wage: '20', status: 'Active' }
+    ])
+  });
+  assert.deepStrictEqual(r.issues.unknownEmployeeNumbers, ['0999']);
+  const fred = byName(r.employees, 'Fred Nobody');
+  assert.strictEqual(fred.employeeNumber, '0999');
+  assert.strictEqual(fred.onRoster, false);
+});
+
+// ============================================================
+// payroll-report.js — proving the window was read whole
+// ============================================================
+//
+// The only tests here that load the HTTP function. Nothing reaches the network:
+// global fetch is replaced with a fake PostgREST that answers the week-index
+// query, and payroll-db's exports are swapped for stubs. The week the fixture
+// lands in is derived from the window the handler itself asks for, so these
+// stay in the window whatever day they are run on.
+
+function loadPayrollReport() {
+  process.env.SESSION_SECRET = 'test-session-secret';
+  process.env.SUPABASE_URL = 'https://example.invalid';
+  process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
+  return require('../netlify/functions/payroll-report');
+}
+
+function sessionEvent() {
+  const payload = Buffer.from(JSON.stringify({ user: 'tester', exp: Date.now() + 3600000 }))
+    .toString('base64url');
+  const sig = require('node:crypto')
+    .createHmac('sha256', 'test-session-secret').update(payload).digest('base64url');
+  return {
+    httpMethod: 'GET',
+    headers: { cookie: `sfp_session=${payload}.${sig}` },
+    queryStringParameters: {}
+  };
+}
+
+// A PostgREST response carrying the Content-Range header the completeness check
+// reads. `contentRange` of null models a proxy that stripped it.
+function fakePage(rows, contentRange) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rows),
+    headers: { get: (name) => (String(name).toLowerCase() === 'content-range' ? contentRange : null) }
+  };
+}
+
+// Runs the handler against a fake Supabase. `pageFor(url, callNumber)` answers
+// the week-index requests; `detailRows(from, to)` answers the week's own fetch.
+async function runReport({ pageFor, detailRows }) {
+  const handler = loadPayrollReport().handler;
+  const payrollDb = require('../netlify/functions/payroll-db');
+
+  const realFetch = globalThis.fetch;
+  const realDaily = payrollDb.fetchDailyHours;
+  const realOt    = payrollDb.fetchOvertime;
+  const realEmp   = payrollDb.fetchEmployees;
+
+  const urls = [];
+  const detailCalls = [];
+  globalThis.fetch = async (url) => { urls.push(String(url)); return pageFor(String(url), urls.length); };
+  payrollDb.fetchDailyHours = async (from, to) => { detailCalls.push([from, to]); return detailRows(from, to); };
+  payrollDb.fetchOvertime   = async () => [];
+  payrollDb.fetchEmployees  = async () => EMPLOYEES;
+
+  try {
+    const res = await handler(sessionEvent());
+    return { res, body: JSON.parse(res.body), urls, detailCalls };
+  } finally {
+    globalThis.fetch = realFetch;
+    payrollDb.fetchDailyHours = realDaily;
+    payrollDb.fetchOvertime = realOt;
+    payrollDb.fetchEmployees = realEmp;
+  }
+}
+
+// The last day of the window the handler asks for is the current week's Sunday,
+// so a row dated there is always inside the window and inside the week the
+// report defaults to.
+function windowEnd(url) {
+  return decodeURIComponent(/work_date=lte\.([^&]+)/.exec(url)[1]);
+}
+
+function indexRow(date) {
+  return { work_date: date, total_hours: 10, total_earnings: 280 };
+}
+
+test('the week index reads three columns, newest first, and proves it saw them all', async () => {
+  const { res, body, urls, detailCalls } = await runReport({
+    pageFor: (url) => fakePage([indexRow(windowEnd(url)), indexRow(windowEnd(url)), indexRow(windowEnd(url))],
+                               '0-2/3'),
+    detailRows: (from, to) => [
+      dailyRow({ work_date: to, employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+                 department: 'Production', pay_rate: 28, regular_hours: 10, total_hours: 10,
+                 total_earnings: 280, regular_dollars: 280 }),
+      dailyRow({ work_date: to, employee_number: '0102', first_name: 'Ben', last_name: 'Carter',
+                 department: 'Maintenance', pay_rate: 24.5, regular_hours: 8, total_hours: 8,
+                 total_earnings: 196, regular_dollars: 196 }),
+      dailyRow({ work_date: to, employee_number: '0105', first_name: 'Eve', last_name: 'Nakamura',
+                 department: null, pay_rate: 20, regular_hours: 6, total_hours: 6,
+                 total_earnings: 120, regular_dollars: 120 })
+    ]
+  });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.ok, true);
+
+  // A narrow projection, not every column of every row.
+  assert.strictEqual(urls.length, 1, 'an exact count that matches needs no second page');
+  assert.match(urls[0], /select=work_date,total_hours,total_earnings/);
+  assert.ok(!/pay_rate|total_earnings,ot_dollars/.test(urls[0].split('&')[0]),
+    'the week index must not pull the payroll detail columns');
+  // Descending, so a server-side cap would drop the OLDEST rows, never the week
+  // the report is about to default to.
+  assert.match(urls[0], /order=work_date\.desc/);
+  assert.match(urls[0], new RegExp(`limit=\\d+`));
+
+  assert.strictEqual(body.truncated, false);
+  assert.strictEqual(body.dataWindow.rowsScanned, 3);
+  assert.strictEqual(body.dataWindow.rowsAvailable, 3);
+  assert.strictEqual(body.dataWindow.weekIndexTruncated, false);
+  assert.strictEqual(body.dataWindow.weekRowsExpected, 3);
+  assert.strictEqual(body.dataWindow.weekRowsFetched, 3);
+  assert.strictEqual(body.dataWindow.weekDetailTruncated, false);
+
+  // The seven days being reported are fetched exactly, on their own.
+  assert.strictEqual(detailCalls.length, 1);
+  assert.strictEqual(weekStartFor(detailCalls[0][0]), body.report.weekStart);
+  assert.deepStrictEqual(detailCalls[0], [body.report.weekStart, body.report.weekEnd]);
+  assert.strictEqual(body.availableWeeks[0].weekStart, body.report.weekStart);
+  assert.strictEqual(body.availableWeeks[0].rows, 3);
+  assert.strictEqual(body.report.summary.totalHours, 24);
+});
+
+test('a silently truncated week index is reported as truncated, not as an authoritative list', async () => {
+  // What a project with db-max-rows set actually does: the body stops at the
+  // cap while the exact count keeps telling the truth. Believe the count.
+  const { res, body, urls } = await runReport({
+    pageFor: (url, call) => (call === 1
+      ? fakePage(Array.from({ length: 10 }, () => indexRow(windowEnd(url))), '0-9/17384')
+      : fakePage([], '0-9/17384')),
+    detailRows: () => []
+  });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.ok, true, 'the report is still served — with a warning, not a lie');
+  assert.strictEqual(body.truncated, true);
+  assert.strictEqual(body.dataWindow.weekIndexTruncated, true);
+  assert.strictEqual(body.dataWindow.rowsScanned, 10);
+  assert.strictEqual(body.dataWindow.rowsAvailable, 17384);
+  // With the week list unproven there is nothing to check the detail fetch
+  // against, and the response says so rather than inventing a comparison.
+  assert.strictEqual(body.dataWindow.weekRowsExpected, null);
+  assert.strictEqual(body.dataWindow.weekDetailTruncated, false);
+  assert.ok(urls.length >= 2, 'it must try to page past the cap before giving up');
+  assert.ok(Array.isArray(body.availableWeeks) && body.availableWeeks.length,
+    'the weeks it did see are still offered');
+});
+
+test('a week whose detail rows come back short of the index count is flagged', async () => {
+  const { body } = await runReport({
+    pageFor: (url) => fakePage(Array.from({ length: 5 }, () => indexRow(windowEnd(url))), '0-4/5'),
+    detailRows: (from, to) => [
+      dailyRow({ work_date: to, employee_number: '0101', department: 'Production',
+                 pay_rate: 28, regular_hours: 10, total_hours: 10, total_earnings: 280 })
+    ]
+  });
+
+  assert.strictEqual(body.ok, true);
+  assert.strictEqual(body.dataWindow.weekRowsExpected, 5);
+  assert.strictEqual(body.dataWindow.weekRowsFetched, 1);
+  assert.strictEqual(body.dataWindow.weekDetailTruncated, true);
+  assert.strictEqual(body.truncated, true);
+});
+
+test('the window scan pages until the exact count is satisfied', async () => {
+  // A capped page that still honours offset: page twice, then stop because the
+  // count says everything is in hand — no empty third request.
+  const { body, urls } = await runReport({
+    pageFor: (url, call) => (call === 1
+      ? fakePage(Array.from({ length: 4 }, () => indexRow(windowEnd(url))), '0-3/6')
+      : fakePage(Array.from({ length: 2 }, () => indexRow(windowEnd(url))), '4-5/6')),
+    detailRows: () => []
+  });
+
+  assert.strictEqual(urls.length, 2);
+  assert.match(urls[0], /offset=0&/);
+  assert.match(urls[1], /offset=4&/, 'the offset advances by rows received, not by page size');
+  assert.strictEqual(body.dataWindow.rowsScanned, 6);
+  assert.strictEqual(body.dataWindow.weekIndexTruncated, false, 'both pages arrived, so the window is proven');
+});
