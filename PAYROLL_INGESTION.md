@@ -406,8 +406,11 @@ parser robustness.
 | `tests/xlsx-lite.test.js`, `tests/payroll.test.js`, `tests/ot-report.test.js`, `tests/payroll-email.test.js` | `npm test` |
 
 Schedules live in `netlify.toml`. Netlify cron is UTC and does not follow DST, exactly as
-noted for the birthday notifier: `0 16 * * *` is 9:00 AM Pacific in summer, 8:00 AM in
-winter.
+noted for the birthday notifier: the ingest runs at `15 * * * *` (hourly, off the top of
+the hour), and the missed-delivery check at `0 19 * * *` — 12:00 PM Pacific in summer,
+11:00 AM in winter, well after the delivery window has closed so that a merely late
+report is not reported as a missing one. To trim invocations, `15 12-20 * * *` covers
+5:15 AM to 1:15 PM Pacific, which is the realistic arrival window.
 
 ---
 
