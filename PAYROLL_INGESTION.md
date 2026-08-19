@@ -119,11 +119,11 @@ without breaking the other, and the payroll integration can be revoked on its ow
 curl "https://seq-staffing.netlify.app/api/payroll-email-test" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 
-# Actually import what it finds.
-curl "https://seq-staffing.netlify.app/api/payroll-email-test?send=true" \
+# Actually import what it finds. Note -X POST.
+curl -X POST "https://seq-staffing.netlify.app/api/payroll-email-test?send=true" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 
-# Run the missed-delivery check instead.
+# Run the missed-delivery check instead (dry run; add -X POST and ?send=true to alert for real).
 curl "https://seq-staffing.netlify.app/api/payroll-email-test?check=missed" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 ```
@@ -131,6 +131,12 @@ curl "https://seq-staffing.netlify.app/api/payroll-email-test?check=missed" \
 A bare call is **always** a dry run; importing requires `?send=true`. You can also
 just open `/api/payroll-email-test` in a browser while signed in to the app — a valid
 `sfp_session` cookie is accepted instead of the header.
+
+**GET is dry-run only. Anything that writes or sends requires POST**, which is why the
+import example above carries `-X POST`. The session cookie is `SameSite=Lax`, so a
+cross-site POST carries no cookie while a top-level GET navigation does — without this
+split, a plain link or an `<img src>` on any page would fire a live import in a
+signed-in browser. The dry run stays on GET so the browser affordance survives.
 
 Once a dry run looks right, set `PAYROLL_DRY_RUN=false`.
 
@@ -385,6 +391,25 @@ expected prior work day landed and emails Peter if a **Mon-Thu** day is missing.
 Fri/Sat/Sun is reported but does not alert, because nobody may have worked. An alert
 saying "no payroll data for Tuesday" the next morning is worth more than any amount of
 parser robustness.
+
+### Reading the scheduled runs
+
+A **red** run of `payroll-email-ingest` or `payroll-missed-check` does not mean a message
+was bad. It means the alerting itself failed, or Supabase could not be read — that the
+watchdog is blind. A bad message is a **green** run carrying `status: "attention"`,
+because the alert about it went out as intended.
+
+That inversion is the point. Netlify's function-error alerting fires on a non-2xx, so the
+condition it surfaces is the only one nobody else would catch: an ingest that quietly
+stopped being able to tell you anything. Everything the pipeline *can* tell you arrives by
+email or shows up in the Daily Hours tab's ingestion-issues panel.
+
+A pending item is reported at most once a day and its wording ages ("unresolved since ...")
+rather than repeating verbatim, and marking it handled closes it for good. Repeating an
+alert nobody can close is how people learn to ignore the one that matters.
+
+A run that hit the message cap reports itself as incomplete and alerts on that alone, even
+when every message it did read was fine. A bounded pass must never look like a complete one.
 
 ---
 

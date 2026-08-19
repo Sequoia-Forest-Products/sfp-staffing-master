@@ -1,7 +1,9 @@
 // Run with: npm test   (node --test, no extra dependencies)
 //
 // buildReport() is pure, so every case here is a literal fixture in, a literal
-// number out — nothing touches Supabase, and payroll-report.js is never loaded.
+// number out. The last section does load payroll-report.js, to prove the HTTP
+// function can tell a complete window from a truncated one; even there nothing
+// touches Supabase — global fetch and payroll-db's exports are both faked.
 //
 // The fixture week is Mon 2026-08-03 .. Sun 2026-08-09:
 //   Mon  Ana + Ben, ordinary scheduled day

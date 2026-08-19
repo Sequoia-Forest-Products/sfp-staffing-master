@@ -355,17 +355,29 @@ npm test   # all suites: birthday, xlsx parser, payroll import, OT report, email
 curl "https://seq-staffing.netlify.app/api/payroll-email-test" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 
-# Actually import what it finds
-curl "https://seq-staffing.netlify.app/api/payroll-email-test?send=true" \
+# Actually import what it finds — note -X POST
+curl -X POST "https://seq-staffing.netlify.app/api/payroll-email-test?send=true" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 
-# Run the missed-delivery check instead
+# Run the missed-delivery check instead (dry; add -X POST and ?send=true to alert for real)
 curl "https://seq-staffing.netlify.app/api/payroll-email-test?check=missed" \
   -H "x-payroll-secret: $PAYROLL_TRIGGER_SECRET"
 ```
 
 A bare call is always a dry run; importing requires `?send=true`. A valid `sfp_session` cookie is
 accepted instead of the header, so you can just open the URL while signed in.
+
+**GET is dry-run only; anything that writes or sends needs POST.** That is deliberate. The session
+cookie is `SameSite=Lax`, which means a cross-site POST carries no cookie at all while a top-level
+GET navigation does — so before this, a plain link or an `<img src>` on any page was enough to make
+a signed-in browser import live payroll. Keeping the dry run on GET preserves the useful "just open
+it in a browser" affordance without that exposure.
+
+**What a red scheduled run means.** `payroll-email-ingest` and `payroll-missed-check` return a 5xx
+only when the *alerting itself* failed, or Supabase could not be read — not when a message was bad.
+A bad message is a green run with `status: "attention"`, because the alert about it went out. So a
+function error in Netlify means the watchdog is blind, which is the one condition nobody would
+otherwise notice. Netlify's function-error alerting keys on exactly that.
 
 ---
 
