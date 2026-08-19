@@ -1,3 +1,12 @@
+// DEPRECATED — superseded by payroll-import.js and the daily_hours table.
+//
+// This endpoint wrote a weekly Hours-Analysis-Report into `weekly_hours` and is no
+// longer called by anything: the OT Report now reads `daily_hours`, which is imported
+// one day at a time by payroll-import.js (manual upload) and payroll-email-ingest.js
+// (the hourly IMAP pipeline). It stays deployed only so an in-flight browser tab
+// holding the old app.html cannot 404 mid-upload. Delete it and the `weekly_hours`
+// table together once nobody is on the old page.
+
 const { createHmac } = require('crypto');
 const db = require('./db');
 

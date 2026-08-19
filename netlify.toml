@@ -11,6 +11,29 @@
 [functions."birthday-notifications"]
   schedule = "30 13 * * 1-4"
 
+# Payroll email ingestion — hourly, every day.
+#
+# The vendor sends the report at ~6:04 AM Pacific (13:04 UTC in summer, 14:04 in
+# winter), but polling hourly means a delayed report still lands the same day
+# instead of waiting until tomorrow. Each run searches only the "payroll import"
+# Gmail label over a rolling 7-day window and skips any Message-ID already in
+# processed_emails, so the repeat runs are cheap and re-processing is harmless.
+#
+# Weekends are included deliberately: maintenance crews work Fri-Sun, so those
+# days produce real payroll data.
+[functions."payroll-email-ingest"]
+  schedule = "0 * * * *"
+
+# Missed-delivery check — once daily at 16:00 UTC (9:00 AM PDT / 8:00 AM PST),
+# a few hours after the report is due.
+#
+# Nobody touches these emails by hand, so nobody would notice if they stopped
+# arriving. This is the only thing that surfaces a broken pipeline. It escalates
+# only on a missing Mon-Thu scheduled day; a quiet Fri/Sat/Sun is reported but
+# not alerted, since nobody may have worked.
+[functions."payroll-missed-check"]
+  schedule = "0 16 * * *"
+
 [[redirects]]
   from = "/auth/callback"
   to = "/.netlify/functions/auth"

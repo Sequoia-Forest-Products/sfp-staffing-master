@@ -1,3 +1,14 @@
+> **SUPERSEDED.** This document describes the first OT report, which uploaded a
+> weekly `Hours-Analysis-Report` into a `weekly_hours` table and priced OT at a flat
+> 1.5x. Both are gone. The current system imports one file per day into `daily_hours`,
+> derives OT dollars by residual (a flat 1.5x undercounts California's double-time tier
+> by ~3%), snapshots department at import, and ingests the file automatically from the
+> `payroll import` Gmail label. See **[`PAYROLL_INGESTION.md`](PAYROLL_INGESTION.md)**
+> and `SCHEMA_DAILY_HOURS.sql`.
+>
+> Kept only as a record of what the earlier `weekly_hours` path did. Do not follow the
+> set-up steps below.
+
 # OT Report Feature — Setup & Implementation Guide
 
 ## Overview
