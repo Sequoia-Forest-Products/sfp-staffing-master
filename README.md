@@ -49,6 +49,7 @@ sfp-staffing-master/
 ├── package.json
 ├── .env.example                # Environment variable template
 ├── SCHEMA_DAILY_HOURS.sql      # daily_hours + processed_emails + employee payroll fields
+├── SCHEMA_DROP_DEPT.sql        # Step 5 of the department consolidation — gated, not yet run
 ├── SCHEMA_CHANGES.sql          # Superseded — the original weekly_hours OT report schema
 ├── SCHEMA_BIRTHDAY.sql         # Birthday data audit queries
 ├── SCHEMA_SMS_OPTOUT.sql       # sms_opted_out migration
@@ -126,10 +127,20 @@ sfp-staffing-master/
 column destroys the padding, which is why an older install's `INTEGER` column is converted by
 `SCHEMA_DAILY_HOURS.sql`. Every comparison normalises both sides with `lpad(...,4,'0')`.
 
-`department` (`Maintenance | Saw Filing | Shipping | Production`) is the OT report's taxonomy and
-is **separate from `dept`** (Sawmill / Filing Room / Log Yard / SG&A / ...). Nothing maps one onto
-the other; both are set by hand. Back-fill both on the Employees tab before importing payroll
-data — `daily_hours` snapshots the department at import time.
+`department` (`Maintenance | Saw Filing | Shipping | Production`) is the one department field.
+Back-fill it on the Employees tab before importing payroll data — `daily_hours` snapshots the
+department at import time.
+
+`dept` is the **retired** predecessor (Sawmill / Filing Room / Log Yard / SG&A / ...). Nothing
+reads it functionally any more and nothing writes to it; it survives only as the reference an
+operator reads while hand-assigning `department`, and is dropped by `SCHEMA_DROP_DEPT.sql` once
+the back-fill is verified complete.
+
+There is **no automatic migration between the two**, and that is expected rather than an omission:
+`Maintenance` and `Shipping` do not exist in the old value set at all, so the people now in them
+are currently tagged Sawmill or Log Yard and no mapping table can recover the right answer. Every
+employee is assigned by hand. `Filing Room` → `Saw Filing` is the single known rename and is
+offered on the back-fill screen as a marked suggestion that will not commit itself.
 
 ### economics
 `id, num, section, position, name, max_wage`

@@ -54,10 +54,19 @@ Employees tab -> **Back-fill payroll fields**. One screen, both fields, every em
   (`0319`, `0063`, `9290`). Enter it exactly as payroll shows it. Matching normalises
   both sides with `lpad(...,4,'0')`, so an unpadded `319` still matches `0319` — but
   store the padded form.
-- `department` is one of **Maintenance, Saw Filing, Shipping, Production**. This is
-  deliberately a different column from the existing `dept` (Sawmill / Filing Room /
-  Log Yard / SG&A / ...), which uses an older taxonomy. Nothing maps one onto the
-  other automatically. `dept` is shown on the back-fill screen as reference only.
+- `department` is one of **Maintenance, Saw Filing, Shipping, Production**, and it is
+  now the *only* department field. The older `dept` (Sawmill / Filing Room / Log Yard /
+  SG&A / ...) is retired: nothing reads it functionally and nothing writes to it, and
+  it is dropped by `SCHEMA_DROP_DEPT.sql` once this back-fill is verified complete.
+  Until then it stays visible on the back-fill screen as reference, because it is what
+  you read while deciding.
+
+  **Nothing maps one onto the other.** `Maintenance` and `Shipping` do not exist in the
+  old value set, so the people now in them are currently tagged Sawmill or Log Yard and
+  no mapping can recover the right answer. `Filing Room` → `Saw Filing` is the one known
+  rename; the screen offers it as a marked suggestion that will not commit itself, and
+  suggests nothing for `Sawmill`, `Log Yard` or `SG&A`. A wrong pre-fill that looks
+  authoritative is worse than a blank.
 
 **Nothing is inferred here.** Not from `dept`, not from pay rate, not from name or job
 title. The roster contains two employees named Smith and several compound surnames
