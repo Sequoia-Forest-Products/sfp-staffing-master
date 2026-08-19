@@ -2499,7 +2499,8 @@ function renderDailyHours(){
                 <div style="color:var(--muted)">${e.notified_at?'alerted '+fmtStamp(e.notified_at):'never alerted'}</div>
               </td>
               <td>${e.work_date?fmtDate(e.work_date):'—'}</td>
-              <td style="white-space:normal;max-width:300px">${esc(e.subject||'—')}</td>
+              <td style="white-space:normal;max-width:300px">${esc(e.subject||'—')}
+                <div style="font-size:10px;color:var(--muted)">from ${esc(e.from_address||'unknown sender')}</div></td>
               <td style="white-space:normal;max-width:280px;font-size:11px;color:var(--brick)">${esc(e.error||'')}</td>
               <td style="font-size:11px">${(e.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
               <td><button class="btn btn-outline btn-sm" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="resolveIngestionEmail('${jsStr(e.message_id)}')">Mark handled</button></td>
@@ -2513,7 +2514,8 @@ function renderDailyHours(){
             <tbody>${pendLog.map(e=>`<tr class="dh-quiet">
               <td class="sub"><span class="badge inactive">${esc(e.status)}</span></td>
               <td class="sub">${e.work_date?fmtDate(e.work_date):'—'}</td>
-              <td class="sub" style="white-space:normal;max-width:300px">${esc(e.subject||'—')}</td>
+              <td class="sub" style="white-space:normal;max-width:300px">${esc(e.subject||'—')}
+                <div style="font-size:10px">from ${esc(e.from_address||'unknown sender')}</div></td>
               <td class="sub" style="font-size:11px">${fmtStamp(e.received_at)}</td>
               <td class="sub" style="white-space:normal;max-width:280px;font-size:11px">${esc(e.error||'')}</td>
               <td class="sub" style="font-size:11px">${(e.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
