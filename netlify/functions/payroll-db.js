@@ -16,8 +16,12 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const CHUNK_SIZE = 500;
 
 // URL length is the real limit on an id=in.(...) filter. UUIDs are 36 bytes
-// plus a comma, so 200 stays well under any proxy's cap.
-const ID_FILTER_CHUNK = 200;
+// plus a comma, and PostgREST needs them percent-encoded, so 200 ids measured
+// 7449 bytes of request line — inside nginx's default 8 KB header buffer with
+// nothing to spare, and reachable only during the bulk re-stamp this module
+// exists for. 100 halves it and leaves room for the proxy chain to add its own
+// headers.
+const ID_FILTER_CHUNK = 100;
 
 function hdrs(extra = {}) {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -33,11 +37,21 @@ function hdrs(extra = {}) {
 }
 
 async function request(method, path, { body, headers } = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    method,
-    headers: hdrs(headers),
-    ...(body === undefined ? {} : { body: JSON.stringify(body) })
-  });
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method,
+      headers: hdrs(headers),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+  } catch (err) {
+    // undici reports every transport failure as the bare message 'fetch failed'
+    // and hides the reason that would let somebody act on it (DNS, TLS, refused
+    // connection) on err.cause. Carry it into the message so the Netlify log
+    // says what actually broke, and keep the original as the cause.
+    const reason = err && err.cause && err.cause.message ? `: ${err.cause.message}` : '';
+    throw new Error(`${method} ${path} — ${err.message}${reason}`, { cause: err });
+  }
   if (!res.ok) {
     throw new Error(`${method} ${path} ${res.status}: ${await res.text()}`);
   }
@@ -137,6 +151,19 @@ async function deleteDailyHoursForDate(workDate) {
   return deleted.length;
 }
 
+// Removes everything on a date that did NOT come from the batch just written.
+// This is the second half of a safe overwrite: the new batch is upserted first,
+// then whoever was on the old file and not on the new one is pruned. Doing it
+// in that order means a failed write leaves the previous day intact, which a
+// delete-then-insert pair — two independent PostgREST calls with no transaction
+// around them — cannot promise.
+async function deleteOtherBatchesForDate(workDate, uploadBatchId) {
+  const deleted = await request('DELETE',
+    `daily_hours?work_date=eq.${encode(workDate)}` +
+    `&upload_batch_id=neq.${encode(uploadBatchId)}`);
+  return deleted.length;
+}
+
 async function deleteDailyHoursForBatch(uploadBatchId) {
   const deleted = await request('DELETE',
     `daily_hours?upload_batch_id=eq.${encode(uploadBatchId)}`);
@@ -179,7 +206,10 @@ async function restampDepartments(fromDate, toDate) {
   }
 
   const changes = [];
-  const byTarget = new Map();   // department -> [row ids]
+  // Keyed by department *and* the flags the row will keep, because rows moving
+  // to the same department do not necessarily carry the same flags and one
+  // PATCH writes one body.
+  const byTarget = new Map();
   let stillUnassigned = 0;
 
   for (const row of rows) {
@@ -206,17 +236,26 @@ async function restampDepartments(fromDate, toDate) {
       from: current,
       to: next
     });
-    if (!byTarget.has(next)) byTarget.set(next, { department: next, ids: [] });
-    byTarget.get(next).ids.push(row.id);
+
+    // Those two flags are assertions that the row has no department, and
+    // re-stamping is the event that makes them untrue. Nothing else ever clears
+    // them, so a repaired row would otherwise sit in the report's flagged list
+    // for ever, describing a problem that was fixed.
+    const flags = (Array.isArray(row.flags) ? row.flags : [])
+      .filter(flag => flag !== 'missing_department' && flag !== 'unknown_employee');
+
+    const key = `${next}\t${JSON.stringify(flags)}`;
+    if (!byTarget.has(key)) byTarget.set(key, { department: next, flags, ids: [] });
+    byTarget.get(key).ids.push(row.id);
   }
 
   let updated = 0;
-  for (const { department, ids } of byTarget.values()) {
+  for (const { department, flags, ids } of byTarget.values()) {
     for (let i = 0; i < ids.length; i += ID_FILTER_CHUNK) {
       const slice = ids.slice(i, i + ID_FILTER_CHUNK);
       const result = await request('PATCH',
         `daily_hours?id=in.(${slice.map(encode).join(',')})`,
-        { body: { department } });
+        { body: { department, flags } });
       updated += result.length;
     }
   }
@@ -264,6 +303,7 @@ module.exports = {
   fetchDailyHoursForDate,
   upsertDailyHours,
   deleteDailyHoursForDate,
+  deleteOtherBatchesForDate,
   deleteDailyHoursForBatch,
   findRowsByFileHash,
   fetchRowsByBatch,

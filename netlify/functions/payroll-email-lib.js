@@ -55,6 +55,18 @@ const LATEST_EXPECTED_HOUR   = 10;
 const STALE_AFTER_DAYS = 7;
 const MAX_MESSAGES     = 200;
 
+// A ledger row that still needs a human. Everything else is terminal:
+// 'imported' worked, 'duplicate_file' and 'rejected' are logged-and-fine (the
+// ingest already decided not to import them and said so once), and 'resolved'
+// is what /api/payroll-import stamps after somebody has dealt with a row by
+// hand. Re-alerting on any of those is how the one alert that matters gets
+// trained into background noise.
+const ACTIONABLE_LEDGER_STATUSES = ['pending_review', 'error'];
+
+// A row that is still unresolved is worth saying again — but once a day, not
+// once per run, and with wording that ages rather than repeating verbatim.
+const PENDING_RENOTIFY_HOURS = 24;
+
 // Env is read per call, not at module load, so a test or a manual trigger can
 // change it between runs.
 function config() {
@@ -328,6 +340,11 @@ async function streamToBuffer(stream) {
 //
 // Read-only throughout: getMailboxLock({readOnly:true}) plus an explicit
 // mailboxOpen({readOnly:true}), no \Seen flag changes, no moves, no expunge.
+//
+// Returns an array of messages carrying two extra properties when the mailbox
+// held more mail than the run examined: `truncated` and `totalAvailable`. The
+// caller alerts on them — see runPayrollIngest(). They ride on the array so an
+// injected fetchMessages can keep returning a plain array.
 async function fetchLabeledMessages({
   label, sinceDate, host, user, password, log = console.log
 } = {}) {
@@ -358,6 +375,8 @@ async function fetchLabeledMessages({
     : new Date(`${String(sinceDate).slice(0, 10)}T00:00:00Z`);
 
   const messages = [];
+  let truncated = false;
+  let totalAvailable = 0;
   await client.connect();
 
   try {
@@ -367,10 +386,21 @@ async function fetchLabeledMessages({
     const boxes = await client.list();
     const paths = boxes.map(b => b.path);
     if (!paths.includes(mailbox)) {
-      throw new Error(
-        `IMAP mailbox ${JSON.stringify(mailbox)} not found for ${imapUser}. ` +
-        `Nested Gmail labels appear as paths. Mailboxes found: ${paths.map(p => JSON.stringify(p)).join(', ')}`
+      // The full list of mailboxes is the single most useful thing for fixing a
+      // label typo, and it is also a directory of every folder on a shared human
+      // inbox. It goes to the function log, which only we can read; the thrown
+      // message — which payroll-email-test.js hands straight back over HTTP —
+      // names the label we looked for and points at the log.
+      console.error(
+        `IMAP: mailbox ${JSON.stringify(mailbox)} not found for ${imapUser}. Mailboxes present: ` +
+        paths.map(p => JSON.stringify(p)).join(', ')
       );
+      const err = new Error(
+        `IMAP mailbox ${JSON.stringify(mailbox)} not found. Nested Gmail labels appear as paths ` +
+        `("parent/child"). The mailboxes that do exist are in the function log for this run.`
+      );
+      err.mailboxes = paths;   // for callers that log; never serialized to a response
+      throw err;
     }
 
     const lock = await client.getMailboxLock(mailbox, { readOnly: true });
@@ -384,10 +414,11 @@ async function fetchLabeledMessages({
       // Searched by date only. Read/unread state is deliberately not part of the
       // query: the Gmail filter marks these read on arrival.
       const descriptors = [];
+      let matched = 0;
       for await (const msg of client.fetch({ since }, {
         uid: true, envelope: true, internalDate: true, bodyStructure: true
       })) {
-        if (descriptors.length >= MAX_MESSAGES) break;
+        matched++;
         descriptors.push({
           uid: msg.uid,
           messageId: (msg.envelope && msg.envelope.messageId) || null,
@@ -400,6 +431,17 @@ async function fetchLabeledMessages({
           receivedAt: msg.internalDate || (msg.envelope && msg.envelope.date) || null,
           parts: collectAttachmentParts(msg.bodyStructure)
         });
+        // fetch() yields OLDEST first, so stopping at the cap would throw away
+        // this morning's delivery and keep a week of mail already in the ledger
+        // — exactly backwards. Drop from the front instead: memory stays bounded
+        // at MAX_MESSAGES and what survives is the newest MAX_MESSAGES.
+        if (descriptors.length > MAX_MESSAGES) descriptors.shift();
+      }
+
+      truncated = matched > descriptors.length;
+      totalAvailable = matched;
+      if (truncated) {
+        log(`IMAP: ${matched} message(s) matched — examining only the newest ${descriptors.length}`);
       }
 
       for (const d of descriptors) {
@@ -439,7 +481,24 @@ async function fetchLabeledMessages({
     await client.logout().catch(() => client.close());
   }
 
+  messages.truncated = truncated;
+  messages.totalAvailable = totalAvailable;
   return messages;
+}
+
+// fetchMessages may hand back a plain array (what the tests inject), an array
+// carrying the truncation flags fetchLabeledMessages sets, or {messages,...}.
+function unpackMessages(payload) {
+  const list = Array.isArray(payload) ? payload
+    : (payload && Array.isArray(payload.messages)) ? payload.messages
+    : [];
+  const meta = Array.isArray(payload) ? payload : (payload || {});
+  const total = Number(meta.totalAvailable);
+  return {
+    list,
+    truncated: !!meta.truncated,
+    totalAvailable: Number.isFinite(total) && total > 0 ? total : list.length
+  };
 }
 
 // ============================================================
@@ -554,7 +613,7 @@ async function runPayrollIngest({
   const sinceDate = addDays(today, -lookback);
 
   const messages = await getMessages({ label: conf.label, sinceDate, lookbackDays: lookback, timeZone: tz });
-  const list = Array.isArray(messages) ? messages : [];
+  const { list, truncated, totalAvailable } = unpackMessages(messages);
 
   // Oldest first, so that when two deliveries collide the earlier one is the one
   // treated as the original.
@@ -776,24 +835,52 @@ async function runPayrollIngest({
   // ---- Phase 3: one digest alert per run, sent BEFORE the ledger is written so
   // notified_at is only ever set on something that actually went out.
   const alerting = items.filter(i => i.alert);
+
+  // Run-level problems that no individual message owns. A truncated scan is
+  // one: the messages this run never looked at cannot report themselves, so a
+  // bounded run would otherwise read exactly like a complete one.
+  const notices = [];
+  if (truncated) {
+    notices.push(
+      `Only the newest ${list.length} of ${totalAvailable} message(s) in the ${lookback}-day window ` +
+      `were examined (cap ${MAX_MESSAGES} per run). The rest were NOT checked — this run is not a ` +
+      `complete pass. Check the "${conf.label}" label for mail that does not belong there.`
+    );
+  }
+
+  const shouldAlert = alerting.length > 0 || notices.length > 0;
   let notified = false;
   let notifiedAt = null;
+  let alertError = null;
 
-  if (alerting.length && !isDryRun) {
-    const subject = `Payroll email import needs attention — ${alerting.length} item(s)`;
-    const body =
-      `The hourly payroll import found ${alerting.length} message(s) that need a look.\n\n` +
-      alerting.map(describeItem).join('\n\n') +
-      `\n\nMailbox: ${conf.label} (read-only)\nRun at: ${now.toISOString()}\n` +
-      `Nothing was imported for anything listed as pending_review, rejected, duplicate_file or error.`;
+  if (shouldAlert && !isDryRun) {
+    const subject = alerting.length
+      ? `Payroll email import needs attention — ${alerting.length} item(s)`
+      : 'Payroll email import: the mailbox scan was truncated';
+    const body = [
+      notices.join('\n\n'),
+      alerting.length
+        ? `The hourly payroll import found ${alerting.length} message(s) that need a look.\n\n` +
+          alerting.map(describeItem).join('\n\n')
+        : '',
+      `Mailbox: ${conf.label} (read-only)\nRun at: ${now.toISOString()}\n` +
+      `Nothing was imported for anything listed as pending_review, rejected, duplicate_file or error.`
+    ].filter(Boolean).join('\n\n');
     try {
       await d.sendAlert(subject, body);
       notified = true;
       notifiedAt = new Date().toISOString();
     } catch (err) {
+      alertError = err.message;
       log(`Alert email failed: ${err.message}`);
     }
   }
+
+  // The alert IS the output of this function — a run that found something and
+  // could not say so has failed, however clean the rest of it looks. The
+  // handler turns this into a non-200 so Netlify's own function-error alerting
+  // fires; a log line would just sit there unread.
+  const alertFailed = shouldAlert && !isDryRun && !notified;
 
   // ---- Phase 4: the ledger. Only messages this run actually handled — a
   // 'skipped' message already has its row, and a dry run writes nothing at all.
@@ -832,12 +919,14 @@ async function runPayrollIngest({
   const errors   = results.filter(r => r.status === 'error' || r.status === 'rejected').length;
 
   const status = isDryRun ? 'dry-run'
-    : (errors || flagged) ? 'attention'
+    : alertFailed ? 'alert-failed'
+    : (errors || flagged || truncated) ? 'attention'
     : results.length === 0 ? 'no-messages'
     : 'ok';
 
   log(`Payroll ingest ${status}: ${results.length} checked, ${imported} imported, ` +
       `${skipped} skipped, ${flagged} pending review, ${errors} error(s).`);
+  if (alertFailed) log(`Payroll ingest could not deliver its alert: ${alertError}`);
 
   return {
     status,
@@ -850,7 +939,15 @@ async function runPayrollIngest({
     skipped,
     flagged,
     errors,
+    truncated,
+    totalAvailable,
     notified,
+    alertRequired: shouldAlert && !isDryRun,
+    alertFailed,
+    alertError,
+    // One flag the handlers key their HTTP status off, so "this run could not
+    // do its job" never depends on a caller re-deriving it.
+    failed: alertFailed,
     results
   };
 }

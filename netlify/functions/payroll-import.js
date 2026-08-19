@@ -63,8 +63,8 @@ function getCookies(event) {
 // else becomes a 500. Keeping the distinction explicit stops a genuine bug from
 // being reported to the user as "bad file".
 class BadRequest extends Error {
-  constructor(message) {
-    super(message);
+  constructor(message, options) {
+    super(message, options);
     this.name = 'BadRequest';
   }
 }
@@ -83,6 +83,19 @@ function decodeUpload(fileBase64, fileName) {
     throw new BadRequest(`${fileName || 'The uploaded file'} is empty.`);
   }
   return buffer;
+}
+
+// buildImport re-reads the ZIP, the sheet and every header, so anything it (or
+// xlsx-lite beneath it) throws is a statement about the file the caller chose,
+// and its message is already written to be read by a human. Convert it here,
+// at the one call site that knows a parse was attempted, rather than guessing
+// from the message text later — a Supabase failure can mention "column" too.
+function parseUpload(args) {
+  try {
+    return buildImport(args);
+  } catch (err) {
+    throw new BadRequest(err.message, { cause: err });
+  }
 }
 
 // The rows already sitting on a date, summarised for the overwrite prompt.
@@ -156,7 +169,7 @@ async function preview(body) {
   const workDate = workDateInfo(body.workDate || null, TIME_ZONE).date;
 
   const employees = await db.fetchEmployees();
-  const result = buildImport({
+  const result = parseUpload({
     fileBuffer: buffer,
     workDate,
     source: 'manual',
@@ -200,7 +213,7 @@ async function commit(body) {
   }
 
   const employees = await db.fetchEmployees();
-  const result = buildImport({
+  const result = parseUpload({
     fileBuffer: buffer,
     workDate,
     source: 'manual',
@@ -218,17 +231,50 @@ async function commit(body) {
     );
   }
 
-  // Replace rather than merge on an overwrite: an upsert alone would leave
-  // behind anybody who was on the old file and not on the new one, which is
-  // exactly the correction a re-send usually is.
-  if (existing) await db.deleteDailyHoursForDate(workDate);
+  // The same bytes under a different date is the one duplicate that silently
+  // doubles a week's payroll, and audit query 4e in SCHEMA_DAILY_HOURS.sql says
+  // it must never exist. The email ingester refuses it outright; the manual path
+  // has to refuse it too rather than trusting the browser to honour a warning.
+  // The same bytes under the SAME date is just a re-upload and stays allowed.
+  const duplicate = describeDuplicateHash(await db.findRowsByFileHash(result.fileHash), workDate);
+  if (duplicate && !duplicate.sameDate && body.confirmDuplicateFile !== true) {
+    throw new BadRequest(
+      `This exact file is already imported as ${duplicate.workDate} ` +
+      `(${duplicate.rowCount} row(s), batch ${duplicate.uploadBatchId}). ` +
+      `Importing it as ${workDate} as well would count that day's payroll twice. ` +
+      `Re-send with confirmDuplicateFile to import it anyway.`
+    );
+  }
 
+  // Write first, prune second. The old order — delete the day, then insert —
+  // was two independent PostgREST requests with no transaction around them, so
+  // a 5xx, a schema-cache miss or one bad row on the insert left the day
+  // deleted and not replaced. Upserting first is safe because
+  // unique(work_date, employee_number) makes it idempotent: the day briefly
+  // holds the old rows plus the new ones, and a failure here changes nothing.
   const written = await db.upsertDailyHours(result.rows);
+  if (!written.length) {
+    // return=representation always echoes what it wrote, so an empty body after
+    // a non-empty write means the write did not happen. Reporting the intended
+    // count here would present a no-op as a successful import.
+    throw new Error(
+      `Sent ${result.rows.length} row(s) for ${workDate} but Supabase returned no rows — ` +
+      `the write did not take effect.`
+    );
+  }
+
+  // Only now remove whoever was on the old file and not on the new one: an
+  // upsert alone would leave them behind, and dropping somebody is exactly the
+  // correction a re-send usually is.
+  const removed = existing
+    ? await db.deleteOtherBatchesForDate(workDate, result.uploadBatchId)
+    : 0;
 
   return {
     uploadBatchId: result.uploadBatchId,
-    inserted: written.length || result.rows.length,
+    inserted: written.length,
     replaced: existing ? existing.rowCount : 0,
+    removed,
     summary: { ...summaryOf(result), validation }
   };
 }
@@ -342,14 +388,60 @@ async function deleteDay(body) {
   return { workDate, deleted };
 }
 
+// The only two ledger states that are waiting on a person. duplicate_file and
+// rejected are the ingester working correctly and saying so; a resolved row has
+// already been dealt with. Listing all of them but marking these two lets the
+// screen separate "needs a decision" from "logged and fine".
+const ACTIONABLE_STATUSES = new Set(['pending_review', 'error']);
+
 // Everything the email ingester logged that did not end up imported: duplicates,
 // rejections, errors and anything held for review.
 async function pending() {
   const emails = await db.listProcessedEmails({ notStatus: 'imported', limit: 100 });
-  return { emails };
+  return {
+    emails: emails.map(email => ({
+      ...email,
+      actionable: ACTIONABLE_STATUSES.has(email.status)
+    }))
+  };
 }
 
-const ACTIONS = { preview, commit, days, restamp, correctDate, deleteDay, pending };
+// Closes a queue entry that a human has already dealt with by hand. Without it
+// nothing can ever leave pending_review or error, so the daily missed-delivery
+// check keeps mailing about the same message every morning — which is how
+// people learn to ignore the one alert that matters.
+async function resolveEmail(body) {
+  const messageId = String(body.messageId || '').trim();
+  if (!messageId) throw new BadRequest('messageId is required.');
+
+  const record = await db.getProcessedEmail(messageId);
+  if (!record) {
+    throw new BadRequest(`No ingestion record found for message ${messageId}.`);
+  }
+
+  const note = String(body.note || '').trim();
+  const resolvedAt = new Date().toISOString();
+
+  // Spread the stored row back: the upsert merges on message_id, so any column
+  // left out would be written back as its default and the audit trail — the
+  // subject, the file hash, the batch it belonged to — would be lost.
+  // `error` is the ledger's only free-text column, so the note goes there,
+  // prefixed so a resolved row cannot be misread as a fresh failure, and with
+  // the original detail kept alongside it.
+  await db.upsertProcessedEmail({
+    ...record,
+    status: 'resolved',
+    processed_at: resolvedAt,
+    error: `Resolved ${resolvedAt}${note ? `: ${note}` : ''}` +
+           (record.error ? ` — was: ${record.error}` : '')
+  });
+
+  return { messageId, status: 'resolved' };
+}
+
+const ACTIONS = {
+  preview, commit, days, restamp, correctDate, deleteDay, pending, resolveEmail
+};
 
 // ============================================================
 // HANDLER
@@ -390,9 +482,13 @@ exports.handler = async (event) => {
     const result = await run(body);
     return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...result }) };
   } catch (err) {
-    // Anything raised by payroll-lib (a missing column, an unreadable file) is
-    // the user's input too, and its message is written to be read by a human.
-    const isUserError = err instanceof BadRequest || err.name === 'BadRequest' || /\b(column|sheet|\.xlsx|ZIP)\b/i.test(err.message || '');
+    // Only an error raised deliberately as "the caller sent something it can
+    // fix" is a 400. Deciding that by matching words in the message meant a
+    // Supabase failure whose body happens to say "column" — PGRST204, a schema
+    // cache that has not caught up — was answered as bad input and never
+    // logged, so Netlify's alerting never saw the outage. Everything that is
+    // not explicitly user-facing is a bug or an outage and gets logged.
+    const isUserError = err instanceof BadRequest || err.name === 'BadRequest';
     if (!isUserError) console.error(`payroll-import ${action} failed:`, err);
     return fail(isUserError ? 400 : 500, err.message || 'Unexpected error');
   }
