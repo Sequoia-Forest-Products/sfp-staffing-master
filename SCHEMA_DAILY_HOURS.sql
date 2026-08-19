@@ -45,6 +45,17 @@ create unique index if not exists employees_employee_number_key
   on employees (employee_number)
   where employee_number is not null;
 
+-- Four production departments plus Non-Production, which is where SG&A /
+-- office / salaried staff go. They belong to none of the production four, and
+-- without a value for them the back-fill could never be finished — and an
+-- unfinished back-fill is what gates dropping employees.dept. Non-Production
+-- is an explicit decision; a blank is just an unvisited row, and the screen
+-- cannot tell those apart. These people never reach the OT report anyway:
+-- salaried rows are dropped at import, before department is consulted.
+--
+-- If you already ran this file before that value existed, apply
+-- SCHEMA_NON_PRODUCTION.sql — it alters the constraint in place.
+--
 -- The one department column. It replaces the older employees.dept, which
 -- carried a different taxonomy (Sawmill / Filing Room / Log Yard / SG&A / ...)
 -- and is retired by SCHEMA_DROP_DEPT.sql once the back-fill is verified.
@@ -67,7 +78,7 @@ begin
       and conrelid = 'employees'::regclass
   ) then
     alter table employees add constraint employees_department_check
-      check (department in ('Maintenance', 'Saw Filing', 'Shipping', 'Production'));
+      check (department in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Non-Production'));
   end if;
 end $$;
 

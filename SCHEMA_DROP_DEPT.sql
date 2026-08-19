@@ -31,6 +31,11 @@
 -- their hours import with a null department and land in the report's
 -- "Unassigned" bucket, and there is no longer a legacy value to work out where
 -- they belonged.
+--
+-- 'Non-Production' counts as assigned and does not appear here. That is the
+-- point of the value: SG&A and office staff belong to none of the four
+-- production departments, and without it this gate could never reach zero. A
+-- blank means nobody has decided yet; 'Non-Production' means somebody did.
 select id, name, dept, department, status
 from employees
 where status = 'Active'
@@ -68,13 +73,31 @@ order by dept, name;
 -- GATE 3: nothing is left holding a legacy value we never re-assigned.
 --
 -- A sanity check on the back-fill rather than on the data model: an active
--- employee whose department was set to the one known rename (Filing Room ->
--- Saw Filing) is fine, but one still carrying a legacy value in `department`
--- means a bad write got through the four-value constraint somehow.
+-- employee whose department was set to a known rename (Filing Room -> Saw
+-- Filing, or Maintenance/Shipping keeping their name) is fine, but one still
+-- carrying a legacy value in `department` means a bad write got through the
+-- constraint somehow.
 select id, name, dept, department
 from employees
 where department is not null
-  and department not in ('Maintenance', 'Saw Filing', 'Shipping', 'Production')
+  and department not in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Non-Production')
+order by name;
+
+
+-- NOT A GATE, but worth a look before you finish: employees marked
+-- Non-Production who are paid hourly.
+--
+-- Non-Production exists for salaried office staff, who never reach the OT
+-- report because salaried rows are dropped at import. Somebody hourly and
+-- non-production is a real combination, not an error — but it means their
+-- hours WILL import and the OT report will show a Non-Production department
+-- row, which it flags rather than hides. Better to know now than to meet it
+-- in a weekly report.
+select name, dept, department, wage
+from employees
+where status = 'Active'
+  and department = 'Non-Production'
+  and btrim(lower(coalesce(wage, ''))) <> 'salary'
 order by name;
 
 
