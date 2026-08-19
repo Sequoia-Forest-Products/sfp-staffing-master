@@ -1,9 +1,85 @@
-const nodemailer = require('nodemailer');
+const { createHmac } = require('crypto');
+const db = require('./db');
 
 const GMAIL_USER = process.env.GMAIL_USER;
 const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+
+// This endpoint sends mail *from* the company Gmail account, so an unauthenticated
+// caller here is an open relay wearing Sequoia's return address. Session check first,
+// then a recipient allowlist the server owns — the client only ever proposes.
+const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sequoiafp.com').toLowerCase();
+const MAX_RECIPIENTS = 25;
+
+function verifySession(token) {
+  try {
+    const [b64, sig] = token.split('.');
+    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
+    if (sig !== expected) return null;
+    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
+    if (payload.exp < Date.now()) return null;
+    return payload;
+  } catch { return null; }
+}
+
+function getCookies(event) {
+  return Object.fromEntries(
+    (event.headers.cookie || '').split(';').map(c => {
+      const [k, ...v] = c.trim().split('=');
+      return [k, v.join('=')];
+    })
+  );
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function normalizeAddress(v) {
+  return String(v == null ? '' : v).trim().toLowerCase();
+}
+
+// Pure so tests can exercise the rule without a network or a database.
+// `proposed` is whatever the client sent; `managers` is the saved list read
+// server-side. An address passes only if it is a saved manager or sits on the
+// company domain. Anything else names itself in the error.
+function resolveRecipients(proposed, managers, opts) {
+  const domain = ((opts && opts.allowedDomain) || ALLOWED_DOMAIN).toLowerCase();
+  const max = (opts && opts.maxRecipients) || MAX_RECIPIENTS;
+  const allowed = new Set((managers || []).map(normalizeAddress).filter(Boolean));
+
+  const asked = Array.isArray(proposed) ? proposed.map(normalizeAddress).filter(Boolean) : [];
+  // No proposal (or an empty one) means "whoever is configured" rather than "nobody".
+  const list = asked.length ? asked : Array.from(allowed);
+  if (!list.length) return { ok: false, error: 'No manager recipients are configured' };
+  if (list.length > max) return { ok: false, error: `Too many recipients (${list.length}); the limit is ${max}` };
+
+  const recipients = [];
+  for (const addr of list) {
+    if (!EMAIL_RE.test(addr)) return { ok: false, error: `Invalid email address: ${addr}` };
+    if (!allowed.has(addr) && addr.slice(addr.lastIndexOf('@') + 1) !== domain) {
+      return { ok: false, error: `Recipient not allowed: ${addr}` };
+    }
+    if (!recipients.includes(addr)) recipients.push(addr);
+  }
+  return { ok: true, recipients };
+}
+
+// settings.js writes this row two different ways (object on insert, JSON string on
+// update), so accept either shape rather than trusting one of them.
+function managersFromSettingsRow(row) {
+  let value = row && row.value;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return []; }
+  }
+  return (value && Array.isArray(value.managers)) ? value.managers : [];
+}
+
+async function loadManagers() {
+  const rows = await db.query('settings', '?key=eq.emailSettings');
+  return managersFromSettingsRow(rows && rows[0]);
+}
 
 async function sendEmail(to, subject, htmlBody) {
+  const nodemailer = require('nodemailer'); // lazy — see birthday-lib.js
   try {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
@@ -30,14 +106,16 @@ async function sendEmail(to, subject, htmlBody) {
 
 function generateEmailHTML(data) {
   const { dateRange, totalOTPercent, preApprovedOTPercent, netOTPercent,
-          otBudgetPercent, exceededEmployees, reportLink, totalPayroll,
+          otBudgetPercent, exceededEmployees, exceededOmitted, reportLink, totalPayroll,
           totalOTHours, totalRegularHours, totalPreApprovedHours, netOTHours,
           employeeCount, uploadTime } = data;
 
   const budgetVariance = (totalOTPercent - otBudgetPercent).toFixed(1);
 
   // Build exceeded employees table rows
-  const employeeRows = exceededEmployees.map(emp => `
+  const shown = Array.isArray(exceededEmployees) ? exceededEmployees : [];
+  const omitted = Number(exceededOmitted) || 0;
+  const employeeRows = shown.map(emp => `
     <tr>
       <td>${emp.name}</td>
       <td class="hours">${emp.unapprovedHours} hrs</td>
@@ -97,7 +175,7 @@ function generateEmailHTML(data) {
 <body>
   <!-- Gmail preview -->
   <div style="font-size:0;color:#f5f5f5;display:none;max-height:0;max-width:0;overflow:hidden;">
-    Extra OT ${netOTPercent}% • Pre-Approved ${preApprovedOTPercent}% • Budget ${totalOTPercent}%/${otBudgetPercent}%
+    Extra OT ${netOTPercent}% • Pre-Approved ${preApprovedOTPercent}% • Budget ${totalOTPercent}%/${otBudgetPercent}% of hourly payroll
   </div>
   <div class="container">
     <div class="email">
@@ -121,7 +199,7 @@ function generateEmailHTML(data) {
             <div class="stat-box">
               <div class="stat-label">Pre-Approved OT</div>
               <div class="stat-value">${totalPreApprovedHours}</div>
-              <div class="stat-sub">Base + assignments</div>
+              <div class="stat-sub">Standing weekly allowance</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">Net OT (hours)</div>
@@ -133,22 +211,22 @@ function generateEmailHTML(data) {
             <div class="stat-box">
               <div class="stat-label">Extra OT</div>
               <div class="stat-value">${netOTPercent}%</div>
-              <div class="stat-sub">Unapproved overtime</div>
+              <div class="stat-sub">Of hourly payroll</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">Pre-Approved OT %</div>
               <div class="stat-value">${preApprovedOTPercent}%</div>
-              <div class="stat-sub">Approved hours</div>
+              <div class="stat-sub">Of hourly payroll</div>
             </div>
             <div class="stat-box">
-              <div class="stat-label">OT Budget</div>
+              <div class="stat-label">OT Budget (% of hourly payroll)</div>
               <div class="stat-value ${budgetVariance > 0 ? 'over-budget' : 'under-budget'}">${totalOTPercent}% / ${otBudgetPercent}%</div>
               <div class="stat-sub">Net: ${netOTPercent}%</div>
             </div>
           </div>
         </div>
 
-        ${exceededEmployees.length > 0 ? `
+        ${shown.length > 0 ? `
         <div class="section">
           <div class="section-title">Employees Exceeding Pre-Approved Limits</div>
           <table>
@@ -162,6 +240,7 @@ function generateEmailHTML(data) {
               ${employeeRows}
             </tbody>
           </table>
+          ${omitted > 0 ? `<p style="margin-top:8px;font-size:11px;color:#666">…and ${omitted} more. Open the full report for the rest.</p>` : ''}
         </div>
         ` : ''}
 
@@ -173,7 +252,9 @@ function generateEmailHTML(data) {
         <div class="section" style="background: #F9F9F9; padding: 12px; border-radius: 6px; margin-bottom: 0;">
           <p style="margin: 0; font-size: 12px; color: #666; line-height: 1.5;">
             <strong>Generated:</strong> ${uploadTime}<br>
-            <strong>Employees:</strong> ${employeeCount} · <strong>Hours:</strong> ${totalRegularHours} reg + ${totalOTHours} OT
+            <strong>Total hourly payroll:</strong> $${totalPayroll}<br>
+            <strong>Hourly employees:</strong> ${employeeCount} · <strong>Hours:</strong> ${totalRegularHours} reg + ${totalOTHours} OT<br>
+            <span style="font-size:11px">Hourly payroll only — salaried staff are excluded at import, so every percentage above is a share of hourly payroll.</span>
           </p>
         </div>
       </div>
@@ -189,29 +270,47 @@ function generateEmailHTML(data) {
 </html>`;
 }
 
-exports.handler = async (event, context) => {
+exports.handler = async (event) => {
+  const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+
+  const session = verifySession(getCookies(event).sfp_session || '');
+  if (!session) return { statusCode: 401, headers, body: JSON.stringify({ error: 'Unauthorized' }) };
+
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method not allowed' };
+    return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
   try {
-    const { to, subject, data } = JSON.parse(event.body);
+    const { to, subject, data } = JSON.parse(event.body || '{}');
 
-    if (!Array.isArray(to) || to.length === 0) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'No recipients specified' }) };
+    if (!data || typeof data !== 'object') {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'No report data supplied' }) };
+    }
+
+    let managers = [];
+    try {
+      managers = await loadManagers();
+    } catch (err) {
+      console.error('Could not read the manager list:', err.message);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'Could not read the manager list' }) };
+    }
+
+    const resolved = resolveRecipients(to, managers);
+    if (!resolved.ok) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: resolved.error }) };
     }
 
     if (!GMAIL_USER || !GMAIL_PASS) {
       console.warn('Email credentials not configured');
-      return { statusCode: 500, body: JSON.stringify({ error: 'Email service not configured' }) };
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'Email service not configured' }) };
     }
 
     const htmlBody = generateEmailHTML(data);
     const results = [];
 
-    for (const email of to) {
+    for (const email of resolved.recipients) {
       try {
-        const result = await sendEmail(email, subject, htmlBody);
+        const result = await sendEmail(email, subject || 'OT Report', htmlBody);
         results.push({ email, success: true, messageId: result.messageId });
         console.log(`Email sent to ${email}`);
       } catch (err) {
@@ -225,6 +324,7 @@ exports.handler = async (event, context) => {
 
     return {
       statusCode: successCount > 0 ? 200 : 500,
+      headers,
       body: JSON.stringify({
         sent: successCount,
         failed: failCount,
@@ -233,10 +333,19 @@ exports.handler = async (event, context) => {
     };
 
   } catch (error) {
-    console.error('send-ot-email error:', error);
+    console.error('send-ot-email error:', error.message);
     return {
       statusCode: 500,
+      headers,
       body: JSON.stringify({ error: error.message })
     };
   }
 };
+
+// Exported for tests — the allowlist rule is the security boundary, so it is
+// checked directly rather than through the handler.
+module.exports.resolveRecipients = resolveRecipients;
+module.exports.managersFromSettingsRow = managersFromSettingsRow;
+module.exports.generateEmailHTML = generateEmailHTML;
+module.exports.ALLOWED_DOMAIN = ALLOWED_DOMAIN;
+module.exports.MAX_RECIPIENTS = MAX_RECIPIENTS;
