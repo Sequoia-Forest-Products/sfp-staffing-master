@@ -11,8 +11,9 @@
 // or a database anywhere near it.
 
 const { createHmac } = require('crypto');
+const db = require('./db');
 const payrollDb = require('./payroll-db');
-const { weekStartFor, weekDates, buildReport } = require('./ot-report-lib');
+const { weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS } = require('./ot-report-lib');
 
 const SESSION_SECRET = process.env.SESSION_SECRET;
 
@@ -91,6 +92,56 @@ function todayInZone(now = new Date(), timeZone = TIME_ZONE) {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit'
   }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
   return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+// ---- the timeclock grace allowance ------------------------------------
+//
+// How much grace time each active hourly employee is allowed per week is a
+// policy number, not a constant: it changes what managers are told their net OT
+// is, so it is read here, server-side, from the same `settings` row (and by the
+// same mechanism) the OT budget threshold uses. The client never gets a say —
+// it can only be told which value was used, via preApproved.grace.
+//
+// settings.js writes that row two different ways: a raw object when it inserts
+// and a JSON string when it updates. Both shapes are real rows in the table, so
+// both are read here — send-ot-email.js's managersFromSettingsRow copes with the
+// same ambiguity for the manager list.
+function graceHoursFromSettingsRow(row) {
+  let value = row && row.value;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  if (!value || typeof value !== 'object') return null;
+
+  // Only a number or a string can be an hours figure. Everything else — null, a
+  // nested object, an empty array — is rejected here rather than left to
+  // Number(), which reads several of them as a convincing 0 and would switch the
+  // policy off on a typo.
+  const raw = value.graceHoursPerEmployee;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  const trimmed = typeof raw === 'string' ? raw.trim() : raw;
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  // Zero is a real setting — it switches the allowance off — so this cannot be
+  // a truthiness test. Negative, NaN and anything non-numeric are not settings,
+  // they are mistakes, and a mistake falls back to the stated default rather
+  // than silently reshaping every net OT figure on the page.
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+// A settings table that is missing, unreachable or holding nonsense must not
+// take the report down with it: the report is the thing somebody is waiting for,
+// and the default is a defensible number to fall back to.
+async function loadGraceHours() {
+  try {
+    const rows = await db.query('settings', '?key=eq.emailSettings');
+    const configured = graceHoursFromSettingsRow(rows && rows[0]);
+    return configured === null ? DEFAULT_GRACE_HOURS : configured;
+  } catch (err) {
+    console.error('Grace hours settings read failed, using the default:', err.message);
+    return DEFAULT_GRACE_HOURS;
+  }
 }
 
 function round2(n) {
@@ -251,9 +302,10 @@ exports.handler = async (event) => {
       : null;
     const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
 
-    const [overtimeRows, employees] = await Promise.all([
+    const [overtimeRows, employees, graceHoursPerEmployee] = await Promise.all([
       payrollDb.fetchOvertime(),
-      payrollDb.fetchEmployees()
+      payrollDb.fetchEmployees(),
+      loadGraceHours()
     ]);
 
     // A delivery is only "expected" for a scheduled day that has already
@@ -267,7 +319,8 @@ exports.handler = async (event) => {
       dailyRows,
       overtimeRows: overtimeRows || [],
       employees: employees || [],
-      expectedDays
+      expectedDays,
+      graceHoursPerEmployee
     });
 
     // `truncated` is the one flag the page needs to decide whether to show a
@@ -300,3 +353,7 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: err.message }) };
   }
 };
+
+// Exported so the settings-shape rule can be exercised without a handler around
+// it, the way send-ot-email.js exports managersFromSettingsRow.
+module.exports.graceHoursFromSettingsRow = graceHoursFromSettingsRow;

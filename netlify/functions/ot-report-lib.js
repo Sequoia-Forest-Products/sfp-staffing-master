@@ -13,6 +13,10 @@
 //   employees     {id, name, employee_number, department, wage, status}
 //   expectedDays  optional array of 'YYYY-MM-DD' that a delivery was expected
 //                 for; defaults to the scheduled block (Mon-Thu) of the week
+//   graceHoursPerEmployee
+//                 the timeclock grace allowance, in hours per active hourly
+//                 employee per week; DEFAULT_GRACE_HOURS when it is missing or
+//                 unusable. payroll-report.js reads the real one from settings.
 //
 // Two things about this data that the shape of the report is built around:
 //
@@ -25,6 +29,12 @@
 //      exception is a pre-approved allowance for somebody with no rows this
 //      week — there is no snapshot to read, so employees.department is the
 //      honest fallback and they are listed in preApproved.withoutHoursThisWeek.
+//   3. Pre-approved OT has TWO standing components and the report names both.
+//      `standing` is the overtime table's allowance. `grace` is the timeclock
+//      grace policy below. summary.preApprovedHours is their sum, which is what
+//      net OT is measured against; preApproved.standing and preApproved.grace
+//      keep them separable, because they are different promises to different
+//      people and a single merged number cannot be argued with.
 //
 // "No data" NEVER means "nobody worked". Fri/Sat/Sun are legitimate work days
 // (maintenance), so an empty Saturday is either a quiet Saturday or a missed
@@ -39,6 +49,20 @@ const OT_TYPES    = ['Pre-Shift', 'Post-Shift', 'Weekend'];
 // residual of the payroll system's own blended Total Earnings) there is no
 // authoritative dollar figure for an allowance, so 1.5x is the stated estimate.
 const PRE_APPROVED_MULTIPLIER = 1.5;
+
+// The timeclock grace policy, in hours per active hourly employee per week.
+//
+// Employees may clock in up to 7.5 minutes early and out up to 7.5 minutes
+// late. Over a four-day week that accrues to half an hour, and under California
+// wage-and-hour law it is compensable time that cannot be rounded away — so it
+// is overtime that was approved before anybody worked it, and it belongs in the
+// pre-approved pool rather than in the net figure a manager is asked about.
+//
+// It is a CONSTANT here and a settings value in payroll-report.js, never a bare
+// number inside an expression. An earlier version of this report added
+// `0.5 * numWeeks` inline, and it was deleted as an unexplained fudge factor —
+// the policy was sound, the invisibility was the defect.
+const DEFAULT_GRACE_HOURS = 0.5;
 
 // isoDow 1..4 = Mon..Thu = the scheduled 4x10 block.
 const LAST_SCHEDULED_ISO_DOW = 4;
@@ -175,6 +199,45 @@ function nameKey(value) {
   return String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+// daily_hours.is_salary arrives as a boolean from PostgREST and as the source
+// file's 'Yes'/'No' from anything that shortcut the import, so read both.
+function isYes(value) {
+  if (typeof value === 'boolean') return value;
+  const s = String(value == null ? '' : value).trim().toLowerCase();
+  return s === 'yes' || s === 'true' || s === 'y' || s === 't' || s === '1';
+}
+
+// employees.wage is free text; salaried staff carry the literal word 'Salary'
+// there and a $0 pay rate in the payroll export, so there is no hourly rate to
+// grace and no dollars that could honestly be derived for them.
+function isSalaryWage(value) {
+  return String(value == null ? '' : value).trim().toLowerCase() === 'salary';
+}
+
+// employees.status is 'Active' | 'Inactive', and the roster UI writes 'Active'
+// when the field is blank — so blank reads as active. Anything else is
+// deliberately NOT active: a standing entitlement must not attach itself to a
+// status nobody has defined.
+function isActiveEmployee(emp) {
+  const s = String(emp && emp.status == null ? '' : emp.status).trim().toLowerCase();
+  return s === '' || s === 'active';
+}
+
+// A configured grace allowance, or null when the value cannot be used as one.
+// Zero is a real setting — it switches the policy off — so this can never be a
+// truthiness test. Negative is not: hours cannot be owed backwards.
+function toGraceHours(value) {
+  // Only a number or a string can be one. Everything else — null, an object, an
+  // empty array — is rejected here rather than left to Number(), which reads
+  // several of them as a perfectly convincing 0 and would switch the policy off.
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const trimmed = typeof value === 'string' ? value.trim() : value;
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 // null department => the "Unassigned" bucket. Never guess a real department.
 function departmentBucket(value) {
   return cleanText(value) || UNASSIGNED;
@@ -237,12 +300,16 @@ function buildReport({
   dailyRows = [],
   overtimeRows = [],
   employees = [],
-  expectedDays = null
+  expectedDays = null,
+  graceHoursPerEmployee = null
 } = {}) {
   const dates    = weekDates(weekStart);
   const dateSet  = new Set(dates);
   const monday   = dates[0];
   const sunday   = dates[6];
+
+  const configuredGrace  = toGraceHours(graceHoursPerEmployee);
+  const gracePerEmployee = configuredGrace === null ? DEFAULT_GRACE_HOURS : configuredGrace;
 
   // ---- roster indexes -------------------------------------------------
   // employee_number matches daily_hours; the comparison name matches the
@@ -322,6 +389,9 @@ function buildReport({
       hasDepartment,
       onRoster: !!rosterEmp,
       hours,
+      // Salaried staff are skipped at import unless they arrived with hours, so
+      // a true here is the week's own evidence that this person is not hourly.
+      isSalary: isYes(raw.is_salary),
       otHours: num(raw.ot_hours),
       otDollars: num(raw.ot_dollars),
       earnings: num(raw.total_earnings),
@@ -342,13 +412,19 @@ function buildReport({
         name: '',
         onRoster: false,
         departmentHours: new Map(), // department -> hours, to pick the dominant one
-        payRate: null,
+        payRate: null,          // highest rate seen this week (the standing allowance's rule)
+        latestRate: null,       // rate on the most recent row this week (the grace rule)
+        latestRateDate: null,
+        isSalary: false,
         scheduled: newBlock(),
         nonScheduled: newBlock(),
         days: new Set(),
         nonScheduledDays: new Set(),
         preApprovedHours: 0,
         preApprovedDollars: 0,
+        hasStandingAllowance: false,
+        graceHours: 0,
+        graceDollars: 0,
         hasHoursThisWeek: false
       });
     }
@@ -362,7 +438,21 @@ function buildReport({
     person.onRoster = person.onRoster || row.onRoster;
     person.hasHoursThisWeek = true;
     person.departmentHours.set(row.department, (person.departmentHours.get(row.department) || 0) + row.hours);
-    if (row.payRate !== null) person.payRate = Math.max(person.payRate || 0, row.payRate);
+    if (row.isSalary) person.isSalary = true;
+    if (row.payRate !== null) {
+      person.payRate = Math.max(person.payRate || 0, row.payRate);
+      // ...and, separately, the rate on the LATEST row of the week: a rate that
+      // changed mid-week should grace the hours at what the person is being paid
+      // now, not at the best rate they were on at any point. Two rows on the same
+      // date are settled by taking the higher, so the answer does not depend on
+      // the order the rows arrived in.
+      if (person.latestRateDate === null || row.date > person.latestRateDate) {
+        person.latestRateDate = row.date;
+        person.latestRate = row.payRate;
+      } else if (row.date === person.latestRateDate) {
+        person.latestRate = Math.max(person.latestRate, row.payRate);
+      }
+    }
     addRow(row.isScheduledDay ? person.scheduled : person.nonScheduled, row);
     person.days.add(row.date);
     if (!row.isScheduledDay) person.nonScheduledDays.add(row.date);
@@ -442,7 +532,8 @@ function buildReport({
     }
 
     // An ot_type outside the three known values still counts; it gets its own
-    // byType key so byType always sums to the pre-approved totals.
+    // byType key so byType always sums to the standing totals (which is the
+    // whole pre-approved total whenever the grace allowance is switched off).
     const otType = cleanText(raw.ot_type) || 'Unspecified';
     if (!preByType[otType]) preByType[otType] = { hours: 0, dollars: 0 };
     preByType[otType].hours   += hours;
@@ -461,6 +552,7 @@ function buildReport({
     person.employeeNumber = person.employeeNumber || (number || null);
     person.onRoster       = person.onRoster || !!rosterEmp;
     person.department     = person.department || department;
+    person.hasStandingAllowance = true;
     person.preApprovedHours   += hours;
     person.preApprovedDollars += dollars;
 
@@ -475,12 +567,121 @@ function buildReport({
     });
   }
 
+  // ---- timeclock grace allowance ---------------------------------------
+  //
+  // The second standing component. Every active hourly employee on the roster
+  // is allowed the same fixed grace every week — DEFAULT_GRACE_HOURS says what
+  // the policy is and why it is not a number buried in an expression.
+  //
+  // Flat, per employee, per week. NOT prorated by days worked, not scaled by
+  // anything: the weekend maintenance man who came in once and the employee who
+  // was out all week both get the whole allowance, because the policy is an
+  // entitlement rather than something earned an hour at a time. The visible
+  // consequence is that the pre-approved pool does not shrink on a light week,
+  // so net OT goes further negative — that is the policy being reported, not an
+  // error to correct.
+  //
+  // Headcount is therefore asked of the ROSTER, not of daily_hours: who is
+  // entitled, not who showed up.
+  const standingHours   = preApprovedHours;
+  const standingDollars = preApprovedDollars;
+
+  const graceRateMissing  = [];
+  const graceByRateSource = { 'daily_hours': 0, 'employees.wage': 0, 'none': 0 };
+  let graceHeadcount   = 0;
+  let graceHoursTotal  = 0;
+  let graceDollarsTotal = 0;
+
+  // An allowance of zero is the policy switched off, and off has to mean the
+  // report reads exactly as it did before the policy was written down: no
+  // employee rows for people who did not work, no department rows carrying
+  // nothing. So the whole block is skipped rather than run to produce zeros.
+  if (gracePerEmployee > 0) {
+    const graced = new Set();
+
+    for (const emp of employees || []) {
+      // One roster identity, one allowance — through rosterKey, the same handle
+      // the hours and the standing allowance are accumulated under, so somebody
+      // who both worked and holds an overtime row is graced once and lands in
+      // the same bucket all three times. A roster listing the same person twice
+      // still only pays them once.
+      const key = rosterKey(emp);
+      if (graced.has(key)) continue;
+      graced.add(key);
+
+      if (!isActiveEmployee(emp)) continue;
+
+      const worked   = people.get(key) || null;
+      const hasHours = !!(worked && worked.hasHoursThisWeek);
+
+      // Salaried by the roster's own word, or by the week's rows. Either way
+      // there is no hourly rate and no grace.
+      if (isSalaryWage(emp.wage) || (worked && worked.isSalary)) continue;
+
+      graceHeadcount++;
+
+      // The same attribution rule the standing allowance uses: this week's
+      // department snapshot when there is one, the roster's current department
+      // when there is not, Unassigned when there is neither. A pre-approved
+      // figure and the OT it offsets have to land in the same bucket.
+      const department = hasHours ? worked.department : departmentBucket(emp.department);
+
+      // Rate: the most recent daily_hours rate inside the reported week, else
+      // the roster wage. Neither one means the HOURS still count and the dollars
+      // are honestly zero — with the name reported, because a zero contributed
+      // silently is a number nobody can audit afterwards.
+      let rate = hasHours ? worked.latestRate : null;
+      let rateSource = 'none';
+      if (rate) {
+        rateSource = 'daily_hours';
+      } else {
+        rate = toRate(emp.wage);
+        if (rate) rateSource = 'employees.wage';
+      }
+      graceByRateSource[rateSource]++;
+
+      const hours   = gracePerEmployee;
+      const dollars = rate ? round2(hours * rate * PRE_APPROVED_MULTIPLIER) : 0;
+
+      if (rateSource === 'none') {
+        graceRateMissing.push(cleanText(emp.name)
+          || (normalizeEmpNumber(emp.employee_number) ? `Employee ${normalizeEmpNumber(emp.employee_number)}` : '(unnamed)'));
+      }
+
+      graceHoursTotal   += hours;
+      graceDollarsTotal += dollars;
+      preApprovedHours   += hours;
+      preApprovedDollars += dollars;
+
+      const deptTotals = preByDepartment.get(department) || { hours: 0, dollars: 0 };
+      deptTotals.hours   += hours;
+      deptTotals.dollars += dollars;
+      preByDepartment.set(department, deptTotals);
+
+      // Somebody who was out all week has no rows and no overtime entry, so this
+      // is where their employee row comes from. Without it their grace would be
+      // in the summary and in a department total with no line to trace it to.
+      const person = personFor(key);
+      person.name           = person.name || cleanText(emp.name) || '(unnamed)';
+      person.employeeNumber = person.employeeNumber || (normalizeEmpNumber(emp.employee_number) || null);
+      person.onRoster       = true;
+      person.department     = person.department || department;
+      person.graceHours    += hours;
+      person.graceDollars  += dollars;
+    }
+  }
+
   // Standing allowances for people with no rows this week are netted anyway —
   // that is what makes net OT go negative, and clamping it would hide the fact
   // that an allowance is being carried against nothing.
+  //
+  // This list is the OVERTIME TABLE's allowance only, which is what it has
+  // always meant: "approved for this person, and they never worked". The grace
+  // allowance is held by everybody on the roster, so folding it in here would
+  // list the whole absent roster every week and drown the finding.
   const withoutHoursThisWeek = [];
   for (const person of people.values()) {
-    if (person.hasHoursThisWeek) continue;
+    if (person.hasHoursThisWeek || !person.hasStandingAllowance) continue;
     withoutHoursThisWeek.push({
       name: person.name,
       department: person.department || UNASSIGNED,
@@ -664,8 +865,14 @@ function buildReport({
       otDollars,
       totalHours: round2(person.scheduled.hours + person.nonScheduled.hours),
       totalEarnings: round2(person.scheduled.earnings + person.nonScheduled.earnings),
+      // preApproved* here stays the OVERTIME TABLE's allowance, unchanged, and
+      // grace is reported beside it rather than merged into it — one is specific
+      // to this person, the other is everybody's. Add the two to reconcile a
+      // column of this table against summary.preApprovedHours.
       preApprovedHours: round2(person.preApprovedHours),
       preApprovedDollars: round2(person.preApprovedDollars),
+      graceHours: round2(person.graceHours),
+      graceDollars: round2(person.graceDollars),
       netOtHours: round2(person.scheduled.otHours + person.nonScheduled.otHours - person.preApprovedHours),
       netOtDollars: round2(person.scheduled.otDollars + person.nonScheduled.otDollars - person.preApprovedDollars),
       daysWorked: person.days.size,
@@ -770,11 +977,24 @@ function buildReport({
     days,
     employees: employeeList,
     preApproved: {
+      // byType, rows, unmatchedNames, withoutHoursThisWeek and rateMissing are
+      // all the OVERTIME TABLE's allowance and mean exactly what they always
+      // did. standing and grace are the two components of the total that
+      // summary.preApprovedHours reports, kept apart on purpose.
       byType: byTypeOut,
       rows: preRows,
       unmatchedNames,
       withoutHoursThisWeek,
-      rateMissing
+      rateMissing,
+      standing: { hours: round2(standingHours), dollars: round2(standingDollars) },
+      grace: {
+        hoursPerEmployee: gracePerEmployee,   // the value actually used, so the number can be audited
+        headcount: graceHeadcount,            // active hourly employees on the roster
+        hours: round2(graceHoursTotal),
+        dollars: round2(graceDollarsTotal),
+        rateMissing: graceRateMissing,        // counted in hours, contributed $0
+        byRateSource: graceByRateSource
+      }
     },
     completeness,
     issues
@@ -790,4 +1010,4 @@ function round2Pct(n) {
   return r === 0 ? 0 : r;
 }
 
-module.exports = { weekStartFor, weekDates, buildReport, DEPARTMENTS };
+module.exports = { weekStartFor, weekDates, buildReport, DEPARTMENTS, DEFAULT_GRACE_HOURS };

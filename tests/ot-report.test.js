@@ -17,7 +17,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { weekStartFor, weekDates, buildReport, DEPARTMENTS } =
+const { weekStartFor, weekDates, buildReport, DEPARTMENTS, DEFAULT_GRACE_HOURS } =
   require('../netlify/functions/ot-report-lib');
 
 const WEEK = '2026-08-03';
@@ -102,14 +102,26 @@ const OVERTIME_ROWS = [
   { id: 'o5', name: 'Ghost Worker',  ot_type: 'Weekend',    hours: 3, description: 'Not on the roster' }
 ];
 
+// The shared fixture runs with the timeclock grace allowance switched off, so
+// every figure below is the one it was written for: the overtime table's
+// standing allowance and nothing else. Grace is a separate, flat, roster-wide
+// number and it gets its own section and its own fixture rather than being
+// smeared through every expectation in this file. Pass graceHoursPerEmployee to
+// turn it on for a case that is about it.
 function report(over = {}) {
   return buildReport(Object.assign({
     weekStart: WEEK,
     dailyRows: DAILY_ROWS,
     overtimeRows: OVERTIME_ROWS,
-    employees: EMPLOYEES
+    employees: EMPLOYEES,
+    graceHoursPerEmployee: 0
   }, over));
 }
+
+// Adding a column of the report's own 2-decimal figures back up in plain JS
+// re-introduces the binary-fraction dust the report rounds away, so a total
+// compared against a reported total has to be rounded the same way.
+const r2 = (n) => Math.round(n * 100 + Number.EPSILON) / 100;
 
 const byName = (list, name) => list.find(x => x.name === name);
 const byDept = (list, name) => list.find(x => x.department === name);
@@ -408,6 +420,346 @@ test('name matching against the roster ignores case and surrounding space', () =
 });
 
 // ============================================================
+// Timeclock grace allowance
+// ============================================================
+//
+// Employees may clock in 7.5 minutes early and out 7.5 minutes late, which
+// accrues to half an hour a week that California will not let anybody round
+// away. It is pre-approved overtime, and it is FLAT: every active hourly
+// employee on the roster gets the whole allowance whether they worked four days,
+// one Saturday, or nothing at all.
+//
+// Its own fixture, because the numbers only stay legible if the roster is small:
+//   Ana  four scheduled days, 2 of them OT, paid $28.00/hr (roster wage $10.00)
+//   Ben  one Saturday, paid $24.50/hr
+//   Cara on the roster, no rows anywhere in the week
+
+const GRACE_EMPLOYEES = [
+  { id: 'g1', name: 'Ana Reyes',  employee_number: '0101', department: 'Production',  wage: '10.00',  status: 'Active' },
+  { id: 'g2', name: 'Ben Carter', employee_number: '0102', department: 'Maintenance', wage: 24.5,     status: 'Active' },
+  { id: 'g3', name: 'Cara Lopez', employee_number: '0103', department: 'Shipping',    wage: '$22.00', status: 'Active' }
+];
+
+function anaRow(date, over) {
+  return dailyRow(Object.assign({
+    work_date: date, employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+    department: 'Production', pay_rate: 28, regular_hours: 10, total_hours: 10,
+    total_earnings: 280, regular_dollars: 280
+  }, over));
+}
+
+const GRACE_ROWS = [
+  anaRow('2026-08-03'),
+  anaRow('2026-08-04'),
+  anaRow('2026-08-05', { ot_hours: 2, total_hours: 12, total_earnings: 364, ot_dollars: 84 }),
+  anaRow('2026-08-06'),
+  dailyRow({ work_date: '2026-08-08', employee_number: '0102', first_name: 'Ben', last_name: 'Carter',
+             department: 'Maintenance', pay_rate: 24.5, regular_hours: 8, total_hours: 8,
+             total_earnings: 196, regular_dollars: 196 })
+];
+
+function graceReport(over = {}) {
+  return buildReport(Object.assign({
+    weekStart: WEEK,
+    dailyRows: GRACE_ROWS,
+    overtimeRows: [],
+    employees: GRACE_EMPLOYEES
+  }, over));
+}
+
+test('the grace allowance is flat per employee per week, whatever the week looked like', () => {
+  const r = graceReport({ graceHoursPerEmployee: 0.5 });
+  const grace = r.preApproved.grace;
+
+  assert.strictEqual(grace.hoursPerEmployee, 0.5);
+  assert.strictEqual(grace.headcount, 3);
+  assert.strictEqual(grace.hours, 1.5);
+  assert.strictEqual(grace.hours, grace.hoursPerEmployee * grace.headcount);
+
+  // Four days, one Saturday and nothing at all all earn exactly the same
+  // allowance — it is an entitlement, not something accrued by the hour.
+  const ana = byName(r.employees, 'Ana Reyes');
+  assert.strictEqual(ana.daysWorked, 4);
+  assert.strictEqual(ana.graceHours, 0.5);
+
+  const ben = byName(r.employees, 'Ben Carter');
+  assert.strictEqual(ben.daysWorked, 1);
+  assert.strictEqual(ben.nonScheduledDaysWorked, 1);
+  assert.strictEqual(ben.graceHours, 0.5);
+
+  const cara = byName(r.employees, 'Cara Lopez');
+  assert.ok(cara, 'somebody out all week still holds the allowance and must have a row to trace it to');
+  assert.strictEqual(cara.totalHours, 0);
+  assert.strictEqual(cara.daysWorked, 0);
+  assert.strictEqual(cara.graceHours, 0.5);
+
+  // The per-employee column adds back up to the reported total.
+  assert.strictEqual(r2(r.employees.reduce((sum, e) => sum + e.graceHours, 0)), grace.hours);
+  assert.strictEqual(r2(r.employees.reduce((sum, e) => sum + e.graceDollars, 0)), grace.dollars);
+});
+
+test('grace dollars are hours x rate x 1.5, employee by employee', () => {
+  const r = graceReport({ graceHoursPerEmployee: 0.5 });
+
+  // Ana's roster wage says $10.00; the week actually paid $28.00.
+  assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);      // 0.5 * 28.00 * 1.5
+  assert.strictEqual(byName(r.employees, 'Ben Carter').graceDollars, 18.38);  // 0.5 * 24.50 * 1.5 = 18.375
+  assert.strictEqual(byName(r.employees, 'Cara Lopez').graceDollars, 16.5);   // 0.5 * 22.00 * 1.5
+  assert.strictEqual(r.preApproved.grace.dollars, 55.88);
+});
+
+test('a salaried employee has no hourly rate to grace and no place in the headcount', () => {
+  // employees.wage carries the literal word for salaried staff, spacing and
+  // capitalisation as typed.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g4', name: 'Sam Ledger', employee_number: '0106', department: 'Production',
+        wage: '  SALARY  ', status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 3, 'salaried staff are not hourly employees');
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  assert.strictEqual(byName(r.employees, 'Sam Ledger'), undefined);
+  assert.ok(!r.preApproved.grace.rateMissing.includes('Sam Ledger'),
+    'a salaried employee is excluded, not reported as missing a rate');
+});
+
+test('an employee whose own rows this week say salaried is excluded too', () => {
+  // The import only keeps a salaried row when it arrives with hours on it
+  // (flagged salaried_with_hours). The row is the week's own evidence.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g5', name: 'Sue Payne', employee_number: '0107', department: 'Production',
+        wage: '31.00', status: 'Active' }
+    ]),
+    dailyRows: GRACE_ROWS.concat([
+      dailyRow({ work_date: '2026-08-03', employee_number: '0107', first_name: 'Sue', last_name: 'Payne',
+                 department: 'Production', is_salary: true, pay_rate: 0, regular_hours: 10,
+                 total_hours: 10, total_earnings: 0, flags: ['salaried_with_hours'] })
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 3);
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  const sue = byName(r.employees, 'Sue Payne');
+  assert.strictEqual(sue.totalHours, 10, 'her hours still count');
+  assert.strictEqual(sue.graceHours, 0, 'her grace does not');
+  assert.strictEqual(sue.graceDollars, 0);
+});
+
+test('an inactive employee holds no standing entitlement', () => {
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g6', name: 'Ozzy Former', employee_number: '0108', department: 'Shipping',
+        wage: '20', status: 'Inactive' }
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 3);
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  assert.strictEqual(byName(r.employees, 'Ozzy Former'), undefined);
+});
+
+test('grace rates come from the week rows first, the roster wage second, nothing third', () => {
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g7', name: 'Dan Whitfield', employee_number: '0104', department: 'Saw Filing',
+        wage: null, status: 'Active' }
+    ])
+  });
+  const grace = r.preApproved.grace;
+
+  assert.strictEqual(grace.headcount, 4);
+  assert.deepStrictEqual(grace.byRateSource, { 'daily_hours': 2, 'employees.wage': 1, 'none': 1 });
+
+  // Ana and Ben worked, so the week's own pay_rate is used, not the roster wage.
+  assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);   // 28.00, not the 10.00 on the roster
+  // Cara has no rows this week, so the roster wage is the only rate there is.
+  assert.strictEqual(byName(r.employees, 'Cara Lopez').graceDollars, 16.5);
+
+  // Dan has neither. The HOURS still count — the entitlement does not depend on
+  // payroll knowing his rate — and he is named rather than silently zeroed.
+  const dan = byName(r.employees, 'Dan Whitfield');
+  assert.strictEqual(dan.graceHours, 0.5);
+  assert.strictEqual(dan.graceDollars, 0);
+  assert.deepStrictEqual(grace.rateMissing, ['Dan Whitfield']);
+  assert.strictEqual(grace.hours, 2);
+  assert.strictEqual(grace.dollars, 55.88, 'a missing rate contributes 0 dollars, not a guess');
+});
+
+test('the grace rate is the one on the most recent row of the week, not the best one', () => {
+  // A rate cut on Thursday: grace is worth what the person is being paid now.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: [GRACE_EMPLOYEES[0]],
+    dailyRows: [
+      anaRow('2026-08-03', { pay_rate: 30, total_earnings: 300, regular_dollars: 300 }),
+      anaRow('2026-08-04', { pay_rate: 30, total_earnings: 300, regular_dollars: 300 }),
+      anaRow('2026-08-06', { pay_rate: 28 })
+    ]
+  });
+  assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);    // 0.5 * 28 * 1.5
+  assert.strictEqual(r.preApproved.grace.dollars, 21);
+});
+
+test('pre-approved OT is the standing allowance plus grace, and net OT moves by exactly the grace', () => {
+  const overtimeRows = [{ id: 'o1', name: 'Ana Reyes', ot_type: 'Pre-Shift', hours: 2, description: 'Startup' }];
+  const off = graceReport({ overtimeRows, graceHoursPerEmployee: 0 });
+  const on  = graceReport({ overtimeRows, graceHoursPerEmployee: 0.5 });
+
+  // The standing half is untouched by grace and is reported on its own.
+  assert.deepStrictEqual(on.preApproved.standing, { hours: 2, dollars: 84 });   // 2 * 28.00 * 1.5
+  assert.deepStrictEqual(off.preApproved.standing, { hours: 2, dollars: 84 });
+  assert.strictEqual(off.summary.preApprovedHours, 2);
+
+  assert.strictEqual(on.summary.preApprovedHours,
+    on.preApproved.standing.hours + on.preApproved.grace.hours);
+  assert.strictEqual(on.summary.preApprovedDollars,
+    on.preApproved.standing.dollars + on.preApproved.grace.dollars);
+  assert.strictEqual(on.summary.preApprovedHours, 3.5);
+  assert.strictEqual(on.summary.preApprovedDollars, 139.88);
+
+  // All OT is untouched; net OT is lower by exactly the grace allowance.
+  assert.strictEqual(on.summary.allOtHours, off.summary.allOtHours);
+  assert.strictEqual(off.summary.netOtHours, 0);
+  assert.strictEqual(off.summary.netOtDollars, 0);
+  assert.strictEqual(on.summary.netOtHours, -1.5);
+  assert.strictEqual(on.summary.netOtDollars, -55.88);
+  assert.strictEqual(on.summary.netOtHours, off.summary.netOtHours - on.preApproved.grace.hours);
+  assert.ok(on.summary.netOtPctOfPayroll < off.summary.netOtPctOfPayroll,
+    'the percentage is derived from net OT, so it has to follow it down');
+});
+
+test('grace lands in the same department as the hours it offsets, and the rows still reconcile', () => {
+  // 1. Somebody who worked: the department SNAPSHOT on their rows wins over the
+  //    roster, exactly as the standing allowance does — Ana transferred, and
+  //    rewriting her week from the roster would move the allowance away from the
+  //    hours it is netted against.
+  const transferred = buildReport({
+    weekStart: WEEK,
+    dailyRows: GRACE_ROWS,
+    overtimeRows: [],
+    employees: [
+      Object.assign({}, GRACE_EMPLOYEES[0], { department: 'Shipping' }),
+      GRACE_EMPLOYEES[1]
+    ],
+    graceHoursPerEmployee: 0.5
+  });
+  assert.strictEqual(byDept(transferred.departments, 'Production').preApprovedHours, 0.5);
+  assert.strictEqual(byDept(transferred.departments, 'Shipping'), undefined,
+    'the roster department must not conjure a department row of its own');
+  assert.strictEqual(byDept(transferred.departments, 'Production').netOtHours, 1.5); // 2 OT - 0.5
+  assert.strictEqual(transferred.issues.reconciliation.balanced, true);
+
+  // 2. Somebody with no rows at all: employees.department is the honest fallback.
+  const absent = graceReport({ graceHoursPerEmployee: 0.5 });
+  const shipping = byDept(absent.departments, 'Shipping');
+  assert.strictEqual(shipping.week.hours, 0);
+  assert.strictEqual(shipping.preApprovedHours, 0.5);      // Cara, who was out all week
+  assert.strictEqual(shipping.preApprovedDollars, 16.5);
+  assert.strictEqual(shipping.netOtHours, -0.5);
+  assert.strictEqual(absent.issues.reconciliation.balanced, true);
+
+  // 3. Neither a snapshot nor a roster department: the Unassigned bucket, never
+  //    a real department picked for them.
+  const unassigned = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g8', name: 'Ida Nowhere', employee_number: '0109', department: null,
+        wage: '20', status: 'Active' }
+    ])
+  });
+  assert.strictEqual(byDept(unassigned.departments, 'Unassigned').preApprovedHours, 0.5);
+  assert.strictEqual(byName(unassigned.employees, 'Ida Nowhere').department, 'Unassigned');
+  assert.strictEqual(unassigned.issues.reconciliation.balanced, true);
+
+  // And in every case the department column still adds up to the summary.
+  for (const r of [transferred, absent, unassigned]) {
+    assert.strictEqual(
+      r2(r.departments.reduce((sum, d) => sum + d.preApprovedHours, 0)),
+      r.summary.preApprovedHours);
+    assert.strictEqual(
+      r2(r.departments.reduce((sum, d) => sum + d.preApprovedDollars, 0)),
+      r.summary.preApprovedDollars);
+    assert.strictEqual(r.issues.reconciliation.balanced, true);
+  }
+});
+
+test('one person gets one grace allowance, however many ways the report reaches them', () => {
+  // Ana worked, holds a standing overtime allowance, and is listed twice on a
+  // roster somebody pasted into. One person, one entitlement.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    overtimeRows: [{ id: 'o1', name: '  ANA REYES ', ot_type: 'Pre-Shift', hours: 2 }],
+    employees: GRACE_EMPLOYEES.concat([Object.assign({}, GRACE_EMPLOYEES[0], { id: 'dup' })])
+  });
+
+  const anas = r.employees.filter(e => e.name === 'Ana Reyes');
+  assert.strictEqual(anas.length, 1, 'one person must produce exactly one employee row');
+  assert.strictEqual(anas[0].graceHours, 0.5, 'one allowance, not one per source');
+  assert.strictEqual(anas[0].preApprovedHours, 2, 'and her standing allowance is unchanged by it');
+  assert.strictEqual(r.preApproved.grace.headcount, 3);
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+
+  // Production carries the standing 2 hours and Ana's 0.5 of grace, once each.
+  assert.strictEqual(byDept(r.departments, 'Production').preApprovedHours, 2.5);
+  assert.strictEqual(r.summary.preApprovedHours, 3.5);
+});
+
+test('graceHoursPerEmployee: 0 switches the policy off and the report reads as it did before', () => {
+  const off = graceReport({ graceHoursPerEmployee: 0 });
+
+  assert.deepStrictEqual(off.preApproved.grace, {
+    hoursPerEmployee: 0,
+    headcount: 0,
+    hours: 0,
+    dollars: 0,
+    rateMissing: [],
+    byRateSource: { 'daily_hours': 0, 'employees.wage': 0, 'none': 0 }
+  });
+  assert.strictEqual(off.summary.preApprovedHours, 0);
+  assert.strictEqual(off.summary.netOtHours, off.summary.allOtHours);
+
+  // Off means off: no employee row and no department row conjured for somebody
+  // who did not work and holds no overtime entry.
+  assert.strictEqual(byName(off.employees, 'Cara Lopez'), undefined);
+  assert.strictEqual(byDept(off.departments, 'Shipping'), undefined);
+  assert.strictEqual(off.employees.every(e => e.graceHours === 0 && e.graceDollars === 0), true);
+
+  // The main fixture, whose every expectation in this file predates the policy.
+  const main = report();
+  assert.strictEqual(main.summary.preApprovedHours, 11);
+  assert.strictEqual(main.summary.preApprovedDollars, 252.75);
+  assert.deepStrictEqual(main.preApproved.standing, { hours: 11, dollars: 252.75 });
+});
+
+test('the grace allowance is configurable, defaults to DEFAULT_GRACE_HOURS, and refuses nonsense', () => {
+  assert.strictEqual(DEFAULT_GRACE_HOURS, 0.5);
+
+  // No option at all: the stated default, surfaced so it can be audited.
+  assert.strictEqual(graceReport().preApproved.grace.hoursPerEmployee, DEFAULT_GRACE_HOURS);
+  assert.strictEqual(graceReport().preApproved.grace.hours, 1.5);
+
+  // A real, different policy number.
+  assert.strictEqual(graceReport({ graceHoursPerEmployee: 0.75 }).preApproved.grace.hours, 2.25);
+  assert.strictEqual(graceReport({ graceHoursPerEmployee: '0.75' }).preApproved.grace.hours, 2.25);
+
+  // Anything that is not a usable hours figure falls back rather than silently
+  // reshaping every net OT number on the page.
+  for (const bad of [null, undefined, '', 'half an hour', NaN, Infinity, -1, -0.5, {}, [], true]) {
+    assert.strictEqual(
+      graceReport({ graceHoursPerEmployee: bad }).preApproved.grace.hoursPerEmployee,
+      DEFAULT_GRACE_HOURS, `${JSON.stringify(bad)} is not a policy value`);
+  }
+});
+
+
+// ============================================================
 // Employees
 // ============================================================
 
@@ -591,7 +943,7 @@ test('a roster employee with no employee number is one person, not two', () => {
     { id: 'o9', name: 'Hank  Boyd', ot_type: 'Pre-Shift', hours: 2, description: 'Dock prep' }
   ];
 
-  const r = buildReport({ weekStart: WEEK, dailyRows, overtimeRows, employees });
+  const r = buildReport({ weekStart: WEEK, dailyRows, overtimeRows, employees, graceHoursPerEmployee: 0 });
 
   const hanks = r.employees.filter(e => e.name.toLowerCase().replace(/\s+/g, ' ') === 'hank boyd');
   assert.strictEqual(hanks.length, 1, 'one person must produce exactly one employee row');
@@ -692,30 +1044,45 @@ function fakePage(rows, contentRange) {
 
 // Runs the handler against a fake Supabase. `pageFor(url, callNumber)` answers
 // the week-index requests; `detailRows(from, to)` answers the week's own fetch.
-async function runReport({ pageFor, detailRows }) {
+//
+// The `settings` read for the grace allowance goes through db.query, which is
+// stubbed here rather than left to global fetch: it is a different table asked
+// for a different reason, and `urls` below is an assertion about how the week
+// index was paged. `settingsRows` supplies the row, `settingsError` makes the
+// read fail, and the default of no rows exercises the fallback.
+async function runReport({ pageFor, detailRows, settingsRows, settingsError }) {
   const handler = loadPayrollReport().handler;
   const payrollDb = require('../netlify/functions/payroll-db');
+  const db = require('../netlify/functions/db');
 
   const realFetch = globalThis.fetch;
   const realDaily = payrollDb.fetchDailyHours;
   const realOt    = payrollDb.fetchOvertime;
   const realEmp   = payrollDb.fetchEmployees;
+  const realQuery = db.query;
 
   const urls = [];
   const detailCalls = [];
+  const settingsCalls = [];
   globalThis.fetch = async (url) => { urls.push(String(url)); return pageFor(String(url), urls.length); };
   payrollDb.fetchDailyHours = async (from, to) => { detailCalls.push([from, to]); return detailRows(from, to); };
   payrollDb.fetchOvertime   = async () => [];
   payrollDb.fetchEmployees  = async () => EMPLOYEES;
+  db.query = async (table, params) => {
+    settingsCalls.push([table, params]);
+    if (settingsError) throw settingsError;
+    return settingsRows || [];
+  };
 
   try {
     const res = await handler(sessionEvent());
-    return { res, body: JSON.parse(res.body), urls, detailCalls };
+    return { res, body: JSON.parse(res.body), urls, detailCalls, settingsCalls };
   } finally {
     globalThis.fetch = realFetch;
     payrollDb.fetchDailyHours = realDaily;
     payrollDb.fetchOvertime = realOt;
     payrollDb.fetchEmployees = realEmp;
+    db.query = realQuery;
   }
 }
 
@@ -833,4 +1200,82 @@ test('the window scan pages until the exact count is satisfied', async () => {
   assert.match(urls[1], /offset=4&/, 'the offset advances by rows received, not by page size');
   assert.strictEqual(body.dataWindow.rowsScanned, 6);
   assert.strictEqual(body.dataWindow.weekIndexTruncated, false, 'both pages arrived, so the window is proven');
+});
+
+// ============================================================
+// payroll-report.js — reading the grace policy from settings
+// ============================================================
+//
+// How much grace each employee is allowed changes what managers are told their
+// net OT is, so the handler reads it server-side from the `settings` row rather
+// than trusting anything the page sends. settings.js writes that row two
+// different ways — a raw object when it inserts, a JSON string when it updates —
+// and both are real rows in that table today.
+
+function settingsRun(opts) {
+  return runReport(Object.assign({
+    pageFor: (url) => fakePage([indexRow(windowEnd(url))], '0-0/1'),
+    detailRows: () => []
+  }, opts));
+}
+
+test('the grace allowance is read from the settings row, in either shape it is stored in', async () => {
+  const asObject = await settingsRun({
+    settingsRows: [{ id: 1, key: 'emailSettings',
+                     value: { managers: ['boss@sequoiafp.com'], graceHoursPerEmployee: 0.75 } }]
+  });
+  assert.strictEqual(asObject.res.statusCode, 200);
+  assert.deepStrictEqual(asObject.settingsCalls[0], ['settings', '?key=eq.emailSettings']);
+  assert.strictEqual(asObject.body.report.preApproved.grace.hoursPerEmployee, 0.75);
+  // Five active hourly people on the stub roster, each allowed 0.75.
+  assert.strictEqual(asObject.body.report.preApproved.grace.headcount, 5);
+  assert.strictEqual(asObject.body.report.preApproved.grace.hours, 3.75);
+  assert.strictEqual(asObject.body.report.summary.preApprovedHours, 3.75);
+
+  const asString = await settingsRun({
+    settingsRows: [{ id: 1, key: 'emailSettings',
+                     value: JSON.stringify({ managers: [], graceHoursPerEmployee: 0.25 }) }]
+  });
+  assert.strictEqual(asString.body.report.preApproved.grace.hoursPerEmployee, 0.25);
+  assert.strictEqual(asString.body.report.preApproved.grace.hours, 1.25);
+
+  // Zero is a real setting, not a missing one: it switches the policy off.
+  const off = await settingsRun({
+    settingsRows: [{ id: 1, key: 'emailSettings', value: { graceHoursPerEmployee: 0 } }]
+  });
+  assert.strictEqual(off.body.report.preApproved.grace.hoursPerEmployee, 0);
+  assert.strictEqual(off.body.report.preApproved.grace.hours, 0);
+});
+
+test('a missing, unparseable or negative grace setting falls back to the stated default', async () => {
+  const cases = [
+    ['no settings row at all',   []],
+    ['a row with no value',      [{ id: 1, key: 'emailSettings', value: null }]],
+    ['a value that is not JSON', [{ id: 1, key: 'emailSettings', value: '{not json' }]],
+    ['the key not set',          [{ id: 1, key: 'emailSettings', value: { managers: [] } }]],
+    ['a blank value',            [{ id: 1, key: 'emailSettings', value: { graceHoursPerEmployee: '' } }]],
+    ['words',                    [{ id: 1, key: 'emailSettings', value: { graceHoursPerEmployee: 'half an hour' } }]],
+    ['a negative allowance',     [{ id: 1, key: 'emailSettings', value: { graceHoursPerEmployee: -1 } }]],
+    ['a negative one as text',   [{ id: 1, key: 'emailSettings', value: JSON.stringify({ graceHoursPerEmployee: -0.5 }) }]],
+    ['null in the JSON string',  [{ id: 1, key: 'emailSettings', value: JSON.stringify({ graceHoursPerEmployee: null }) }]]
+  ];
+
+  for (const [label, settingsRows] of cases) {
+    const { res, body } = await settingsRun({ settingsRows });
+    assert.strictEqual(res.statusCode, 200, label);
+    assert.strictEqual(body.ok, true, label);
+    assert.strictEqual(body.report.preApproved.grace.hoursPerEmployee, DEFAULT_GRACE_HOURS, label);
+    assert.strictEqual(body.report.preApproved.grace.hours, 2.5, label); // 0.5 x 5 on the roster
+  }
+});
+
+test('a settings read that fails does not take the report down with it', async () => {
+  const { res, body } = await settingsRun({ settingsError: new Error('relation "settings" does not exist') });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.ok, true, 'the report is what somebody is waiting for');
+  assert.strictEqual(body.report.preApproved.grace.hoursPerEmployee, DEFAULT_GRACE_HOURS);
+  assert.strictEqual(body.report.preApproved.grace.headcount, 5,
+    'the policy still applies at the default — a database problem is not a policy change');
+  assert.strictEqual(body.report.preApproved.grace.hours, 2.5);
 });
