@@ -48,11 +48,16 @@ create unique index if not exists employees_employee_number_key
 -- other automatically: department is set explicitly, per employee.
 alter table employees add column if not exists department text;
 
+-- Guarded through pg_constraint rather than information_schema: a CHECK
+-- constraint's appearance in information_schema views depends on the current
+-- role's privileges, so a re-run under a different role could try to add it
+-- twice and fail.
 do $$
 begin
   if not exists (
-    select 1 from information_schema.constraint_column_usage
-    where table_name = 'employees' and constraint_name = 'employees_department_check'
+    select 1 from pg_constraint
+    where conname = 'employees_department_check'
+      and conrelid = 'employees'::regclass
   ) then
     alter table employees add constraint employees_department_check
       check (department in ('Maintenance', 'Saw Filing', 'Shipping', 'Production'));

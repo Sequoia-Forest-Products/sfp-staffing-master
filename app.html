@@ -6,7 +6,6 @@
   <link rel="icon" type="image/svg+xml" href="/icons/staffing-and-hr.svg">
   <title>Staffing Master — Sequoia Forest Products</title>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <!--SESSION_DATA-->
   <style>
     *{margin:0;padding:0;box-sizing:border-box;}
@@ -187,12 +186,13 @@
       </div>
     </div>
     <div class="sfp-tabs">
-      <button class="sfp-tab active" onclick="switchTab('employees',this)">Employees</button>
-      <button class="sfp-tab" onclick="switchTab('economics',this)">Staffing Economics</button>
-      <button class="sfp-tab" onclick="switchTab('overtime',this)">Pre-Approved Overtime</button>
-      <button class="sfp-tab" onclick="switchTab('points',this)">Points Tracker</button>
-      <button class="sfp-tab" onclick="switchTab('otreport',this)">OT Report</button>
-      <button class="sfp-tab" onclick="switchTab('settings',this)">Settings</button>
+      <button class="sfp-tab active" data-tab="employees" onclick="switchTab('employees',this)">Employees</button>
+      <button class="sfp-tab" data-tab="economics" onclick="switchTab('economics',this)">Staffing Economics</button>
+      <button class="sfp-tab" data-tab="overtime" onclick="switchTab('overtime',this)">Pre-Approved Overtime</button>
+      <button class="sfp-tab" data-tab="points" onclick="switchTab('points',this)">Points Tracker</button>
+      <button class="sfp-tab" data-tab="dailyhours" onclick="switchTab('dailyhours',this)">Daily Hours</button>
+      <button class="sfp-tab" data-tab="otreport" onclick="switchTab('otreport',this)">OT Report</button>
+      <button class="sfp-tab" data-tab="settings" onclick="switchTab('settings',this)">Settings</button>
     </div>
   </div>
 </header>
@@ -210,31 +210,82 @@ if (user.picture) document.getElementById('userAvatar').src = user.picture;
 
 let state = {
   tab:'employees', employees:[], economics:[],
-  ot:{post:[],friday:[],pre:[]}, points:[],
+  ot:{post:[],weekend:[],pre:[]}, points:[],
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
-  emailSettings:{managers:[], autoSend:false}
+  emailSettings:{managers:[], autoSend:false},
+  backfill:null, backfillOnlyIncomplete:false,
+  dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null,
+  dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
+  dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
+  otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
+  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{}
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function fmtWage(w){return !w||w==='Salary'?'Salary':('$'+parseFloat(String(w).replace(/[$,]/g,'')).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));}
 
+// ============================================================
+// PAYROLL SHARED HELPERS
+// ============================================================
+
+// The payroll reporting taxonomy. Deliberately separate from employees.dept
+// (Sawmill / Filing Room / Log Yard / SG&A): nothing maps one onto the other,
+// department is set explicitly per employee.
+const PAYROLL_DEPARTMENTS=['Maintenance','Saw Filing','Shipping','Production'];
+const DAY_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Dates come back as plain YYYY-MM-DD. new Date('2026-08-17') is parsed as UTC
+// and renders as the previous day in Pacific time, so split the string instead
+// of letting Date do it.
+function dateParts(s){const p=String(s||'').slice(0,10).split('-');return (p.length===3&&p[0])?[+p[0],+p[1],+p[2]]:null;}
+function fmtDate(s){const p=dateParts(s);return p?MONTH_ABBR[p[1]-1]+' '+p[2]+', '+p[0]:'—';}
+function fmtDateShort(s){const p=dateParts(s);return p?MONTH_ABBR[p[1]-1]+' '+p[2]:'—';}
+function isoDow(s){const p=dateParts(s);if(!p)return 0;const d=new Date(p[0],p[1]-1,p[2]).getDay();return d===0?7:d;}
+function dayNameOf(s){const p=dateParts(s);return p?DAY_NAMES[new Date(p[0],p[1]-1,p[2]).getDay()]:'';}
+function isScheduledDate(s){const d=isoDow(s);return d>=1&&d<=4;}
+function isoToday(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function isoShift(s,days){const p=dateParts(s);if(!p)return s;const d=new Date(p[0],p[1]-1,p[2]+days);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function fmtStamp(ts){if(!ts)return '—';const d=new Date(ts);return isNaN(d.getTime())?String(ts):d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+function fmtHrs(n){return (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmtPct(f){return f==null?'—':(Number(f)*100).toFixed(1)+'%';}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);}
+
+// Fri/Sat/Sun work is normal here — maintenance crews run weekends — so this
+// labels the day, it never warns about it.
+function schedBadge(isSched){return isSched?'<span class="badge active">Scheduled Mon–Thu</span>':'<span class="badge en">Non-scheduled Fri–Sun</span>';}
+
+// Every /api/payroll-import call goes through here so a failed request raises
+// instead of leaving a panel spinning on nothing.
+async function payrollPost(body){
+  const res=await fetch('/api/payroll-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(res.status===401){location.href='/';throw new Error('Session expired');}
+  let json=null;
+  try{json=await res.json();}catch(e){json=null;}
+  if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
+  return json;
+}
+
+function goToTab(tab){
+  const btn=document.querySelector('.sfp-tab[data-tab="'+tab+'"]');
+  switchTab(tab,btn);
+}
+
 async function loadData(){
   try{
-    const [empRes, econRes, otRes, ptRes, whRes] = await Promise.all([
+    const [empRes, econRes, otRes, ptRes] = await Promise.all([
       fetch('/api/data?table=employees'),
       fetch('/api/data?table=economics'),
       fetch('/api/data?table=overtime'),
-      fetch('/api/data?table=points'),
-      fetch('/api/data?table=weekly_hours').catch(()=>({ok:true,json:()=>({data:[]})}))
+      fetch('/api/data?table=points')
     ]);
     if(empRes.status===401){location.href='/';return;}
 
-    const [empJson, econJson, otJson, ptJson, whJson] = await Promise.all([
-      empRes.json(), econRes.json(), otRes.json(), ptRes.json(),
-      whRes.ok ? whRes.json() : {data:[]}
+    const [empJson, econJson, otJson, ptJson] = await Promise.all([
+      empRes.json(), econRes.json(), otRes.json(), ptRes.json()
     ]);
 
     // Employees
@@ -244,7 +295,7 @@ async function loadData(){
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
       email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||''
+      empNum:r.employee_number||'', department:r.department||''
     }));
 
     // Economics
@@ -269,90 +320,21 @@ async function loadData(){
       discDate:r.disc_date||''
     }));
 
-    // Weekly hours (payroll uploads)
-    state.weeklyHours = (whJson.data||[]).map(r=>({
-      id:r.id, empNum:r.employee_number, date:r.work_date,
-      regular:parseFloat(r.regular_hours)||0, ot:parseFloat(r.ot_hours)||0,
-      comment:r.supervisor_comment||'', batchId:r.upload_batch_id
-    }));
-
     state.loading=false;
   }catch(e){console.error('loadData error:',e);state.loading=false;}
   render();
 }
 
-async function loadEcon(){ /* handled in loadData */ }
-async function loadOT(){ /* handled in loadData */ }
-async function loadPoints(){ /* handled in loadData */ }
-
-async function loadEcon(){
-  try{
-    const res=await fetch('/api/sheets?range=Economics!A:G');
-    const json=await res.json();
-    const rows=json.values||[];
-    state.economics=[];
-    // Header: NUM,SECTION,POSITION,NAME,WAGE,MAX_WAGE,VARIANCE
-    // Col:    0   1        2        3    4     5        6
-    const header=rows[0]||[];
-    // Find column indices dynamically in case order varies
-    const iNum=0, iSec=1, iPos=2, iName=3, iWage=4, iMax=5;
-    for(let i=1;i<rows.length;i++){
-      const r=rows[i];
-      if(!r[iPos]?.trim()) continue; // skip rows with no position
-      const max=parseFloat(r[iMax])||0;
-      state.economics.push({
-        num:+r[iNum]||i,
-        section:r[iSec]||'',
-        position:r[iPos]||'',
-        name:r[iName]||'',
-        max
-      });
-    }
-  }catch(e){console.error('loadEcon:',e);}
-}
-
-async function loadOT(){
-  try{
-    const res=await fetch('/api/sheets?range=Overtime!A:D');
-    const json=await res.json();
-    const rows=json.values||[];
-    state.ot={post:[],weekend:[],pre:[]};
-    // Header: NAME,OT_TYPE,HOURS,DESCRIPTION
-    for(let i=1;i<rows.length;i++){
-      const r=rows[i];
-      if(!r[0]?.trim())continue;
-      const rec={name:r[0],hours:parseFloat(r[2])||0,desc:r[3]||''};
-      const type=r[1]||'';
-      if(type==='Post-Shift')state.ot.post.push(rec);
-      else if(type==='Weekend'||type==='Friday')state.ot.weekend.push(rec);
-      else if(type==='Pre-Shift')state.ot.pre.push(rec);
-    }
-  }catch(e){console.error('loadOT:',e);}
-}
-
-async function loadPoints(){
-  try{
-    const res=await fetch('/api/sheets?range=Points!A:F');
-    const json=await res.json();
-    const rows=json.values||[];
-    state.points=[];
-    // Header: NAME,POINTS,LAST_POINT_DATE,LEVEL_UP_ELIGIBLE,DISCIPLINARY,DISCIPLINARY_DATE
-    for(let i=1;i<rows.length;i++){
-      const r=rows[i];
-      if(!r[0]?.trim())continue;
-      state.points.push({
-        name:r[0],points:parseInt(r[1])||0,lastDate:r[2]||'',
-        levelElig:r[3]||'',disciplinary:r[4]==='Yes',discDate:r[5]||''
-      });
-    }
-  }catch(e){console.error('loadPoints:',e);}
-}
-
 function switchTab(tab,el){
   state.tab=tab;
   document.querySelectorAll('.sfp-tab').forEach(t=>t.classList.remove('active'));
-  el.classList.add('active');
+  const pill=el||document.querySelector('.sfp-tab[data-tab="'+tab+'"]');
+  if(pill) pill.classList.add('active');
   render();
+  // The payroll tabs read their own endpoints, so they load on first open
+  // rather than on every page load.
+  if(tab==='otreport'&&!state.otReport&&!state.otReportLoading) loadOTReport(state.otReportWeek);
+  if(tab==='dailyhours'&&!state.dailyLoaded&&!state.dailyLoading) loadDailyDays();
 }
 
 function render(){
@@ -362,29 +344,9 @@ function render(){
   else if(state.tab==='economics')el.innerHTML=renderEcon();
   else if(state.tab==='overtime')el.innerHTML=renderOT();
   else if(state.tab==='points')el.innerHTML=renderPoints();
+  else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
   else if(state.tab==='otreport')el.innerHTML=renderOTReport();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
-}
-
-function attachDropZones(){
-  // Attach drag start to emp cards
-  document.querySelectorAll('.emp-card[data-empname]').forEach(card=>{
-    card.addEventListener('dragstart', e=>{
-      e.dataTransfer.setData('text/plain', card.dataset.empname);
-      e.dataTransfer.effectAllowed = 'move';
-    });
-  });
-  // Attach drop to position zones
-  document.querySelectorAll('.pos-drop').forEach(zone=>{
-    const idx = parseInt(zone.dataset.idx);
-    zone.addEventListener('dragover', e=>{e.preventDefault();zone.classList.add('drag-over');});
-    zone.addEventListener('dragleave', ()=>zone.classList.remove('drag-over'));
-    zone.addEventListener('drop', e=>{
-      e.preventDefault();
-      zone.classList.remove('drag-over');
-      econDrop(e, idx);
-    });
-  });
 }
 
 function getFiltered(){
@@ -423,6 +385,7 @@ function renderEmployees(){
     <div class="section-head">
       <span>Employee roster</span>
       <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="openBackfill()">Back-fill payroll fields</button>
         <button class="btn btn-outline btn-sm" onclick="copyTextBoltList()" id="copyTBBtn">📋 Copy TextBolt list</button>
         <button class="btn btn-primary btn-sm" onclick="openAdd()">+ Add employee</button>
       </div>
@@ -442,8 +405,8 @@ function renderEmployees(){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          ${['name','wage','dept','status','language','days','phone'].map(col=>{
-            const labels={name:'Name',wage:'Wage/hr',dept:'Department',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
+          ${['name','wage','dept','department','status','language','days','phone'].map(col=>{
+            const labels={name:'Name',wage:'Wage/hr',dept:'Department',department:'Payroll dept',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
             const active=state.sortCol===col;
             const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
             return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
@@ -456,6 +419,7 @@ function renderEmployees(){
               <td style="font-weight:600">${e.name}</td>
               <td>${fmtWage(e.wage)}</td>
               <td>${e.dept||'—'}</td>
+              <td${e.department?'':' style="color:var(--muted)"'}>${e.department||'—'}</td>
               <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
               <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
@@ -463,11 +427,12 @@ function renderEmployees(){
               <td>${smsCell(e)}</td>
               <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
             </tr>`).join(''):
-            '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
+            '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
         </tbody>
       </table>
     </div>
     ${state.editing!==null?renderModal():''}
+    ${state.backfill?renderBackfill():''}
   `;
 }
 
@@ -518,7 +483,7 @@ function renderEmployeeList() {
   if (!tbody) return;
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
     return;
   }
 
@@ -528,6 +493,7 @@ function renderEmployeeList() {
       <td style="font-weight:600">${e.name}</td>
       <td>${e.wage||'—'}</td>
       <td style="color:var(--muted)">${e.dept||'—'}</td>
+      <td style="color:${e.department?'var(--text)':'var(--muted)'}">${e.department||'—'}</td>
       <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status}</span></td>
       <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
       <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
@@ -612,7 +578,7 @@ function openEdit(idx){
   setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
 }
 
-function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.editing={name:'',wage:'',dept:'Sawmill',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 function setSyncStatus(s){
@@ -623,33 +589,41 @@ function setSyncStatus(s){
   else{el.textContent='● Synced';el.className='sfp-sync-status idle';}
 }
 
-// Employee writes go through here so a database that has not yet run
-// SCHEMA_SMS_OPTOUT.sql cannot break saving. PostgREST rejects the whole row
-// when sms_opted_out does not exist (surfacing as a 500 from /api/data), so
-// retry once without that field rather than losing the user's edit.
+// Columns that only exist once their migration has been run. PostgREST rejects
+// the whole row when one of them is missing (surfacing as a 500 from /api/data),
+// so the write is retried once without them rather than losing the user's edit.
+const OPTIONAL_EMPLOYEE_COLUMNS = {
+  sms_opted_out:'the SMS opt-out needs SCHEMA_SMS_OPTOUT.sql to persist',
+  employee_number:'the payroll employee # needs SCHEMA_DAILY_HOURS.sql to persist',
+  department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist'
+};
+
 async function writeEmployeeRow(url, method, row){
   const send = body => fetch(url, {
     method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
   });
 
   let res = await send(row);
-  if(res.ok || !('sms_opted_out' in row)) return res;
+  if(res.ok) return res;
 
   const detail = await res.clone().text().catch(()=>'');
-  if(!detail.includes('sms_opted_out')) return res;
+  const missing = Object.keys(OPTIONAL_EMPLOYEE_COLUMNS).filter(c => (c in row) && detail.includes(c));
+  if(!missing.length) return res;
 
-  console.warn('employees.sms_opted_out is missing — run SCHEMA_SMS_OPTOUT.sql. Saving without the SMS opt-out flag for now.');
-  // Say so out loud: everything else saves, but the opt-out toggle will not
-  // stick until the migration runs, and silently dropping it is what caused
-  // the last round of lost data.
-  if(!writeEmployeeRow._warned){
-    writeEmployeeRow._warned = true;
-    setTimeout(()=>toast('Saved — but the SMS opt-out needs SCHEMA_SMS_OPTOUT.sql to persist','error'), 400);
-  }
+  console.warn('employees is missing ' + missing.join(', ') + ' — run the schema migration. Saving without those fields for now.');
+  // Say so out loud: everything else saves, but these fields will not stick
+  // until the migration runs, and silently dropping them is what caused the
+  // last round of lost data.
+  missing.forEach(c => {
+    if(writeEmployeeRow._warned[c]) return;
+    writeEmployeeRow._warned[c] = true;
+    setTimeout(()=>toast('Saved — but ' + OPTIONAL_EMPLOYEE_COLUMNS[c], 'error'), 400);
+  });
   const fallback = {...row};
-  delete fallback.sms_opted_out;
+  missing.forEach(c => delete fallback[c]);
   return send(fallback);
 }
+writeEmployeeRow._warned = {};
 
 async function saveEdit(){
   const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
@@ -674,7 +648,8 @@ async function saveEdit(){
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
       email:e.email, sms_opted_out:e.smsOptedOut===true,
-      drive_folder_id:e.driveFolderId||null
+      drive_folder_id:e.driveFolderId||null,
+      employee_number:normEmpNum(e.empNum)||null, department:e.department||null
     };
 
     if(e.id){
@@ -723,6 +698,12 @@ function renderModal(){
             oninput="state.editing.wage=this.value"
             onblur="formatWageInput(this)"></div>
           <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.dept=this.value">${allDepts.map(d=>`<option value="${d}" ${e.dept===d?'selected':''}>${d}</option>`).join('')}</select></div>
+          <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
+          <div class="form-group"><label class="form-label">Payroll department</label><select onchange="state.editing.department=this.value">
+            <option value="" ${e.department?'':'selected'}>— not set —</option>
+            ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${e.department===d?'selected':''}>${d}</option>`).join('')}
+          </select></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Payroll department drive the daily hours import and the OT report. Payroll department is a separate field from Department above and is never filled in automatically.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
           <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>
@@ -1121,470 +1102,378 @@ function renderPoints(){
     </div>`;
 }
 
-function renderOTReport(){
-  // Helper to get unique batches and their date ranges
-  const batches = new Map();
-  state.weeklyHours.forEach(r => {
-    if (!batches.has(r.batchId)) {
-      batches.set(r.batchId, { dates: [] });
-    }
-    batches.get(r.batchId).dates.push(r.date);
-  });
-
-  // Sort batches by most recent
-  const sortedBatches = [...batches.entries()].sort((a, b) => {
-    const aMax = Math.max(...a[1].dates.map(d => new Date(d)));
-    const bMax = Math.max(...b[1].dates.map(d => new Date(d)));
-    return bMax - aMax;
-  });
-
-  const selectedBatch = state.selectedOTBatch || (sortedBatches.length > 0 ? sortedBatches[0][0] : null);
-  state.selectedOTBatch = selectedBatch;
-
-  // Filter data for selected batch
-  const batchData = selectedBatch ? state.weeklyHours.filter(r => r.batchId === selectedBatch) : [];
-
-  // Get unique dates for selected batch
-  const dates = [...new Set(batchData.map(r => r.date))].sort();
-  const weekStart = dates.length > 0 ? dates[0] : '';
-  const weekEnd = dates.length > 0 ? dates[dates.length - 1] : '';
-
-  // Calculate totals by employee
-  const empTotals = {};
-  batchData.forEach(r => {
-    if (!empTotals[r.empNum]) {
-      empTotals[r.empNum] = { regular: 0, ot: 0 };
-    }
-    empTotals[r.empNum].regular += r.regular;
-    empTotals[r.empNum].ot += r.ot;
-  });
-
-  // Calculate totals and dollar amounts
-  let totalRegular = 0, totalOT = 0, totalRegularDollars = 0, totalOTDollars = 0;
-
-  // Calculate number of weeks in the report period
-  let numWeeks = 1;
-  if (dates.length > 0) {
-    const firstDate = new Date(dates[0]);
-    const lastDate = new Date(dates[dates.length - 1]);
-    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
-    numWeeks = Math.ceil(daysDiff / 7) || 1;
+// ============================================================
+// OT REPORT — weekly view over /api/payroll-report
+// ============================================================
+async function loadOTReport(week){
+  state.otReportLoading=true; state.otReportError=''; render();
+  try{
+    const res=await fetch('/api/payroll-report'+(week?('?week='+encodeURIComponent(week)):''));
+    if(res.status===401){location.href='/';return;}
+    let json=null;
+    try{json=await res.json();}catch(e){json=null;}
+    if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
+    state.otReport=json.report||null;
+    state.otReportWeeks=json.availableWeeks||[];
+    state.otReportWeek=(json.report&&json.report.weekStart)||week||'';
+  }catch(err){
+    state.otReport=null; state.otReportError=err.message;
+    toast('Could not load the OT report: '+err.message,'error');
   }
+  state.otReportLoading=false; render();
+}
 
-  // Get pre-approved OT from overtime table (Friday Pre-Approved) - per employee
-  const preApprovedMap = {};
-  let preApprovedHours = 0, preApprovedDollars = 0;
+function otSort(col){
+  if(state.otSortCol===col) state.otSortDir=state.otSortDir==='asc'?'desc':'asc';
+  else{state.otSortCol=col;state.otSortDir='desc';}
+  render();
+}
 
-  // Add Friday pre-approved assignments
-  state.ot.weekend.forEach(r => {
-    const emp = state.employees.find(e => e.name === r.name);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      preApprovedMap[r.name] = {hours: r.hours, dollars: r.hours * wage * 1.5};
-      preApprovedHours += r.hours;
-      preApprovedDollars += r.hours * wage * 1.5;
-    }
-  });
+function toggleOtDay(date){
+  const open=state.otOpenDays[date]===undefined?!isScheduledDate(date):state.otOpenDays[date];
+  state.otOpenDays[date]=!open;
+  render();
+}
 
-  // Add 0.5 hrs/week base allowance for all active employees
-  const activeEmps = state.employees.filter(e => e.status === 'Active');
-  const baseAllowancePerEmp = 0.5 * numWeeks;
-  activeEmps.forEach(emp => {
-    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-    if (!preApprovedMap[emp.name]) {
-      preApprovedMap[emp.name] = {hours: baseAllowancePerEmp, dollars: baseAllowancePerEmp * wage * 1.5};
-    } else {
-      preApprovedMap[emp.name].hours += baseAllowancePerEmp;
-      preApprovedMap[emp.name].dollars += baseAllowancePerEmp * wage * 1.5;
-    }
-    preApprovedHours += baseAllowancePerEmp;
-    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
-  });
+const otReportStyle=`<style>
+  .ot-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+  .ot-bar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+  .ot-bar select,.ot-bar input{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)}
+  .ot-bar-note{margin-left:auto;font-size:11px;color:var(--muted)}
+  .ot-note{font-size:11px;color:var(--textDim);background:var(--surface2);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:4px;padding:8px 12px;margin-bottom:18px;line-height:1.5}
+  .ot-panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px}
+  .ot-split{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .ot-split-card{border:1px solid var(--border);border-radius:6px;padding:12px 14px;background:var(--surface)}
+  .ot-split-card.nonsched{border-color:var(--gold);background:#fffdf7}
+  .ot-split-hdr{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:8px}
+  .ot-kv{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}
+  .ot-kv span:last-child{font-weight:700}
+  td.num,th.num{text-align:right}
+  tr.nonsched-row td{background:#fffdf7}
+  tr.day-workers td{background:var(--surface2);white-space:normal;max-width:none}
+  .ot-chip{display:inline-block;font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px 3px 2px 0}
+  .ot-flag{background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#7a1f1f}
+  .ot-warn{background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#6b4a0a}
+  .ot-ok{font-size:12px;color:#2a7a47;font-weight:600}
+  .comp-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+  .comp-day{border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;font-size:11px}
+  .comp-day.data{background:#e8f5ec;border-color:#9fcdb0}
+  .comp-day.missing{background:#fce8e8;border-color:#e0a5a5}
+  .comp-day.unknown{background:var(--surface2);border-color:var(--border);border-style:dashed}
+  .comp-day.pending{background:var(--surface);border-color:var(--border);color:var(--muted)}
+  .comp-name{font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .comp-status{margin-top:4px;color:var(--textDim);line-height:1.35}
+  .sortable{cursor:pointer;user-select:none}
+</style>`;
 
-  const employeeDetails = [];
+function renderOTReport(){
+  const weeks=state.otReportWeeks||[];
+  const picker=`
+    <div class="ot-bar">
+      <label class="ot-bar-label">Work week (Mon–Sun)</label>
+      <select onchange="loadOTReport(this.value)">
+        ${weeks.length?weeks.map(w=>`<option value="${w.weekStart}" ${w.weekStart===state.otReportWeek?'selected':''}>${fmtDate(w.weekStart)} – ${fmtDate(w.weekEnd)} · ${w.days} days · ${fmtHrs(w.totalHours)} hrs</option>`).join(''):'<option value="">No week has data yet</option>'}
+      </select>
+      <button class="btn btn-outline btn-sm" onclick="loadOTReport(state.otReportWeek)">Refresh</button>
+      <button class="btn btn-outline btn-sm" onclick="goToTab('dailyhours')">Daily Hours</button>
+      <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
+    </div>`;
 
-  Object.entries(empTotals).forEach(([empNum, hrs]) => {
-    const emp = state.employees.find(e => e.empNum == empNum);
-    if (!emp) {
-      employeeDetails.push({
-        empNum, name: `UNMATCHED (#${empNum})`, regular: hrs.regular, ot: hrs.ot,
-        wage: 0, regularDoll: 0, otDoll: 0,
-        preApprovedOT: 0, variance: hrs.ot,
-        matched: false
-      });
-      return;
-    }
+  if(state.otReportLoading) return otReportStyle+picker+'<div class="loading-state">Loading the weekly report…</div>';
+  if(!state.otReport) return otReportStyle+picker+`
+    <div class="loading-state">
+      ${state.otReportError?esc(state.otReportError):'No payroll data for this week yet — import a day on the Daily Hours tab.'}
+      <div style="margin-top:14px"><button class="btn btn-primary btn-sm" onclick="loadOTReport(state.otReportWeek)">Try again</button></div>
+    </div>`;
 
-    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-    const regularDoll = hrs.regular * wage;
-    const otDoll = hrs.ot * wage * 1.5;
+  const r=state.otReport;
+  const s=r.summary||{};
+  const split=r.split||{scheduled:{},nonScheduled:{}};
+  const sched=split.scheduled||{}, nons=split.nonScheduled||{};
+  const days=r.days||[];
+  const depts=r.departments||[];
+  const deptNames=depts.map(d=>d.department);
+  const dayDept=state.otDayDept||'all';
 
-    totalRegular += hrs.regular;
-    totalOT += hrs.ot;
-    totalRegularDollars += regularDoll;
-    totalOTDollars += otDoll;
-
-    const preApp = preApprovedMap[emp.name] || {hours: 0, dollars: 0};
-    employeeDetails.push({
-      empNum, name: emp.name, regular: hrs.regular, ot: hrs.ot,
-      wage, regularDoll, otDoll,
-      preApprovedOT: preApp.hours,
-      variance: hrs.ot - preApp.hours,
-      matched: true
-    });
-  });
-
-  // Calculate net OT and OT percentages (as % of regular dollars, to match table)
-  const netOTHours = Math.max(0, totalOT - preApprovedHours);
-  const netOTDollars = Math.max(0, totalOTDollars - preApprovedDollars);
-  const totalOTPercent = totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100) : 0;
-  const preApprovedOTPercent = totalRegularDollars > 0 ? (preApprovedDollars / totalRegularDollars * 100) : 0;
-  const netOTPercent = totalRegularDollars > 0 ? (netOTDollars / totalRegularDollars * 100) : 0;
-  const otBudgetPercent = 10.0;
-  const budgetVariance = totalOTPercent - otBudgetPercent;
-
-  // Sort employees by OT descending
-  employeeDetails.sort((a, b) => b.ot - a.ot);
-
-  const unmatched = employeeDetails.filter(e => !e.matched);
-
-  return `
-    <div id="otUploadForm" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:12px">Upload Hours Analysis Report</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
-        Supported formats: XLS, XLSX, CSV<br>
-        Expected columns: Employee Number, Last Name, First Name, Date, Regular Hours, OT Hours, Supervisor Comment
-      </div>
-      <input type="file" id="otUploadFile" accept=".xlsx,.xls,.csv" style="margin-bottom:12px;width:100%;padding:8px;border:1px solid var(--border);border-radius:4px" onchange="parseOTFile()">
-    </div>
-
+  // 1. Summary cards
+  const cards=`
     <div class="stat-row">
-      <div class="stat-card">
-        <div class="stat-label">All OT (hours)</div>
-        <div class="stat-value">${totalOT.toFixed(2)}</div>
-        <div class="stat-sub">${fmt$(totalOTDollars)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Pre-Approved OT</div>
-        <div class="stat-value">${preApprovedHours.toFixed(2)}</div>
-        <div class="stat-sub">${fmt$(preApprovedDollars)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Net OT (hours)</div>
-        <div class="stat-value">${netOTHours.toFixed(2)}</div>
-        <div class="stat-sub">${fmt$(netOTDollars)}</div>
-      </div>
-    </div>
+      <div class="stat-card"><div class="stat-label">All OT</div><div class="stat-value">${fmtHrs(s.allOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.allOtDollars)}</div></div>
+      <div class="stat-card"><div class="stat-label">Pre-approved OT</div><div class="stat-value">${fmtHrs(s.preApprovedHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.preApprovedDollars)} · standing allowance</div></div>
+      <div class="stat-card"><div class="stat-label">Net OT</div><div class="stat-value" style="color:${(s.netOtHours||0)>0?'var(--brick)':'#2a7a47'}">${fmtHrs(s.netOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.netOtDollars)}</div></div>
+      <div class="stat-card"><div class="stat-label">Total hourly payroll</div><div class="stat-value">${fmt$(s.totalHourlyPayroll)}</div><div class="stat-sub">${fmtHrs(s.totalHours)} hrs · ${s.headcount||0} hourly employees</div></div>
+      <div class="stat-card"><div class="stat-label">Net OT % of hourly payroll</div><div class="stat-value">${fmtPct(s.netOtPctOfPayroll)}</div><div class="stat-sub">salaried staff are not in the denominator</div></div>
+      <div class="stat-card"><div class="stat-label">Weekend labor (Fri–Sun)</div><div class="stat-value">${fmtHrs(s.weekendHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.weekendDollars)} · ${s.weekendHeadcount||0} people</div></div>
+    </div>`;
 
-    <div class="stat-row">
-      <div class="stat-card">
-        <div class="stat-label">Extra OT</div>
-        <div class="stat-value">${(totalOTPercent - preApprovedOTPercent).toFixed(1)}%</div>
-        <div class="stat-sub">Unapproved overtime</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Pre-Approved OT %</div>
-        <div class="stat-value">${preApprovedOTPercent.toFixed(1)}%</div>
-        <div class="stat-sub">Approved hours</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">OT Budget</div>
-        <div class="stat-value" style="color:${budgetVariance > 0 ? 'var(--brick)' : '#2a7a47'}">${totalOTPercent.toFixed(1)}% / 10%</div>
-        <div class="stat-sub">Net: ${(totalOTPercent - preApprovedOTPercent).toFixed(1)}%</div>
-      </div>
-    </div>
+  // 2. The overtime table carries no week and no dollars, so the number above is
+  // not "OT approved for this week" — it is the standing allowance, applied whole
+  // to every week, and its dollars are computed here rather than sourced.
+  const standingNote=`<div class="ot-note"><strong>Pre-approved OT is a standing weekly allowance.</strong>
+    The Pre-Approved Overtime table has no week dimension and no dollar amounts, so the same allowance is applied to every week,
+    and the dollars are derived as hours × rate × 1.5 — they are not sourced from payroll.
+    Net OT is OT worked minus that allowance, so it goes negative in a week where less OT was worked than was approved; the negative is shown as-is rather than floored at zero.</div>`;
 
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label style="font-size:12px;font-weight:700;color:var(--muted)">Week:</label>
-        <select onchange="state.selectedOTBatch=this.value;render()" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--surface);color:var(--text)">
-          ${sortedBatches.map(([bId, data]) => {
-            const ds = data.dates.sort();
-            const dStr = ds[0] === ds[ds.length-1] ? ds[0] : ds[0] + ' to ' + ds[ds.length-1];
-            return `<option value="${bId}" ${bId === selectedBatch ? 'selected' : ''}>${dStr}</option>`;
-          }).join('')}
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="sendOTEmailNow()" style="margin-left:0">📧 Send email</button>
-        <div style="font-size:11px;color:var(--muted);margin-left:auto">
-          ${batchData.length} total rows · ${dates.length} days · ${employeeDetails.length} employees
+  // 3. Scheduled vs non-scheduled
+  const splitBlock=`
+    <div class="section-head"><span>Scheduled vs non-scheduled</span></div>
+    <div class="ot-panel">
+      <div class="ot-split">
+        <div class="ot-split-card">
+          <div class="ot-split-hdr">Scheduled · Mon–Thu</div>
+          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(sched.hours)}</span></div>
+          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(sched.otHours)}</span></div>
+          <div class="ot-kv"><span>OT $</span><span>${fmt$(sched.otDollars)}</span></div>
+          <div class="ot-kv"><span>Earnings</span><span>${fmt$(sched.earnings)}</span></div>
+          <div class="ot-kv"><span>Headcount</span><span>${sched.headcount||0}</span></div>
+        </div>
+        <div class="ot-split-card nonsched">
+          <div class="ot-split-hdr">Non-scheduled · Fri–Sun</div>
+          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(nons.hours)}</span></div>
+          <div class="ot-kv"><span>Non-scheduled OT $</span><span>${fmt$(nons.otDollars)}</span></div>
+          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(nons.otHours)}</span></div>
+          <div class="ot-kv"><span>Total non-scheduled labor $</span><span>${fmt$(nons.earnings)}</span></div>
+          <div class="ot-kv"><span>Headcount</span><span>${nons.headcount||0}</span></div>
         </div>
       </div>
-    </div>
+      <div class="ot-note" style="margin:12px 0 0">Nobody is scheduled on a non-scheduled day, so every hour worked Fri–Sun is incremental.
+        Two different numbers matter and they are not interchangeable: <strong>non-scheduled OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
+        <strong>total non-scheduled labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for weekend work, which is the real cost of running those days.</div>
+    </div>`;
 
-    ${unmatched.length > 0 ? `
-      <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:6px;padding:12px;margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:#9a600a;margin-bottom:8px">⚠ Unmatched employee numbers (${unmatched.length})</div>
-        <div style="font-size:12px;color:#6b4a0a">${unmatched.map(e => e.name).join(', ')}</div>
-        <div style="font-size:10px;color:#7a5a1a;margin-top:8px">These employees cannot be matched to the roster. Please verify employee numbers in the payroll export or add missing employees.</div>
-      </div>
-    ` : ''}
+  // 4. Departments
+  const rec=(r.issues&&r.issues.reconciliation)||null;
+  const reconBlock=!rec?'':(rec.balanced
+    ? `<div class="ot-ok" style="margin-top:10px">✓ Department rows reconcile to the weekly totals.</div>`
+    : `<div class="ot-flag" style="margin-top:10px"><strong>Departments do not reconcile to the weekly totals.</strong>
+        Hours: departments ${fmtHrs(rec.departmentHours)} vs summary ${fmtHrs(rec.summaryHours)} — delta <strong>${fmtHrs(rec.hoursDelta!=null?rec.hoursDelta:(rec.departmentHours||0)-(rec.summaryHours||0))}</strong>.
+        Earnings: departments ${fmt$(rec.departmentEarnings)} vs summary ${fmt$(rec.summaryEarnings)} — delta <strong>${fmt$(rec.earningsDelta!=null?rec.earningsDelta:(rec.departmentEarnings||0)-(rec.summaryEarnings||0))}</strong>.</div>`);
 
-    <div class="section-head">Employee detail</div>
+  const deptBlock=`
+    <div class="section-head"><span>By department</span></div>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Employee</th>
-          <th style="width:90px">Wage</th>
-          <th style="width:80px">Reg. hrs</th>
-          <th style="width:80px">Reg. $</th>
-          <th style="width:80px">OT hrs</th>
-          <th style="width:80px">Pre-App OT</th>
-          <th style="width:80px">Variance</th>
-          <th style="width:80px">OT $</th>
-          <th style="width:80px">OT %</th>
+          <th>Department</th>
+          <th class="num">Sched hrs</th><th class="num">Sched $</th>
+          <th class="num">Weekend hrs</th><th class="num">Weekend $</th>
+          <th class="num">OT hrs</th><th class="num">OT $</th>
+          <th class="num">Pre-appr hrs</th><th class="num">Pre-appr $</th>
+          <th class="num">Net OT hrs</th><th class="num">Net OT $</th>
+          <th class="num">Total labor $</th>
         </tr></thead>
         <tbody>
-          <tr style="background:var(--surface2);font-weight:700;border-bottom:2px solid var(--border)">
-            <td>TOTAL</td>
-            <td></td>
-            <td style="text-align:right">${totalRegular.toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalRegularDollars)}</td>
-            <td style="text-align:right">${totalOT.toFixed(2)}</td>
-            <td style="text-align:right">${preApprovedHours.toFixed(2)}</td>
-            <td style="text-align:right">${(totalOT - preApprovedHours).toFixed(2)}</td>
-            <td style="text-align:right">${fmt$(totalOTDollars)}</td>
-            <td style="text-align:right">${totalRegularDollars > 0 ? (totalOTDollars / totalRegularDollars * 100).toFixed(1) : '0'}%</td>
-          </tr>
-          ${employeeDetails.map(e => {
-            const otPct = e.regularDoll > 0 ? (e.otDoll / e.regularDoll * 100) : 0;
-            return `<tr style="${!e.matched ? 'background:#fef5e8' : ''};${e.variance > 0 ? 'background:#fce8e8' : ''}">
-              <td style="font-weight:600">${e.matched ? e.name : `<span style="color:var(--brick)">${e.name}</span>`}</td>
-              <td>${e.wage > 0 ? fmt$(e.wage) : '—'}</td>
-              <td style="text-align:right">${e.regular.toFixed(2)}</td>
-              <td style="text-align:right">${fmt$(e.regularDoll)}</td>
-              <td style="text-align:right;font-weight:600">${e.ot.toFixed(2)}</td>
-              <td style="text-align:right">${e.preApprovedOT.toFixed(2)}</td>
-              <td style="text-align:right;font-weight:600;color:${e.variance > 0.1 ? 'var(--brick)' : 'inherit'}">${e.variance.toFixed(2)}</td>
-              <td style="text-align:right;font-weight:700">${fmt$(e.otDoll)}</td>
-              <td style="text-align:right">${otPct.toFixed(1)}%</td>
-            </tr>`;
-          }).join('')}
+          ${depts.length?depts.map(d=>`<tr${d.department==='Unassigned'?' style="background:#fef5e8"':''}>
+            <td style="font-weight:600">${esc(d.department)}</td>
+            <td class="num">${fmtHrs((d.scheduled||{}).hours)}</td><td class="num">${fmt$((d.scheduled||{}).earnings)}</td>
+            <td class="num">${fmtHrs((d.weekend||{}).hours)}</td><td class="num">${fmt$((d.weekend||{}).earnings)}</td>
+            <td class="num">${fmtHrs((d.week||{}).otHours)}</td><td class="num">${fmt$((d.week||{}).otDollars)}</td>
+            <td class="num">${fmtHrs(d.preApprovedHours)}</td><td class="num">${fmt$(d.preApprovedDollars)}</td>
+            <td class="num" style="font-weight:700;color:${(d.netOtHours||0)>0?'var(--brick)':'inherit'}">${fmtHrs(d.netOtHours)}</td>
+            <td class="num" style="font-weight:700">${fmt$(d.netOtDollars)}</td>
+            <td class="num">${fmt$((d.week||{}).earnings)}</td>
+          </tr>`).join(''):'<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:24px">No departments in this week</td></tr>'}
         </tbody>
       </table>
     </div>
-  `;
-}
+    ${reconBlock}`;
 
-// ============================================================
-// OVERTIME CRUD
-// ============================================================
-function typeToKey(t){ return t==='Post-Shift'?'post':t==='Pre-Shift'?'pre':'weekend'; }
+  // 5. Per-day breakdown Mon->Sun, filterable by department.
+  const dayRows=days.map(d=>{
+    const workers=(d.workers||[]).filter(w=>dayDept==='all'||(w.department||'Unassigned')===dayDept);
+    const t=dayDept==='all'
+      ? {hours:d.hours,otHours:d.otHours,otDollars:d.otDollars,earnings:d.earnings,headcount:d.headcount}
+      : workers.reduce((a,w)=>({hours:a.hours+(+w.hours||0),otHours:a.otHours+(+w.otHours||0),otDollars:a.otDollars+(+w.otDollars||0),earnings:a.earnings+(+w.earnings||0),headcount:a.headcount+1}),{hours:0,otHours:0,otDollars:0,earnings:0,headcount:0});
+    const open=state.otOpenDays[d.date]===undefined?!d.isScheduledDay:state.otOpenDays[d.date];
+    // dateSource is null on an empty day, one value when the rows agree and a
+    // comma-joined list when they disagree, so test for containment.
+    const inferred=String(d.dateSource||'').includes('email_received');
+    const row=`<tr class="${d.isScheduledDay?'':'nonsched-row'}">
+      <td style="font-weight:600">${d.dayName||dayNameOf(d.date)}<div style="font-size:11px;color:var(--muted);font-weight:400">${fmtDate(d.date)}</div></td>
+      <td>${schedBadge(d.isScheduledDay)}${inferred?'<div style="font-size:10px;color:#9a600a;margin-top:3px">date inferred from email arrival</div>':''}</td>
+      <td class="num">${d.hasData?(t.headcount||0):'—'}</td>
+      <td class="num">${d.hasData?fmtHrs(t.hours):'—'}</td>
+      <td class="num">${d.hasData?fmtHrs(t.otHours):'—'}</td>
+      <td class="num">${d.hasData?fmt$(t.otDollars):'—'}</td>
+      <td class="num">${d.hasData?fmt$(t.earnings):'—'}</td>
+      <td>${workers.length?`<button class="btn btn-outline btn-sm" onclick="toggleOtDay('${d.date}')">${open?'Hide':'Who worked'}</button>`:'<span style="color:var(--muted)">no rows</span>'}</td>
+    </tr>`;
+    const detail=(open&&workers.length)?`<tr class="day-workers"><td colspan="8">
+      ${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>`<span class="ot-chip">${esc(w.name||('#'+w.employeeNumber))} · ${fmtHrs(w.hours)}h${(w.otHours||0)>0?' · OT '+fmtHrs(w.otHours)+'h':''} · ${fmt$(w.earnings)}<span style="color:var(--muted)"> · ${esc(w.department||'Unassigned')}</span></span>`).join('')}
+    </td></tr>`:'';
+    return row+detail;
+  }).join('');
 
-function addOT(type){
-  type=type||'post';
-  const otType=type==='post'?'Post-Shift':type==='pre'?'Pre-Shift':'Weekend';
-  state.ot[type].push({name:'',hours:1,desc:'',otType});
-  state.dirty=true; render();
-}
+  const dayBlock=`
+    <div class="section-head">
+      <span>Day by day · Monday to Sunday</span>
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">
+        Department:
+        <select onchange="state.otDayDept=this.value;render()" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px">
+          <option value="all" ${dayDept==='all'?'selected':''}>All</option>
+          ${deptNames.map(n=>`<option value="${esc(n)}" ${dayDept===n?'selected':''}>${esc(n)}</option>`).join('')}
+        </select>
+      </span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:130px">Day</th><th style="width:190px">Classification</th><th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">OT $</th><th class="num">Earnings</th><th style="width:120px"></th></tr></thead>
+        <tbody>${dayRows||'<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">No days in this week</td></tr>'}</tbody>
+      </table>
+    </div>`;
 
-function updateOT(type,idx,field,val){
-  if(field==='otType'){
-    // Move to different type array
-    const rec={...state.ot[type][idx],otType:val};
-    state.ot[type].splice(idx,1);
-    state.ot[typeToKey(val)].push(rec);
-  } else {
-    state.ot[type][idx][field]=val;
-  }
-  state.dirty=true;
-}
-
-function deleteOT(type,idx){
-  if(!confirm('Remove this OT assignment?')) return;
-  state.ot[type].splice(idx,1);
-  state.dirty=true; render();
-}
-
-async function saveOT(){
-  const rows=[];
-  state.ot.pre.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Pre-Shift',hours:r.hours||0,description:r.desc||''});});
-  state.ot.post.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Post-Shift',hours:r.hours||0,description:r.desc||''});});
-  state.ot.weekend.forEach(r=>{if(r.name)rows.push({name:r.name,ot_type:'Weekend',hours:r.hours||0,description:r.desc||''});});
-  try{
-    const res=await fetch('/api/data?table=overtime',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
-    if(!res.ok) throw new Error();
-    toast('Overtime saved','success'); state.dirty=false;
-    // Reload to get new ids
-    const fresh=await fetch('/api/data?table=overtime');
-    const d=await fresh.json();
-    state.ot={pre:[],post:[],weekend:[]};
-    (d.data||[]).forEach(r=>{
-      const rec={id:r.id,name:r.name,hours:parseFloat(r.hours)||0,desc:r.description||''};
-      if(r.ot_type==='Pre-Shift')state.ot.pre.push(rec);
-      else if(r.ot_type==='Post-Shift')state.ot.post.push(rec);
-      else state.ot.weekend.push(rec);
-    });
-    state.otEditing=false; render();
-  }catch(e){ toast('Save failed: '+e.message,'error'); }
-}
-
-// ============================================================
-// POINTS CRUD
-// ============================================================
-function addPoint(){
-  state.points.push({name:'',points:0,lastDate:'',levelElig:'',disciplinary:false,discDate:''});
-  state.dirty=true; render();
-}
-
-function updatePoint(idx,field,val){
-  // Find the actual index in the sorted array — we need to map back
-  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
-  const orig=sorted[idx];
-  const realIdx=state.points.indexOf(orig);
-  if(realIdx===-1) return;
-  state.points[realIdx][field]=val;
-  state.dirty=true;
-}
-
-function deletePoint(idx){
-  if(!confirm('Delete this points entry?')) return;
-  const sorted=[...state.points].sort((a,b)=>b.points-a.points);
-  const orig=sorted[idx];
-  const realIdx=state.points.indexOf(orig);
-  if(realIdx!==-1) state.points.splice(realIdx,1);
-  state.dirty=true; render();
-}
-
-async function savePoints(){
-  const rows=state.points.filter(p=>p.name).map(p=>({
-    name:p.name, points:p.points||0, last_point_date:p.lastDate||'',
-    level_up_eligible:p.levelElig||'', disciplinary:p.disciplinary||false,
-    disc_date:p.discDate||''
+  // 6. Weekend labor as its own block — small headcount, so name names.
+  const weekendDays=days.filter(d=>!d.isScheduledDay&&d.hasData);
+  const weekendPeople={};
+  weekendDays.forEach(d=>(d.workers||[]).forEach(w=>{
+    const k=w.employeeNumber||w.name;
+    if(!weekendPeople[k]) weekendPeople[k]={name:w.name,department:w.department,hours:0,otHours:0,earnings:0,days:[]};
+    weekendPeople[k].hours+=(+w.hours||0);
+    weekendPeople[k].otHours+=(+w.otHours||0);
+    weekendPeople[k].earnings+=(+w.earnings||0);
+    weekendPeople[k].days.push(d.dayName||dayNameOf(d.date));
   }));
-  try{
-    const res=await fetch('/api/data?table=points',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})});
-    if(!res.ok) throw new Error();
-    toast('Points saved','success'); state.dirty=false;
-    // Reload
-    const fresh=await fetch('/api/data?table=points');
-    const d=await fresh.json();
-    state.points=(d.data||[]).map(r=>({
-      id:r.id,name:r.name,points:r.points||0,lastDate:r.last_point_date||'',
-      levelElig:r.level_up_eligible||'',disciplinary:r.disciplinary||false,discDate:r.disc_date||''
-    }));
-    state.ptEditing=false; render();
-  }catch(e){ toast('Save failed: '+e.message,'error'); }
+  const weekendList=Object.values(weekendPeople).sort((a,b)=>b.hours-a.hours);
+  const weekendBlock=`
+    <div class="section-head"><span>Weekend labor · Friday to Sunday</span></div>
+    <div class="ot-panel">
+      <div class="ot-split">
+        <div class="ot-split-card nonsched">
+          <div class="ot-split-hdr">Weekend totals</div>
+          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(s.weekendHours)}</span></div>
+          <div class="ot-kv"><span>Total weekend labor $</span><span>${fmt$(s.weekendDollars)}</span></div>
+          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(s.weekendOtHours)}</span></div>
+          <div class="ot-kv"><span>Weekend OT $</span><span>${fmt$(s.weekendOtDollars)}</span></div>
+          <div class="ot-kv"><span>People</span><span>${s.weekendHeadcount||0}</span></div>
+        </div>
+        <div style="grid-column:span 2">
+          <div class="ot-split-hdr">Who worked the weekend</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Friday counts as weekend here: these are the same Fri–Sun rows as the non-scheduled block above, so scheduled plus weekend equals the whole week.</div>
+          ${weekendList.length?`<div class="table-wrap" style="margin-bottom:0"><table>
+            <thead><tr><th>Employee</th><th>Department</th><th>Days</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">Earnings</th></tr></thead>
+            <tbody>${weekendList.map(w=>`<tr>
+              <td style="font-weight:600">${esc(w.name||'—')}</td>
+              <td>${esc(w.department||'Unassigned')}</td>
+              <td style="color:var(--muted);font-size:11px">${w.days.join(', ')}</td>
+              <td class="num">${fmtHrs(w.hours)}</td>
+              <td class="num">${fmtHrs(w.otHours)}</td>
+              <td class="num">${fmt$(w.earnings)}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>`:'<div style="font-size:12px;color:var(--muted)">Nobody has weekend rows in this week.</div>'}
+        </div>
+      </div>
+    </div>`;
+
+  // 7. Per-employee, sortable, with scheduled and non-scheduled split apart.
+  const empCols=[
+    ['name','Employee'],['department','Department'],
+    ['scheduledHours','Sched hrs'],['scheduledEarnings','Sched $'],
+    ['nonScheduledHours','Non-sched hrs'],['nonScheduledEarnings','Non-sched $'],
+    ['otHours','OT hrs'],['otDollars','OT $'],
+    ['preApprovedHours','Pre-appr hrs'],['netOtHours','Net OT hrs'],['netOtDollars','Net OT $'],
+    ['totalHours','Total hrs'],['totalEarnings','Total $']
+  ];
+  const sortCol=state.otSortCol||'netOtDollars';
+  const dir=state.otSortDir==='asc'?1:-1;
+  const empRows=(r.employees||[]).slice().sort((a,b)=>{
+    const av=a[sortCol], bv=b[sortCol];
+    if(typeof av==='number'||typeof bv==='number') return ((+av||0)-(+bv||0))*dir;
+    return String(av||'').toLowerCase()<String(bv||'').toLowerCase()?-dir:String(av||'').toLowerCase()>String(bv||'').toLowerCase()?dir:0;
+  });
+  const empBlock=`
+    <div class="section-head"><span>By employee</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>${empCols.map(([c,label])=>`<th class="sortable${c==='name'||c==='department'?'':' num'}" onclick="otSort('${c}')">${label}${sortCol===c?'<span style="color:var(--orange);margin-left:3px">'+(state.otSortDir==='asc'?'↑':'↓')+'</span>':''}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${empRows.length?empRows.map(e=>`<tr>
+            <td style="font-weight:600">${esc(e.name||'')}${e.onRoster?'':' <span class="badge disc">not on roster</span>'}${(e.totalHours||0)===0?' <span class="badge inactive">no hours</span>':''}<div style="font-size:10px;color:var(--muted);font-weight:400">${e.employeeNumber?'#'+esc(e.employeeNumber):'no employee number'}</div></td>
+            <td>${esc(e.department||'Unassigned')}</td>
+            <td class="num">${fmtHrs(e.scheduledHours)}</td><td class="num">${fmt$(e.scheduledEarnings)}</td>
+            <td class="num"${(e.nonScheduledHours||0)>0?' style="font-weight:700;background:#fffdf7"':''}>${fmtHrs(e.nonScheduledHours)}</td>
+            <td class="num"${(e.nonScheduledHours||0)>0?' style="background:#fffdf7"':''}>${fmt$(e.nonScheduledEarnings)}</td>
+            <td class="num">${fmtHrs(e.otHours)}</td><td class="num">${fmt$(e.otDollars)}</td>
+            <td class="num">${fmtHrs(e.preApprovedHours)}</td>
+            <td class="num" style="font-weight:700;color:${(e.netOtHours||0)>0?'var(--brick)':'inherit'}">${fmtHrs(e.netOtHours)}</td>
+            <td class="num">${fmt$(e.netOtDollars)}</td>
+            <td class="num">${fmtHrs(e.totalHours)}</td><td class="num">${fmt$(e.totalEarnings)}</td>
+          </tr>`).join(''):'<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:24px">No employees worked this week</td></tr>'}
+        </tbody>
+      </table>
+    </div>`;
+
+  // 8. Completeness. A Saturday with no rows because nobody worked and a Saturday
+  // with no rows because the email never arrived look identical in the data, so
+  // they get their own status instead of being rendered as fine.
+  const comp=r.completeness||{days:[]};
+  // Four states, not three. A scheduled day that has not happened yet comes back
+  // expected:false and must not read as a missed delivery — nor as the Fri–Sun
+  // "nobody worked, or no report arrived" case, which is a genuine unknown.
+  const compState=d=>d.hasData?'data'
+    :(d.isScheduledDay&&d.expected===false)?'pending'
+    :d.status==='missing'?'missing'
+    :'unknown';
+  const compClass={data:'data',missing:'missing',pending:'pending',unknown:'unknown'};
+  const compText={
+    missing:'no data — scheduled day, probable missed delivery',
+    pending:'not due yet — this day has not happened',
+    unknown:'no data — nobody worked, or no report arrived'
+  };
+  const compBlock=`
+    <div class="section-head"><span>Data completeness</span></div>
+    <div class="ot-panel">
+      <div class="comp-grid">
+        ${(comp.days||[]).map(d=>{const st=compState(d);return `<div class="comp-day ${compClass[st]}">
+          <div class="comp-name">${(d.dayName||dayNameOf(d.date)).slice(0,3)}</div>
+          <div style="color:var(--muted);font-size:10px">${fmtDateShort(d.date)}</div>
+          <div class="comp-status">${st==='data'?(d.rowCount||0)+' rows':compText[st]}</div>
+        </div>`;}).join('')}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px">
+        ${comp.scheduledDaysWithData||0} of ${comp.scheduledDaysExpected||0} scheduled days have data${(comp.missingScheduledDays||[]).length?` · <span style="color:var(--brick);font-weight:700">missing: ${(comp.missingScheduledDays||[]).map(fmtDate).join(', ')}</span>`:''}
+      </div>
+    </div>`;
+
+  // 9. Issues
+  const iss=r.issues||{};
+  const pre=r.preApproved||{};
+  const issueBits=[];
+  if((iss.unknownEmployeeNumbers||[]).length) issueBits.push(`<div class="ot-flag"><strong>${iss.unknownEmployeeNumbers.length} employee number(s) in daily hours are not on the roster:</strong> ${iss.unknownEmployeeNumbers.map(esc).join(', ')}
+    <div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="openBackfillScreen()">Back-fill payroll fields</button></div></div>`);
+  if(iss.unassignedRows) issueBits.push(`<div class="ot-warn"><strong>${iss.unassignedRows} row(s) carry no department.</strong> ${(iss.unassignedEmployees||[]).map(esc).join(', ')}
+    <div style="font-size:11px;margin-top:4px">Set the department on the employee, then re-stamp the affected dates from the Daily Hours tab — the department on a daily row is a snapshot taken at import.</div>
+    <div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="openBackfillScreen()">Back-fill payroll fields</button>
+    <button class="btn btn-outline btn-sm" onclick="goToTab('dailyhours')">Re-stamp departments</button></div></div>`);
+  if((iss.flagged||[]).length) issueBits.push(`<div class="ot-flag"><strong>${iss.flagged.length} flagged row(s):</strong>
+    <div style="margin-top:6px">${iss.flagged.map(f=>`<span class="ot-chip">${fmtDateShort(f.workDate)} · ${esc(f.name||('#'+f.employeeNumber))} · ${(f.flags||[]).map(esc).join(', ')}</span>`).join('')}</div></div>`);
+  if((pre.unmatchedNames||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved OT names that match no employee:</strong> ${pre.unmatchedNames.map(esc).join(', ')}</div>`);
+  if((pre.withoutHoursThisWeek||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved but no hours this week:</strong>
+    ${pre.withoutHoursThisWeek.map(p=>`<span class="ot-chip">${esc(p.name)} · ${esc(p.department||'Unassigned')} · ${fmtHrs(p.hours)}h · ${fmt$(p.dollars)}</span>`).join('')}
+    <div style="font-size:11px;margin-top:4px">Their allowance still counts against net OT, so it is worth knowing they did not work.</div></div>`);
+  if((pre.rateMissing||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved dollars show as $0 for:</strong> ${pre.rateMissing.map(esc).join(', ')}
+    <div style="font-size:11px;margin-top:4px">Their allowance is not free — no pay rate exists for them in this week's daily hours or on the employee record, so the dollars cannot be derived. Their hours still count.</div></div>`);
+  const issueBlock=`
+    <div class="section-head"><span>Issues</span></div>
+    <div class="ot-panel">${issueBits.length?issueBits.join(''):'<div class="ot-ok">✓ No data issues in this week.</div>'}</div>`;
+
+  // Iterate the keys: a blank ot_type comes back as its own bucket.
+  const byType=pre.byType||{};
+  const preTypeBlock=`
+    <div class="section-head"><span>Pre-approved OT by type</span></div>
+    <div class="ot-panel">
+      <div class="ot-split">
+        ${Object.keys(byType).length?Object.keys(byType).map(t=>`<div class="ot-split-card">
+          <div class="ot-split-hdr">${esc(t)}</div>
+          <div class="ot-kv"><span>Hours</span><span>${fmtHrs((byType[t]||{}).hours)}</span></div>
+          <div class="ot-kv"><span>Derived $</span><span>${fmt$((byType[t]||{}).dollars)}</span></div>
+        </div>`).join(''):'<div style="font-size:12px;color:var(--muted)">No pre-approved OT on file.</div>'}
+      </div>
+    </div>`;
+
+  return otReportStyle+picker+`
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week of ${fmtDate(r.weekStart)} through ${fmtDate(r.weekEnd)}</div>
+    ${cards}${standingNote}${splitBlock}${deptBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
 }
-
-// ============================================================
-// EMAIL SETTINGS FUNCTIONS
-// ============================================================
-async function saveEmailSettings(){
-  try {
-    // Save to database
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        key: 'emailSettings',
-        value: state.emailSettings
-      })
-    });
-    if (!res.ok) {
-      console.error('Failed to save settings to database');
-      localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
-    }
-  } catch (err) {
-    console.error('Settings save error:', err);
-    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
-  }
-}
-
-async function loadEmailSettings(){
-  try {
-    const res = await fetch('/api/settings?key=emailSettings');
-    if (res.ok) {
-      const json = await res.json();
-      if (json.data && json.data.value) {
-        state.emailSettings = json.data.value;
-        return;
-      }
-    }
-  } catch (err) {
-    console.error('Failed to load settings from database:', err);
-  }
-  // Fallback to localStorage
-  const saved = localStorage.getItem('emailSettings');
-  if (saved) {
-    state.emailSettings = JSON.parse(saved);
-  }
-}
-
-async function addManager(){
-  const input=document.getElementById('newManagerEmail');
-  const email=input.value.trim();
-  if(!email){toast('Please enter a valid email','error');return;}
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
-  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
-  state.emailSettings.managers.push(email);
-  await saveEmailSettings();
-  input.value='';
-  render();
-  toast('Manager added and saved','success');
-}
-
-async function removeManager(idx){
-  state.emailSettings.managers.splice(idx,1);
-  await saveEmailSettings();
-  render();
-  toast('Manager removed','success');
-}
-
-async function syncToSheet(){
-  const btn=document.getElementById('syncBtn');
-  btn.textContent='Syncing…';btn.className='sfp-sync-btn saving';
-  setSyncStatus('saving');
-  try{
-    for(const e of state.employees){
-      const row={
-        name:e.name, wage:e.wage, dept:e.dept, status:e.status,
-        days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
-        break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
-        birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, sms_opted_out:e.smsOptedOut===true,
-        drive_folder_id:e.driveFolderId||null
-      };
-      if(e.id){
-        await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
-      } else {
-        const res=await writeEmployeeRow('/api/data?table=employees','POST',row);
-        const d=await res.json();
-        if(d.data?.[0]?.id) e.id=d.data[0].id;
-      }
-    }
-    // Reload employees from database to ensure OT report has latest wages
-    const empRes = await fetch('/api/data?table=employees');
-    const empJson = await empRes.json();
-    state.employees = (empJson.data||[]).map(r=>({
-      id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
-      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
-      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
-      birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||''
-    }));
-
-    state.dirty=false;
-    btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
-    setSyncStatus('idle');
-    toast('Saved to Supabase','success');
-    setTimeout(()=>{btn.textContent='+ Sync';btn.className='sfp-sync-btn';},3000);
-  }catch(err){
-    btn.textContent='+ Sync';btn.className='sfp-sync-btn';
-    setSyncStatus('error');
-    toast('Sync failed: '+err.message,'error');
-  }
-}
-
-function toast(msg,type){
-  const el=document.getElementById('toast');
-  el.textContent=msg;el.className=`toast ${type} show`;
-  setTimeout(()=>{el.className='toast';},4000);
-}
-
-// ============================================================
-// OT REPORT - File upload and parsing
-// ============================================================
 
 // ============================================================
 // TEXTBOLT LIST
@@ -1829,7 +1718,8 @@ async function syncToSheet(){
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
         email:e.email, sms_opted_out:e.smsOptedOut===true,
-        drive_folder_id:e.driveFolderId||null
+        drive_folder_id:e.driveFolderId||null,
+        employee_number:normEmpNum(e.empNum)||null, department:e.department||null
       };
       if(e.id){
         await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
@@ -1848,7 +1738,7 @@ async function syncToSheet(){
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
       email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||''
+      empNum:r.employee_number||'', department:r.department||''
     }));
 
     state.dirty=false;
@@ -1869,235 +1759,6 @@ function toast(msg,type){
   setTimeout(()=>{el.className='toast';},4000);
 }
 
-// ============================================================
-// OT REPORT - File upload and parsing
-// ============================================================
-async function parseOTFile(){
-  const file=document.getElementById('otUploadFile').files[0];
-  if(!file){toast('No file selected','error');return;}
-
-  try{
-    const rows=await parseExcelBuffer(file);
-    if(!rows||rows.length===0){toast('No data found in file','error');return;}
-
-    showOTFilePreview(rows);
-  }catch(err){
-    console.error('Parse error:',err);
-    toast('Error parsing file: '+err.message,'error');
-  }
-}
-
-async function parseExcelBuffer(file){
-  return new Promise((resolve,reject)=>{
-    const reader=new FileReader();
-    reader.onload=(e)=>{
-      try{
-        if(window.XLSX){
-          // Use base64 data URL approach which works for both XLS and XLSX
-          const data=e.target.result;
-          const base64=data.split(',')[1];
-          console.log('File type:',file.name,'| Base64 length:',base64.length);
-
-          const workbook=XLSX.read(base64,{type:'base64'});
-          console.log('Sheet names:',workbook.SheetNames);
-
-          const sheet=workbook.Sheets[workbook.SheetNames[0]];
-          const rows=XLSX.utils.sheet_to_json(sheet);
-          console.log('Rows parsed:',rows.length,'| First row keys:',rows.length>0?Object.keys(rows[0]):null);
-
-          if(rows.length===0)throw new Error('No data found in file');
-
-          // Find header columns by matching keys
-          const firstRow=rows[0];
-          const empNumKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('employee')||k.toLowerCase().includes('number'));
-          const dateKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('date'));
-          const regKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('regular'));
-          const otKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('ot')||k.toLowerCase().includes('overtime'));
-          const commKey=Object.keys(firstRow).find(k=>k.toLowerCase().includes('comment')||k.toLowerCase().includes('supervisor'));
-
-          if(!empNumKey||!dateKey){
-            console.error('Column search failed. Looking for:');
-            console.error('  - empNumKey (has "employee" or "number"):', empNumKey);
-            console.error('  - dateKey (has "date"):', dateKey);
-            console.error('Available keys:', Object.keys(firstRow));
-            throw new Error('Missing required columns: Employee Number or Date');
-          }
-
-          const result=[];
-          rows.forEach(row=>{
-            const empNumVal=String(row[empNumKey]||'').trim();
-            const dateVal=String(row[dateKey]||'').trim();
-            const regVal=parseFloat(row[regKey])||0;
-            const otVal=parseFloat(row[otKey])||0;
-            const commVal=String(row[commKey]||'').trim();
-
-            if(!empNumVal||!dateVal)return;
-
-            result.push({
-              employee_number:empNumVal,
-              work_date:dateVal,
-              regular_hours:regVal,
-              ot_hours:otVal,
-              supervisor_comment:commVal
-            });
-          });
-
-          if(result.length>0){
-            resolve(result);
-          }else{
-            throw new Error('No valid data rows found');
-          }
-        }else{
-          throw new Error('XLSX library not loaded');
-        }
-      }catch(xlsxErr){
-        console.warn('XLSX parsing failed, trying CSV:',xlsxErr.message);
-        try{
-          const text=e.target.result;
-          resolve(parseCSVText(text));
-        }catch(csvErr){
-          reject(new Error('Could not parse file - supported formats are XLS, XLSX, and CSV'));
-        }
-      }
-    };
-    reader.onerror=()=>reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function parseCSVText(text){
-  const lines=text.split('\n').filter(l=>l.trim());
-  if(lines.length<2)return[];
-
-  let header=lines[0].split(/[,\t]/).map(h=>h.trim().toLowerCase());
-
-  const empNumIdx=header.findIndex(h=>h.includes('employee')||h.includes('number'));
-  const dateIdx=header.findIndex(h=>h.includes('date'));
-  const regIdx=header.findIndex(h=>h.includes('regular'));
-  const otIdx=header.findIndex(h=>h.includes('ot')||h.includes('overtime'));
-  const commIdx=header.findIndex(h=>h.includes('comment')||h.includes('supervisor'));
-
-  if(empNumIdx<0||dateIdx<0){
-    throw new Error('Could not find Employee Number or Date columns');
-  }
-
-  const rows=[];
-  for(let i=1;i<lines.length;i++){
-    const parts=lines[i].split(/[,\t]/).map(p=>p.trim());
-    if(parts.length<2||!parts[empNumIdx])continue;
-
-    const empNum=String(parts[empNumIdx]).trim();
-    if(!empNum)continue;
-
-    rows.push({
-      employee_number:empNum,
-      work_date:parts[dateIdx]||'',
-      regular_hours:parseFloat(parts[regIdx])||0,
-      ot_hours:parseFloat(parts[otIdx])||0,
-      supervisor_comment:commIdx>=0?parts[commIdx]:''
-    });
-  }
-
-  return rows;
-}
-
-function showOTFilePreview(rows){
-  const grouped={};
-  rows.forEach(r=>{
-    if(!grouped[r.employee_number])grouped[r.employee_number]=[];
-    grouped[r.employee_number].push(r);
-  });
-
-  const unmatched=Object.keys(grouped).filter(en=>{
-    return !state.employees.find(e=>e.empNum==en);
-  });
-
-  const html=`
-    <div id="otPreview" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000">
-      <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:600px;max-height:80vh;overflow-y:auto">
-        <div style="font-size:16px;font-weight:700;margin-bottom:12px">Upload preview</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
-          <div>Rows: ${rows.length}</div>
-          <div>Employees: ${Object.keys(grouped).length}</div>
-          <div>Date range: ${rows.map(r=>r.work_date).sort()[0]} to ${rows.map(r=>r.work_date).sort().pop()}</div>
-        </div>
-
-        ${unmatched.length>0?`
-          <div style="background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:10px;margin-bottom:12px;font-size:11px">
-            <div style="font-weight:700;color:#9a600a;margin-bottom:4px">⚠ Unmatched employee numbers (${unmatched.length})</div>
-            <div style="color:#6b4a0a">${unmatched.join(', ')}</div>
-          </div>
-        `:''}
-
-        <div style="background:var(--surface2);border-radius:4px;padding:12px;margin-bottom:16px;font-size:11px;max-height:200px;overflow-y:auto">
-          <table style="font-size:10px;width:100%">
-            <tr style="font-weight:700;border-bottom:1px solid var(--border)"><td style="padding:4px">Emp #</td><td style="padding:4px">Date</td><td style="padding:4px">Reg</td><td style="padding:4px">OT</td></tr>
-            ${rows.slice(0,20).map(r=>`<tr><td style="padding:4px">${r.employee_number}</td><td style="padding:4px">${r.work_date}</td><td style="padding:4px;text-align:right">${r.regular_hours.toFixed(2)}</td><td style="padding:4px;text-align:right">${r.ot_hours.toFixed(2)}</td></tr>`).join('')}
-            ${rows.length>20?`<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:4px">... and ${rows.length-20} more rows</td></tr>`:''}
-          </table>
-        </div>
-
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn btn-outline btn-sm" onclick="document.getElementById('otPreview').remove();document.getElementById('otUploadForm').style.display='none'">Cancel</button>
-          <button class="btn btn-primary btn-sm" id="otConfirmBtn">Confirm and upload</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.body.insertAdjacentHTML('beforeend',html);
-  window.otPreviewRows = rows;
-  document.getElementById('otConfirmBtn').addEventListener('click', async function(){
-    await confirmOTUpload(window.otPreviewRows);
-  });
-}
-
-async function confirmOTUpload(rows){
-  try{
-    // Generate proper UUID format for uploadBatchId
-    const uploadBatchId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-
-    document.getElementById('otPreview')?.remove();
-    document.getElementById('otUploadForm').style.display='none';
-    document.getElementById('otUploadFile').value='';
-
-    toast('Uploading...','');
-
-    const payload={uploadBatchId,rows};
-    console.log('Sending to API:', JSON.stringify(payload).substring(0,200));
-
-    const res=await fetch('/api/ot-upload',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload)
-    });
-
-    if(!res.ok){
-      const err=await res.json();
-      throw new Error(err.error||'Upload failed');
-    }
-
-    toast('Upload successful!','success');
-
-    // Send emails to managers if auto-send is enabled
-    if(state.emailSettings.autoSend && state.emailSettings.managers.length > 0){
-      sendManagerEmails(rows);
-    }
-
-    state.selectedOTBatch=uploadBatchId;
-    await loadData();
-    state.tab='otreport';
-    render();
-  }catch(err){
-    console.error('Upload error:',err);
-    toast('Upload failed: '+err.message,'error');
-  }
-}
-
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -2107,152 +1768,533 @@ function fileToBase64(file) {
   });
 }
 
-function sendOTEmailNow(){
-  if(!state.emailSettings.managers.length){
-    toast('No managers configured in Settings','error');
-    return;
-  }
+// ============================================================
+// EMPLOYEES — bulk back-fill of employee_number + department
+// ============================================================
 
-  const selectedBatch = state.selectedOTBatch;
-  if(!selectedBatch){
-    toast('No data to send','error');
-    return;
-  }
+// Matches normalizeEmpNumber on the server: the payroll export delivers
+// zero-padded four-character ids ('0319'), so store them padded.
+function normEmpNum(v){const s=String(v==null?'':v).trim();return /^\d+$/.test(s)?s.padStart(4,'0'):s;}
 
-  // Get the data for the current batch
-  const batchData = state.weeklyHours.filter(r => r.batchId === selectedBatch);
-  if(!batchData.length){
-    toast('No data for selected week','error');
-    return;
-  }
-
-  toast('Sending emails to '+state.emailSettings.managers.length+' manager(s)...','');
-  sendManagerEmails(batchData);
+function openBackfillScreen(){
+  if(state.tab!=='employees') goToTab('employees');
+  openBackfill();
 }
 
-function sendManagerEmails(rows){
-  if(!state.emailSettings.managers.length) return;
+function openBackfill(){
+  state.backfill=state.employees.map((e,idx)=>({
+    idx, name:e.name, dept:e.dept, status:e.status,
+    empNum:e.empNum||'', department:e.department||'',
+    origNum:e.empNum||'', origDept:e.department||''
+  })).sort((a,b)=>((a.status==='Active'?0:1)-(b.status==='Active'?0:1))||String(a.name).localeCompare(String(b.name)));
+  state.backfillOnlyIncomplete=false;
+  render();
+}
 
-  // Calculate summary data
-  const dates = [...new Set(rows.map(r => r.date))].sort();
-  const dateRange = dates.length > 0 ? (dates.length > 1 ? `${dates[0]} to ${dates[dates.length-1]}` : dates[0]) : 'Unknown';
+function closeBackfill(){state.backfill=null;render();}
 
-  const empTotals = {};
-  rows.forEach(r => {
-    if (!empTotals[r.empNum]) {
-      empTotals[r.empNum] = { regular: 0, ot: 0, name: r.lastName ? `${r.firstName} ${r.lastName}` : '' };
-    }
-    empTotals[r.empNum].regular += r.regular;
-    empTotals[r.empNum].ot += r.ot;
-  });
-
-  // Calculate number of weeks
-  let numWeeks = 1;
-  if (dates.length > 0) {
-    const firstDate = new Date(dates[0]);
-    const lastDate = new Date(dates[dates.length - 1]);
-    const daysDiff = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
-    numWeeks = Math.ceil(daysDiff / 7) || 1;
-  }
-
-  // Calculate pre-approved OT
-  let totalPreApproved = 0;
-  const activeEmps = state.employees.filter(e => e.status === 'Active');
-  const baseAllowancePerEmp = 0.5 * numWeeks;
-
-  activeEmps.forEach(emp => {
-    totalPreApproved += baseAllowancePerEmp;
-  });
-
-  state.ot.weekend.forEach(r => {
-    totalPreApproved += r.hours;
-  });
-
-  const totalRegHrs = rows.reduce((s,r) => s + (r.regular||0), 0);
-  const totalOTHrs = rows.reduce((s,r) => s + (r.ot||0), 0);
-  const netOT = Math.max(0, totalOTHrs - totalPreApproved);
-  const empCount = Object.keys(empTotals).length;
-
-  // Calculate wages and percentages for email
-  let totalRegDollars = 0, totalOTDollars = 0;
-  Object.entries(empTotals).forEach(([empNum, hrs]) => {
-    const emp = state.employees.find(e => e.empNum == empNum);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      totalRegDollars += hrs.regular * wage;
-      totalOTDollars += hrs.ot * wage * 1.5;
-    }
-  });
-  const totalOTPercent = totalRegDollars > 0 ? (totalOTDollars / totalRegDollars * 100) : 0;
-  const totalPayroll = totalRegDollars + totalOTDollars;
-
-  // Calculate pre-approved OT in dollars
-  let preApprovedDollars = 0;
-  activeEmps.forEach(emp => {
-    const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-    preApprovedDollars += baseAllowancePerEmp * wage * 1.5;
-  });
-  state.ot.weekend.forEach(r => {
-    const emp = state.employees.find(e => e.name === r.name);
-    if (emp) {
-      const wage = parseFloat(String(emp.wage).replace(/[$,]/g, '')) || 0;
-      preApprovedDollars += r.hours * wage * 1.5;
-    }
-  });
-  const preApprovedOTPercent = totalRegDollars > 0 ? (preApprovedDollars / totalRegDollars * 100) : 0;
-  const otBudgetPercent = 10.0;
-  const budgetVariance = totalOTPercent - otBudgetPercent;
-
-  // Find employees who exceeded pre-approved limits
-  const exceededEmployees = [];
-  Object.entries(empTotals).forEach(([empNum, hrs]) => {
-    const emp = state.employees.find(e => e.empNum == empNum);
-    if (emp) {
-      const preApp = (state.ot.weekend.find(r => r.name === emp.name)?.hours || 0) + baseAllowancePerEmp;
-      const variance = hrs.ot - preApp;
-      if (variance > 0.1) {
-        exceededEmployees.push({
-          name: emp.name,
-          unapprovedHours: variance.toFixed(2)
-        });
-      }
-    }
-  });
-  exceededEmployees.sort((a, b) => parseFloat(b.unapprovedHours) - parseFloat(a.unapprovedHours));
-
-  // Calculate net OT percentage for email
-  const netOTPercent = totalOTPercent - preApprovedOTPercent;
-
-  // Prepare email data for backend
-  const emailData = {
-    to: state.emailSettings.managers,
-    subject: `OT Report: ${dateRange}`,
-    data: {
-      dateRange,
-      totalRegularHours: totalRegHrs.toFixed(2),
-      totalOTHours: totalOTHrs.toFixed(2),
-      totalPreApprovedHours: totalPreApproved.toFixed(2),
-      netOTHours: netOT.toFixed(2),
-      totalOTPercent: totalOTPercent.toFixed(1),
-      preApprovedOTPercent: preApprovedOTPercent.toFixed(1),
-      netOTPercent: netOTPercent.toFixed(1),
-      otBudgetPercent: otBudgetPercent.toFixed(1),
-      budgetVariance: budgetVariance.toFixed(1),
-      totalPayroll: totalPayroll.toFixed(2),
-      employeeCount: empCount,
-      uploadTime: new Date().toLocaleString(),
-      exceededEmployees,
-      reportLink: window.location.origin + window.location.pathname
-    }
+function backfillCounts(){
+  const rows=state.backfill||[];
+  return {
+    total:rows.length,
+    noNum:rows.filter(r=>!String(r.empNum).trim()).length,
+    noDept:rows.filter(r=>!r.department).length,
+    changed:rows.filter(r=>normEmpNum(r.empNum)!==r.origNum||r.department!==r.origDept).length
   };
-
-  // Send to backend (implement on server side)
-  fetch('/api/send-ot-email', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(emailData)
-  }).catch(err => console.log('Email notification sent (or queued)', err));
 }
+
+// employees.employee_number has a unique index, so the second row with the same
+// id is rejected by the database. Catch it here instead of half-way through the
+// save loop.
+function backfillDupes(){
+  const seen={},dupes=[];
+  (state.backfill||[]).forEach(r=>{
+    const v=normEmpNum(r.empNum);
+    if(!v) return;
+    if(seen[v]&&dupes.indexOf(v)<0) dupes.push(v);
+    seen[v]=true;
+  });
+  return dupes;
+}
+
+function backfillMetaHtml(){
+  const c=backfillCounts();
+  const dupes=backfillDupes();
+  return `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;align-items:center">
+      <span><strong style="color:${c.noNum?'var(--brick)':'#2a7a47'}">${c.noNum}</strong> of ${c.total} still have no employee #</span>
+      <span><strong style="color:${c.noDept?'var(--brick)':'#2a7a47'}">${c.noDept}</strong> of ${c.total} still have no payroll department</span>
+      <span style="color:var(--muted)">${c.changed} row${c.changed===1?'':'s'} changed</span>
+    </div>
+    ${dupes.length?`<div style="margin-top:8px;background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 10px;font-size:12px;color:#7a1f1f"><strong>Duplicate employee #:</strong> ${dupes.map(esc).join(', ')} — the database rejects the second one, so fix these before saving.</div>`:''}`;
+}
+
+function refreshBackfillMeta(){
+  const el=document.getElementById('bfMeta');
+  if(el) el.innerHTML=backfillMetaHtml();
+  const dupes=backfillDupes();
+  (state.backfill||[]).forEach(r=>{
+    const input=document.getElementById('bf-num-'+r.idx);
+    if(input) input.style.borderColor=dupes.indexOf(normEmpNum(r.empNum))>=0?'var(--brick)':'var(--border)';
+  });
+}
+
+function backfillSet(idx,field,value){
+  const row=(state.backfill||[]).find(r=>r.idx===idx);
+  if(!row) return;
+  row[field]=value;
+  refreshBackfillMeta();
+}
+
+function renderBackfill(){
+  const rows=(state.backfill||[]).filter(r=>!state.backfillOnlyIncomplete||!String(r.empNum).trim()||!r.department);
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)closeBackfill()">
+      <div class="modal" style="max-width:1000px">
+        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
+          <span>Back-fill payroll fields</span>
+          <button class="close-btn" onclick="closeBackfill()">×</button>
+        </div>
+        <div class="modal-body" style="padding:20px 24px">
+          <div style="font-size:12px;color:var(--textDim);line-height:1.55;margin-bottom:12px">
+            Employee # is the payroll system id that the daily hours file arrives with, zero-padded to four characters.
+            Payroll department is a separate field from the roster Department shown here for reference — nothing fills it in automatically, not from the roster department, not from wage, not from the job title. Set it explicitly for every employee.
+            Do this before importing payroll: <code>daily_hours</code> snapshots the department at import, so rows imported first land unassigned and have to be re-stamped.
+          </div>
+          <div id="bfMeta" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:12px">${backfillMetaHtml()}</div>
+          <label style="display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;cursor:pointer;user-select:none;margin-bottom:10px">
+            <input type="checkbox" ${state.backfillOnlyIncomplete?'checked':''} onchange="state.backfillOnlyIncomplete=this.checked;render()" style="width:16px;height:16px;cursor:pointer;accent-color:var(--orange)">
+            Show only incomplete
+          </label>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Employee</th><th style="width:70px">Status</th>
+                <th style="width:120px">Roster dept<div style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">reference only</div></th>
+                <th style="width:110px">Employee #</th><th style="width:160px">Payroll department</th>
+              </tr></thead>
+              <tbody>
+                ${rows.length?rows.map(r=>`<tr>
+                  <td style="font-weight:600">${esc(r.name)}</td>
+                  <td><span class="badge ${r.status==='Active'?'active':'inactive'}">${esc(r.status||'—')}</span></td>
+                  <td style="color:var(--muted);font-size:11px">${esc(r.dept||'—')}</td>
+                  <td><input type="text" id="bf-num-${r.idx}" value="${esc(r.empNum)}" placeholder="0319" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%"
+                    oninput="backfillSet(${r.idx},'empNum',this.value)" onchange="this.value=normEmpNum(this.value);backfillSet(${r.idx},'empNum',this.value)"></td>
+                  <td><select style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%" onchange="backfillSet(${r.idx},'department',this.value)">
+                    <option value="" ${r.department?'':'selected'}>— not set —</option>
+                    ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${r.department===d?'selected':''}>${d}</option>`).join('')}
+                  </select></td>
+                </tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Every employee has both fields filled in.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="closeBackfill()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveBackfill()">Save changed rows</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveBackfill(){
+  const changed=(state.backfill||[]).filter(r=>normEmpNum(r.empNum)!==r.origNum||r.department!==r.origDept);
+  if(!changed.length){toast('Nothing changed','');return;}
+  const dupes=backfillDupes();
+  if(dupes.length){toast('Duplicate employee # '+dupes.join(', ')+' — the database rejects duplicates','error');return;}
+
+  setSyncStatus('saving');
+  let saved=0,failed=0;
+  for(const r of changed){
+    const emp=state.employees[r.idx];
+    try{
+      if(!emp||!emp.id) throw new Error('no database id');
+      const res=await writeEmployeeRow('/api/data?table=employees&id='+emp.id,'PATCH',{
+        employee_number:normEmpNum(r.empNum)||null,
+        department:r.department||null
+      });
+      if(!res.ok) throw new Error('status '+res.status);
+      saved++;
+    }catch(err){
+      failed++;
+      console.error('Back-fill failed for '+(emp&&emp.name),err);
+    }
+  }
+  setSyncStatus(failed?'error':'idle');
+  toast(saved+' saved, '+failed+' failed',failed?'error':'success');
+  state.backfill=null;
+  await loadData();
+}
+
+// ============================================================
+// DAILY HOURS — manual import, imported days, admin actions
+// ============================================================
+async function previewDailyFile(){
+  const input=document.getElementById('dhFile');
+  const file=input&&input.files&&input.files[0];
+  if(!file){toast('Choose the .xlsx payroll file first','error');return;}
+  if(!state.dailyWorkDate){toast('Pick the work date — the file does not contain one','error');return;}
+
+  state.dailyBusy=true; render();
+  try{
+    const fileBase64=await fileToBase64(file);
+    // The server parses the workbook so the manual path and the email path
+    // produce byte-identical rows; the browser only ships the bytes.
+    const json=await payrollPost({action:'preview',fileName:file.name,fileBase64,workDate:state.dailyWorkDate});
+    state.dailyPreview=json.preview||null;
+    state.dailyPreviewFile={fileName:file.name,fileBase64,workDate:state.dailyWorkDate};
+  }catch(err){
+    state.dailyPreview=null; state.dailyPreviewFile=null;
+    toast('Preview failed: '+err.message,'error');
+  }
+  state.dailyBusy=false; render();
+}
+
+function cancelDailyPreview(){
+  state.dailyPreview=null; state.dailyPreviewFile=null; render();
+}
+
+async function commitDailyImport(){
+  const f=state.dailyPreviewFile, p=state.dailyPreview;
+  if(!f||!p) return;
+  const dup=p.duplicateFileHash;
+  if(dup&&!dup.sameDate&&!confirm('These exact bytes are already imported under '+fmtDate(dup.workDate)+' ('+(dup.rowCount||0)+' rows).\n\nFiling the same file under '+fmtDate(f.workDate)+' as well would double-count it. Import anyway?')) return;
+  const overwrite=!!p.existing;
+  if(overwrite&&!confirm('Overwrite the '+(p.existing.rowCount||0)+' rows already imported for '+fmtDate(f.workDate)+'?\n\nThe day is deleted and re-inserted, so anyone dropped from a corrected re-send disappears too.')) return;
+
+  state.dailyBusy=true; render();
+  try{
+    const json=await payrollPost({action:'commit',fileName:f.fileName,fileBase64:f.fileBase64,workDate:f.workDate,confirmOverwrite:overwrite});
+    toast((json.inserted||0)+' rows imported for '+fmtDate(f.workDate)+(json.replaced?(', '+json.replaced+' replaced'):''),'success');
+    state.dailyPreview=null; state.dailyPreviewFile=null;
+    state.otReport=null;  // the week that just changed has to be refetched
+    await loadDailyDays();
+  }catch(err){
+    toast('Import failed: '+err.message,'error');
+  }
+  state.dailyBusy=false; render();
+}
+
+async function loadDailyDays(){
+  if(!state.dailyFrom||!state.dailyTo){state.dailyTo=isoToday();state.dailyFrom=isoShift(state.dailyTo,-30);}
+  state.dailyLoading=true; render();
+  try{
+    const json=await payrollPost({action:'days',from:state.dailyFrom,to:state.dailyTo});
+    state.dailyDays=json.days||[];
+    state.dailyLoaded=true;
+  }catch(err){
+    state.dailyDays=[];
+    toast('Could not load imported days: '+err.message,'error');
+  }
+  state.dailyLoading=false; render();
+}
+
+async function correctDailyDate(uploadBatchId,current){
+  const next=prompt('The email states no work date, so an inferred date can be wrong. New work date for the '+fmtDate(current)+' import (YYYY-MM-DD):',current);
+  if(next===null) return;
+  const v=String(next).trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(v)){toast('Enter the date as YYYY-MM-DD','error');return;}
+  if(v===current) return;
+  try{
+    const json=await payrollPost({action:'correctDate',uploadBatchId,newWorkDate:v});
+    const warn=((json.validation||{}).warnings||[]).join(' · ');
+    toast((json.moved||0)+' rows moved from '+fmtDate(json.from||current)+' to '+fmtDate(json.workDate||v)+(warn?' — '+warn:''),'success');
+    state.otReport=null;
+    await loadDailyDays();
+  }catch(err){toast('Could not change the date: '+err.message,'error');}
+}
+
+async function deleteDailyDay(workDate,rowCount){
+  if(!confirm('Delete all '+rowCount+' rows imported for '+fmtDate(workDate)+'?\n\nThis cannot be undone — the day would have to be imported again.')) return;
+  try{
+    const json=await payrollPost({action:'deleteDay',workDate});
+    toast((json.deleted||0)+' rows deleted for '+fmtDate(workDate),'success');
+    state.otReport=null;
+    await loadDailyDays();
+  }catch(err){toast('Delete failed: '+err.message,'error');}
+}
+
+async function restampDepartments(){
+  if(!state.restampFrom||!state.restampTo){toast('Pick both dates for the re-stamp range','error');return;}
+  if(!confirm('Re-stamp departments on every daily hours row from '+fmtDate(state.restampFrom)+' to '+fmtDate(state.restampTo)+'?\n\nThis rewrites the department snapshot on those rows from the current employee records.')) return;
+  state.dailyBusy=true; render();
+  try{
+    const json=await payrollPost({action:'restamp',from:state.restampFrom,to:state.restampTo});
+    state.restampResult={scanned:json.scanned||0,updated:json.updated||0,stillUnassigned:json.stillUnassigned||0,changes:json.changes||[]};
+    toast(state.restampResult.updated+' rows re-stamped','success');
+    state.otReport=null;
+    await loadDailyDays();
+  }catch(err){toast('Re-stamp failed: '+err.message,'error');}
+  state.dailyBusy=false; render();
+}
+
+async function loadPendingEmails(){
+  state.dailyBusy=true; render();
+  try{
+    const json=await payrollPost({action:'pending'});
+    state.dailyPending=json.emails||[];
+  }catch(err){
+    state.dailyPending=null;
+    toast('Could not load ingestion issues: '+err.message,'error');
+  }
+  state.dailyBusy=false; render();
+}
+
+// The days action omits dates that have no rows, so gaps have to be derived from
+// the range itself. A past Mon–Thu with nothing imported is a missed delivery; a
+// Fri–Sun with nothing is unknowable from here, so it is not listed as a problem.
+function missingScheduledDays(){
+  const have={};
+  (state.dailyDays||[]).forEach(d=>{have[d.workDate]=true;});
+  const today=isoToday();
+  const out=[];
+  let cur=state.dailyFrom, guard=0;
+  while(cur&&state.dailyTo&&cur<=state.dailyTo&&guard++<400){
+    if(cur<today&&isScheduledDate(cur)&&!have[cur]) out.push(cur);
+    cur=isoShift(cur,1);
+  }
+  return out;
+}
+
+const dailyStyle=`<style>
+  .dh-panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px}
+  .dh-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+  .dh-field{display:flex;flex-direction:column;gap:5px}
+  .dh-field label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .dh-field input[type=date],.dh-field input[type=file]{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:7px 10px;background:var(--surface);color:var(--text)}
+  .dh-note{font-size:11px;color:var(--textDim);line-height:1.5;background:var(--surface2);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:4px;padding:8px 12px;margin-top:12px}
+  .dh-stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0}
+  .dh-stat div{border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+  .dh-stat .k{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .dh-stat .v{font-size:18px;font-weight:800;margin-top:4px}
+  .dh-flag{background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#7a1f1f}
+  .dh-warn{background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#6b4a0a}
+  .dh-ok{font-size:12px;color:#2a7a47;font-weight:600}
+  .dh-chip{display:inline-block;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px 3px 2px 0}
+  td.num,th.num{text-align:right}
+  tr.nonsched-row td{background:#fffdf7}
+</style>`;
+
+function renderDailyPreview(){
+  const p=state.dailyPreview;
+  if(!p) return '';
+  const v=p.validation||{errors:[],warnings:[]};
+  const errors=v.errors||[], warnings=v.warnings||[];
+  const blocked=errors.length>0;
+  const counts=p.counts||{}, totals=p.totals||{};
+  const depts=p.departments||[];
+  const empCount=depts.reduce((s,d)=>s+(d.employees||0),0);
+  const btnLabel=p.existing?('Overwrite '+(p.existing.rowCount||0)+' existing rows'):('Import '+(counts.imported||0)+' rows');
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cancelDailyPreview()">
+      <div class="modal" style="max-width:920px">
+        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
+          <span>Import preview — ${fmtDate(p.workDate)} · ${esc(p.dayName||dayNameOf(p.workDate))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px">${esc(p.fileName||'')}${p.sheetName?' · sheet “'+esc(p.sheetName)+'”':''}</div></span>
+          <button class="close-btn" onclick="cancelDailyPreview()">×</button>
+        </div>
+        <div class="modal-body" style="padding:20px 24px">
+          <div style="margin-bottom:12px">${schedBadge(p.isScheduledDay)}</div>
+
+          ${p.existing?`<div class="dh-flag"><strong>${fmtDate(p.workDate)} already has ${p.existing.rowCount||0} imported rows</strong>
+            (source ${esc(p.existing.source||'unknown')}, imported ${fmtStamp(p.existing.createdAt)}${(p.existing.batchCount||1)>1?', across '+p.existing.batchCount+' separate imports':''}).
+            Importing deletes the day and re-inserts it, so anyone dropped from a corrected re-send disappears too.</div>`:''}
+          ${p.duplicateFileHash?(p.duplicateFileHash.sameDate
+            ? `<div class="dh-warn"><strong>These exact bytes are already imported under this same date</strong> (${p.duplicateFileHash.rowCount||0} rows, imported ${fmtStamp(p.duplicateFileHash.createdAt)}). Re-uploading the same file for the same day is harmless — it replaces the day with identical rows.</div>`
+            : `<div class="dh-flag"><strong>These exact bytes are already imported under ${fmtDate(p.duplicateFileHash.workDate)}</strong>
+                (${p.duplicateFileHash.rowCount||0} rows, imported ${fmtStamp(p.duplicateFileHash.createdAt)}). Filing the same file under a second date double-counts it — if that date was wrong, correct it in the imported days list instead. You will be asked to confirm.</div>`):''}
+          ${errors.length?`<div class="dh-flag"><strong>Cannot import:</strong><ul style="margin:6px 0 0 18px">${errors.map(e=>'<li>'+esc(e)+'</li>').join('')}</ul></div>`:''}
+          ${warnings.length?`<div class="dh-warn"><strong>Worth checking:</strong><ul style="margin:6px 0 0 18px">${warnings.map(w=>'<li>'+esc(w)+'</li>').join('')}</ul></div>`:''}
+
+          <div class="dh-stat">
+            <div><div class="k">Rows to import</div><div class="v">${counts.imported||0}</div><div style="font-size:11px;color:var(--muted)">of ${counts.totalRows||0} in the file</div></div>
+            <div><div class="k">Employees</div><div class="v">${empCount}</div></div>
+            <div><div class="k">Total hours</div><div class="v">${fmtHrs(totals.totalHours)}</div></div>
+            <div><div class="k">Total earnings</div><div class="v">${fmt$(totals.totalEarnings)}</div></div>
+            <div><div class="k">OT hours</div><div class="v">${fmtHrs(totals.otHours)}</div></div>
+            <div><div class="k">OT dollars</div><div class="v">${fmt$(totals.otDollars)}</div></div>
+          </div>
+
+          <div class="dh-note"><strong>${counts.salariedSkipped||0} salaried row${(counts.salariedSkipped||0)===1?'':'s'} skipped.</strong>
+            Salaried staff are excluded by design, so every figure in this system — hours, earnings, OT and the percentages built on them — is hourly payroll only.
+            ${(counts.salariedWithHoursImported||0)>0?`<strong>${counts.salariedWithHoursImported} salaried row(s) carried hours and were imported anyway</strong>, flagged salaried_with_hours.`:''}</div>
+
+          ${(p.anomalies||[]).length?`<div class="dh-flag" style="margin-top:12px"><strong>${p.anomalies.length} anomal${p.anomalies.length===1?'y':'ies'} in this file:</strong>
+            <table style="width:100%;font-size:11px;margin-top:6px">
+              ${p.anomalies.map(a=>`<tr><td style="padding:2px 6px 2px 0;white-space:nowrap">${esc(a.name||('#'+a.employeeNumber))}</td><td style="padding:2px 6px 2px 0;font-weight:700">${esc(a.type)}</td><td style="padding:2px 0;white-space:normal">${esc(a.detail||'')}</td></tr>`).join('')}
+            </table></div>`:''}
+
+          <div class="section-head" style="margin-top:16px"><span>By department</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Department</th><th class="num">Employees</th><th class="num">Reg hrs</th><th class="num">OT hrs</th><th class="num">Total hrs</th><th class="num">OT $</th><th class="num">Earnings</th></tr></thead>
+              <tbody>
+                ${depts.length?depts.map(d=>`<tr${(d.department===null||d.department==='Unassigned')?' style="background:#fef5e8"':''}>
+                  <td style="font-weight:600">${esc(d.department||'Unassigned')}</td>
+                  <td class="num">${d.employees||0}</td>
+                  <td class="num">${fmtHrs(d.regularHours)}</td>
+                  <td class="num">${fmtHrs(d.otHours)}</td>
+                  <td class="num">${fmtHrs(d.totalHours)}</td>
+                  <td class="num">${fmt$(d.otDollars)}</td>
+                  <td class="num">${fmt$(d.totalEarnings)}</td>
+                </tr>`).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No rows</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+
+          ${(p.sample||[]).length?`
+          <div class="section-head" style="margin-top:16px"><span>First ${p.sample.length} rows</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Emp #</th><th>Name</th><th>Department</th><th class="num">Rate</th><th class="num">Reg</th><th class="num">OT</th><th class="num">Total hrs</th><th class="num">Earnings</th><th class="num">OT $</th><th>Flags</th></tr></thead>
+              <tbody>${p.sample.map(s=>`<tr>
+                <td>${esc(s.employeeNumber)}</td>
+                <td style="font-weight:600">${esc(s.name||'')}</td>
+                <td${s.department?'':' style="color:#9a600a"'}>${esc(s.department||'Unassigned')}</td>
+                <td class="num">${fmt$(s.payRate)}</td>
+                <td class="num">${fmtHrs(s.regularHours)}</td>
+                <td class="num">${fmtHrs(s.otHours)}</td>
+                <td class="num">${fmtHrs(s.totalHours)}</td>
+                <td class="num">${fmt$(s.totalEarnings)}</td>
+                <td class="num">${fmt$(s.otDollars)}</td>
+                <td style="font-size:10px">${(s.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
+              </tr>`).join('')}</tbody>
+            </table>
+          </div>`:''}
+
+          ${(p.unmatched||[]).length?`<div class="dh-warn"><strong>${p.unmatched.length} employee number(s) are not on the roster:</strong>
+            ${p.unmatched.map(u=>`<span class="dh-chip">#${esc(u.employeeNumber)} ${esc([u.firstName,u.lastName].filter(Boolean).join(' '))}</span>`).join('')}
+            <div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="openBackfillScreen()">Back-fill payroll fields</button></div></div>`:''}
+          ${(p.missingDepartment||[]).length?`<div class="dh-warn"><strong>${p.missingDepartment.length} matched employee(s) have no payroll department</strong> — their rows import as Unassigned:
+            ${p.missingDepartment.map(m=>`<span class="dh-chip">${esc(m.name||('#'+m.employeeNumber))}</span>`).join('')}
+            <div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="openBackfillScreen()">Back-fill payroll fields</button></div></div>`:''}
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="cancelDailyPreview()">Cancel</button>
+          <button class="btn btn-primary" ${blocked||state.dailyBusy?'disabled style="opacity:.5;cursor:not-allowed"':''} onclick="${blocked?'':'commitDailyImport()'}">${state.dailyBusy?'Working…':btnLabel}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderDailyHours(){
+  const days=state.dailyDays||[];
+  const pending=state.dailyPending;
+  const rr=state.restampResult;
+  const gaps=state.dailyLoaded?missingScheduledDays():[];
+
+  const upload=`
+    <div class="section-head"><span>Import a day</span></div>
+    <div class="dh-panel">
+      <div class="dh-row">
+        <div class="dh-field" style="flex:1;min-width:260px">
+          <label>Payroll file (.xlsx)</label>
+          <input type="file" id="dhFile" accept=".xlsx">
+        </div>
+        <div class="dh-field">
+          <label>Work date (required)</label>
+          <input type="date" id="dhDate" value="${state.dailyWorkDate||''}" oninput="state.dailyWorkDate=this.value">
+        </div>
+        <button class="btn btn-primary" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="previewDailyFile()">${state.dailyBusy?'Working…':'Preview import'}</button>
+      </div>
+      <div class="dh-note">The payroll file contains no date — not in a column, not in the sheet name, nowhere — so the work date has to be chosen here. Nothing is hunting for one inside the file.
+        Mon–Thu is the scheduled block and Fri–Sun is non-scheduled; both are normal work days.</div>
+    </div>`;
+
+  const list=`
+    <div class="section-head">
+      <span>Imported days</span>
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;display:flex;gap:8px;align-items:center">
+        <input type="date" value="${state.dailyFrom||''}" onchange="state.dailyFrom=this.value" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+        <span style="color:var(--muted)">to</span>
+        <input type="date" value="${state.dailyTo||''}" onchange="state.dailyTo=this.value" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+        <button class="btn btn-outline btn-sm" onclick="loadDailyDays()">Load</button>
+      </span>
+    </div>
+    ${state.dailyLoading?'<div class="loading-state">Loading imported days…</div>':`
+    ${gaps.length?`<div class="dh-warn"><strong>${gaps.length} scheduled day${gaps.length===1?'':'s'} in this range have no data at all:</strong>
+      ${gaps.map(g=>'<span class="dh-chip">'+fmtDate(g)+' · '+dayNameOf(g)+'</span>').join('')}
+      <div style="font-size:11px;margin-top:4px">Every one of those is a Mon–Thu with no import — a probable missed delivery. Fri–Sun gaps are not listed: from here they are indistinguishable from nobody having worked.</div></div>`:''}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:120px">Date</th><th style="width:180px">Classification</th><th style="width:150px">Source</th>
+          <th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">Earnings</th>
+          <th style="width:150px">Data quality</th><th style="width:190px"></th>
+        </tr></thead>
+        <tbody>
+          ${days.length?days.map(d=>{ /* newest first, and days with no rows are not returned at all */
+            // dateSource is null on an empty day, one value when the rows agree
+            // and a comma-joined list when they disagree.
+            const inferred=String(d.dateSource||'').includes('email_received');
+            const src=String(d.source||'manual');
+            return `<tr class="${d.isScheduledDay?'':'nonsched-row'}">
+              <td style="font-weight:600">${fmtDate(d.workDate)}<div style="font-size:11px;color:var(--muted);font-weight:400">${esc(d.dayName||dayNameOf(d.workDate))}</div></td>
+              <td>${schedBadge(d.isScheduledDay)}</td>
+              <td>
+                <span class="badge ${src.includes('email')?'en':'inactive'}">${esc(src)}</span>
+                ${inferred?`<div style="font-size:10px;color:#9a600a;font-weight:700;margin-top:4px">inferred from email arrival</div>
+                  <div style="font-size:10px;color:var(--muted)">received ${fmtStamp(d.emailReceivedAt)}</div>`:''}
+              </td>
+              <td class="num">${d.employees||0}</td>
+              <td class="num">${fmtHrs(d.totalHours)}</td>
+              <td class="num">${fmtHrs(d.otHours)}</td>
+              <td class="num">${fmt$(d.totalEarnings)}</td>
+              <td style="font-size:11px">
+                ${d.flagCount?`<div style="color:var(--brick);font-weight:700">${d.flagCount} flagged</div>`:''}
+                ${d.unassignedCount?`<div style="color:#9a600a;font-weight:700">${d.unassignedCount} unassigned <button class="btn btn-outline btn-sm" style="padding:1px 6px;font-size:10px" onclick="openBackfillScreen()">fix</button></div>`:''}
+                ${!d.flagCount&&!d.unassignedCount?'<span style="color:#2a7a47">clean</span>':''}
+              </td>
+              <td>
+                <button class="btn btn-outline btn-sm" onclick="correctDailyDate('${esc(d.uploadBatchId)}','${d.workDate}')">Correct date</button>
+                <button class="btn btn-outline btn-sm" onclick="deleteDailyDay('${d.workDate}',${d.rowCount||0})">Delete day</button>
+              </td>
+            </tr>`;
+          }).join(''):'<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No days imported in this range.</td></tr>'}
+        </tbody>
+      </table>
+    </div>`}`;
+
+  const admin=`
+    <div class="section-head"><span>Admin actions</span></div>
+    <div class="dh-panel">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Re-stamp departments</div>
+      <div style="font-size:11px;color:var(--textDim);line-height:1.5;margin-bottom:10px">
+        <code>daily_hours</code> stores a department snapshot taken at import, so a transfer never silently rewrites historical reports.
+        That is also why this is manual and explicitly scoped: run it only over dates imported before the back-fill was done.
+      </div>
+      <div class="dh-row">
+        <div class="dh-field"><label>From</label><input type="date" value="${state.restampFrom||''}" onchange="state.restampFrom=this.value"></div>
+        <div class="dh-field"><label>To</label><input type="date" value="${state.restampTo||''}" onchange="state.restampTo=this.value"></div>
+        <button class="btn btn-outline" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="restampDepartments()">Re-stamp departments</button>
+      </div>
+      ${rr?`<div style="margin-top:10px;font-size:12px">Scanned <strong>${rr.scanned}</strong> rows · updated <strong>${rr.updated}</strong> · still unassigned <strong style="color:${rr.stillUnassigned?'var(--brick)':'#2a7a47'}">${rr.stillUnassigned}</strong>${rr.stillUnassigned?' — those employee numbers still have no payroll department on the roster.':''}
+        ${(rr.changes||[]).length?`<div style="margin-top:8px">${rr.changes.slice(0,12).map(c=>`<span class="dh-chip">${fmtDateShort(c.workDate)} · #${esc(c.employeeNumber)} · ${esc(c.from||'Unassigned')} → ${esc(c.to||'Unassigned')}</span>`).join('')}
+          ${rr.changes.length>12?`<span style="color:var(--muted)">and ${rr.changes.length-12} more</span>`:''}</div>`:''}</div>`:''}
+    </div>
+
+    <div class="dh-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:700">Ingestion issues</div>
+        <button class="btn btn-outline btn-sm" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="loadPendingEmails()">Check the email pipeline</button>
+      </div>
+      <div style="font-size:11px;color:var(--textDim);margin-bottom:10px">Payroll emails that did not end up imported — duplicates, rejects, errors and anything held for review.</div>
+      ${pending===null?'<div style="font-size:12px;color:var(--muted)">Not checked yet.</div>'
+        :!pending.length?'<div class="dh-ok">No ingestion problems — every payroll email was imported.</div>'
+        :`<div class="table-wrap" style="margin-bottom:0"><table>
+            <thead><tr><th style="width:110px">Status</th><th style="width:120px">Work date</th><th>Subject</th><th style="width:150px">Received</th><th>Error</th><th style="width:130px">Flags</th></tr></thead>
+            <tbody>${pending.map(e=>`<tr>
+              <td><span class="badge ${e.status==='error'||e.status==='rejected'?'disc':'inactive'}">${esc(e.status)}</span></td>
+              <td>${e.work_date?fmtDate(e.work_date):'—'}</td>
+              <td style="white-space:normal;max-width:320px">${esc(e.subject||'—')}</td>
+              <td style="font-size:11px;color:var(--muted)">${fmtStamp(e.received_at)}</td>
+              <td style="white-space:normal;max-width:280px;font-size:11px;color:var(--brick)">${esc(e.error||'')}</td>
+              <td style="font-size:11px">${(e.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>`}
+    </div>`;
+
+  return dailyStyle+upload+list+admin+(state.dailyPreview?renderDailyPreview():'');
+}
+
 
 function renderSettings(){
   return `
