@@ -33,9 +33,9 @@
 -- they belonged.
 --
 -- 'Non-Production' counts as assigned and does not appear here. That is the
--- point of the value: SG&A and office staff belong to none of the four
--- production departments, and without it this gate could never reach zero. A
--- blank means nobody has decided yet; 'Non-Production' means somebody did.
+-- point of the value: SG&A and office staff belong to none of the production
+-- departments, and without it this gate could never reach zero. A blank means
+-- nobody has decided yet; 'Non-Production' means somebody did.
 select id, name, dept, department, status
 from employees
 where status = 'Active'
@@ -74,13 +74,14 @@ order by dept, name;
 --
 -- A sanity check on the back-fill rather than on the data model: an active
 -- employee whose department was set to a known rename (Filing Room -> Saw
--- Filing, or Maintenance/Shipping keeping their name) is fine, but one still
--- carrying a legacy value in `department` means a bad write got through the
--- constraint somehow.
+-- Filing) or kept its name (Maintenance, Shipping, Log Yard) is fine, but one
+-- still carrying an unrecognised value in `department` means a bad write got
+-- through the constraint somehow.
 select id, name, dept, department
 from employees
 where department is not null
-  and department not in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Non-Production')
+  and department not in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard',
+                         'Non-Production')
 order by name;
 
 

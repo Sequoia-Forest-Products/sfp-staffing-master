@@ -54,14 +54,14 @@ Employees tab -> **Back-fill payroll fields**. One screen, both fields, every em
   (`0319`, `0063`, `9290`). Enter it exactly as payroll shows it. Matching normalises
   both sides with `lpad(...,4,'0')`, so an unpadded `319` still matches `0319` — but
   store the padded form.
-- `department` is one of **Maintenance, Saw Filing, Shipping, Production** — or
+- `department` is one of **Maintenance, Saw Filing, Shipping, Production, Log Yard** — or
   **Non-Production** for SG&A and office staff — and it is now the *only* department field. The older `dept` (Sawmill / Filing Room / Log Yard /
   SG&A / ...) is retired: nothing reads it functionally and nothing writes to it, and
   it is dropped by `SCHEMA_DROP_DEPT.sql` once this back-fill is verified complete.
   Until then it stays visible on the back-fill screen as reference, because it is what
   you read while deciding.
 
-  **Non-Production is a real answer, not a skipped row.** The four production
+  **Non-Production is a real answer, not a skipped row.** The production
   departments have no home for salaried office staff, and the back-fill's
   "still needs a department" count is what gates retiring `dept` — so without a
   fifth value that count could never honestly reach zero. Leaving those people
