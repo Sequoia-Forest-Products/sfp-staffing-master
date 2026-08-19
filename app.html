@@ -441,10 +441,10 @@ function renderEmployees(){
   const active=state.employees.filter(e=>e.status==='Active');
   const en=active.filter(e=>e.language==='English').length;
   const es=active.filter(e=>e.language==='Spanish').length;
-  // Staffed PRODUCTION departments, out of the four — not out of all five. A card
-  // reading "3 of 5" while two production departments sit empty would be misleading
-  // if Non-Production were silently making up the difference, so it is counted and
-  // labelled on its own instead.
+  // Staffed PRODUCTION departments, out of the five — not out of all six assignable
+  // values. A card reading "4 of 6" while two production departments sit empty would
+  // be misleading if Non-Production were silently making up the difference, so it is
+  // counted and labelled on its own instead.
   const deptCount=PRODUCTION_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length;
   const nonProd=active.filter(e=>e.department===NON_PRODUCTION_DEPARTMENT).length;
   // Non-Production is assigned, so it is not in this number.
@@ -2036,7 +2036,7 @@ function closeBackfill(){state.backfill=null;render();}
 // mapped onto the taxonomy and a confident-looking wrong pre-fill is worse than a
 // blank. Non-Production is never suggested from anything at all: not
 // from dept 'SG&A', not from salaried status, not from wage, not from a job title.
-// It is set by hand, exactly like the other four.
+// It is set by hand, exactly like the other five.
 const LEGACY_DEPT_RENAMES=[['Filing Room','Saw Filing']];
 const LEGACY_DEPT_SUGGESTION_TABLE=LEGACY_DEPT_RENAMES.concat(PRODUCTION_DEPARTMENTS.map(d=>[d,d]));
 // Null-prototype so a legacy value like 'constructor' cannot match Object.prototype.
@@ -2102,7 +2102,7 @@ function backfillDupes(){
 // department, and whether it gets a suggestion. Nothing here is hardcoded — it is
 // computed from the back-fill rows, which are a projection of state.employees, so it
 // shrinks live as the operator works and it tells the truth about whatever legacy
-// values the roster actually contains rather than the four that were first reported.
+// values the roster actually contains rather than the handful first reported.
 function legacyDeptBreakdown(rows){
   const order=[],by=Object.create(null);
   (rows||[]).filter(r=>r&&r.status==='Active').forEach(r=>{
@@ -2144,7 +2144,7 @@ function legacyBreakdownHtml(){
       <div style="padding:6px 10px;font-size:11px;color:var(--textDim);border-bottom:1px solid var(--border);line-height:1.5">
         Of the <strong>${tot.unassigned}</strong> active employee${tot.unassigned===1?'':'s'} still unassigned,
         <strong style="color:#6b5200">${sugUnassigned}</strong> ${sugUnassigned===1?'sits':'sit'} on a legacy value with a same-name or rename suggestion — accept those in bulk —
-        and <strong style="color:var(--brick)">${handUnassigned}</strong> need a decision per person.
+        and <strong style="color:var(--brick)">${handUnassigned}</strong> ${handUnassigned===1?'needs':'need'} a decision per person.
       </div>
       <table style="font-size:12px">
         <tbody>
