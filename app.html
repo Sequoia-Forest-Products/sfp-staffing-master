@@ -263,11 +263,31 @@ function isSalaried(emp){return String((emp&&emp.wage)||'').trim().toLowerCase()
 // PAYROLL SHARED HELPERS
 // ============================================================
 
-// The one department taxonomy, used by both the roster and payroll reporting.
-// The legacy employees.dept column (Sawmill / Filing Room / Log Yard / SG&A) is
-// retired: nothing maps one onto the other, so department is assigned by hand per
-// employee and dept is read for reference only until it is dropped.
-const PAYROLL_DEPARTMENTS=['Maintenance','Saw Filing','Shipping','Production'];
+// The department taxonomy, used by both the roster and payroll reporting. The
+// legacy employees.dept column (Sawmill / Filing Room / Log Yard / SG&A) is retired;
+// department is assigned by hand per employee and dept is read for reference only
+// until it is dropped.
+//
+// TWO lists, deliberately different sizes — do not "fix" them into one:
+//   PRODUCTION_DEPARTMENTS — the five production cost centres. This is the list to
+//     count and compare against ("N of 5 departments staffed") and the source of the
+//     identical-name legacy suggestions, both of which are about production only.
+//   PAYROLL_DEPARTMENTS — what a person can be ASSIGNED to: those five plus
+//     Non-Production, the home for SG&A / office / salaried staff who belong to no
+//     production department. Without that value those ~dozen people could only be
+//     left blank, and blank is indistinguishable from "nobody has got to this row
+//     yet" — so the back-fill's "still need a department" count could never honestly
+//     reach zero and the legacy dept column could never be dropped.
+// Rule of thumb: assign from PAYROLL_DEPARTMENTS, count against PRODUCTION_DEPARTMENTS.
+const PRODUCTION_DEPARTMENTS=['Maintenance','Saw Filing','Shipping','Production','Log Yard'];
+const NON_PRODUCTION_DEPARTMENT='Non-Production';
+const PAYROLL_DEPARTMENTS=PRODUCTION_DEPARTMENTS.concat([NON_PRODUCTION_DEPARTMENT]);
+
+// Non-Production is an assignment like any other, so a row carrying it is DONE and
+// must never be counted as still needing a department — that is the entire point of
+// having the value at all. Every "is this row complete?" test goes through here so
+// the screens cannot drift apart on what "unassigned" means.
+function hasDepartment(v){return !!String(v==null?'':v).trim();}
 const DAY_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -400,7 +420,7 @@ function render(){
 function getFiltered(){
   let list = state.employees.filter(e=>
     (state.filterStatus==='all'||e.status===state.filterStatus)&&
-    (state.filterDept==='all'||(state.filterDept==='__none__'?!e.department:e.department===state.filterDept))&&
+    (state.filterDept==='all'||(state.filterDept==='__none__'?!hasDepartment(e.department):e.department===state.filterDept))&&
     (!state.filterName||e.name.toLowerCase().includes(state.filterName.toLowerCase()))
   );
   const col = state.sortCol || 'name';
@@ -421,14 +441,20 @@ function renderEmployees(){
   const active=state.employees.filter(e=>e.status==='Active');
   const en=active.filter(e=>e.language==='English').length;
   const es=active.filter(e=>e.language==='Spanish').length;
-  const deptCount=[...new Set(state.employees.map(e=>e.department))].filter(Boolean).length;
-  const noDept=active.filter(e=>!e.department).length;
+  // Staffed PRODUCTION departments, out of the five — not out of all six assignable
+  // values. A card reading "4 of 6" while two production departments sit empty would
+  // be misleading if Non-Production were silently making up the difference, so it is
+  // counted and labelled on its own instead.
+  const deptCount=PRODUCTION_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length;
+  const nonProd=active.filter(e=>e.department===NON_PRODUCTION_DEPARTMENT).length;
+  // Non-Production is assigned, so it is not in this number.
+  const noDept=active.filter(e=>!hasDepartment(e.department)).length;
   const filtered=getFiltered();
   return `
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${active.length}</div><div class="stat-sub">of ${state.employees.length} total</div></div>
       <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${en}</div><div class="stat-sub">${es} Spanish</div></div>
-      <div class="stat-card"><div class="stat-label">Departments</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${PAYROLL_DEPARTMENTS.length} · ${noDept} active unassigned</div></div>
+      <div class="stat-card"><div class="stat-label">Departments staffed</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${PRODUCTION_DEPARTMENTS.length} production · ${nonProd} active in ${NON_PRODUCTION_DEPARTMENT} · ${noDept} active unassigned</div></div>
       <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${state.employees.length-active.length}</div><div class="stat-sub">on roster</div></div>
     </div>
     <div class="section-head">
@@ -441,6 +467,8 @@ function renderEmployees(){
     </div>
     <div class="search-row">
       <input type="text" id="empSearch" placeholder="Search by name…" value="${state.filterName}" oninput="state.filterName=this.value;renderEmployeeList()">
+      <!-- The assignable set, so Non-Production is filterable: it is a real assignment
+           people will want to pull up, and it is NOT the same thing as unassigned. -->
       <select onchange="state.filterDept=this.value;renderEmployeeList()">
         <option value="all" ${state.filterDept==='all'?'selected':''}>All departments</option>
         ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${state.filterDept===d?'selected':''}>${d}</option>`).join('')}
@@ -749,7 +777,7 @@ function renderModal(){
             <option value="" ${e.department?'':'selected'}>— not set —</option>
             ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${d}" ${e.department===d?'selected':''}>${d}</option>`).join('')}
           </select></div>
-          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. Department is never filled in automatically — set it here, or in bulk on the back-fill screen.</div></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. Department is never filled in automatically — set it here, or in bulk on the back-fill screen. Office, admin and other SG&amp;A staff belong in ${NON_PRODUCTION_DEPARTMENT}: it is a real assignment, not a blank, and it is never suggested for you.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
           <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>
@@ -1994,15 +2022,33 @@ function openBackfill(){
 
 function closeBackfill(){state.backfill=null;render();}
 
-// Filing Room -> Saw Filing is the one legacy value with a defensible rename, so
-// it is offered as a SUGGESTION only: the row's department stays blank until the
-// operator accepts it, which means an untouched suggested row saves nothing.
-// Nothing is suggested for Sawmill / Log Yard / SG&A — those never mapped onto the
-// four-value taxonomy and a confident-looking wrong pre-fill is worse than a blank.
-const LEGACY_DEPT_SUGGESTIONS={'filing room':'Saw Filing'};
+// Everything the screen suggests, driven off one table. Two kinds of entry, and
+// both are SUGGESTIONS only: the row's department stays blank until the operator
+// accepts it, so an untouched suggested row saves nothing.
+//   RENAMES — a legacy value whose name changed but whose meaning did not.
+//   Identical names — a legacy value spelled exactly like one of the production
+//     departments (live data has at least Maintenance, Shipping and Log Yard).
+//     DERIVED from PRODUCTION_DEPARTMENTS, never written out as pairs, because that
+//     is what makes them safe and what keeps them correct: Log Yard became a real
+//     production department and picked up its suggestion here with no edit to this
+//     table at all. There is no inference in Maintenance -> Maintenance.
+// NOTHING is suggested for Sawmill / SG&A or any other legacy value — those never
+// mapped onto the taxonomy and a confident-looking wrong pre-fill is worse than a
+// blank. Non-Production is never suggested from anything at all: not
+// from dept 'SG&A', not from salaried status, not from wage, not from a job title.
+// It is set by hand, exactly like the other five.
+const LEGACY_DEPT_RENAMES=[['Filing Room','Saw Filing']];
+const LEGACY_DEPT_SUGGESTION_TABLE=LEGACY_DEPT_RENAMES.concat(PRODUCTION_DEPARTMENTS.map(d=>[d,d]));
+// Null-prototype so a legacy value like 'constructor' cannot match Object.prototype.
+const LEGACY_DEPT_SUGGESTIONS=LEGACY_DEPT_SUGGESTION_TABLE.reduce((m,pair)=>{
+  const k=String(pair[0]).trim().toLowerCase();
+  if(!m[k]) m[k]=pair[1];
+  return m;
+},Object.create(null));
+function legacySuggestionFor(dept){return LEGACY_DEPT_SUGGESTIONS[String(dept==null?'':dept).trim().toLowerCase()]||'';}
 function suggestedDept(r){
-  if(!r||r.department||r.sugDismissed) return '';
-  return LEGACY_DEPT_SUGGESTIONS[String(r.dept||'').trim().toLowerCase()]||'';
+  if(!r||hasDepartment(r.department)||r.sugDismissed) return '';
+  return legacySuggestionFor(r.dept);
 }
 
 function acceptSuggestion(idx){
@@ -2027,10 +2073,12 @@ function backfillCounts(){
   return {
     total:rows.length,
     activeTotal:act.length,
-    activeNoDept:act.filter(r=>!r.department).length,
+    // Non-Production counts as assigned, so a row set to it is not in either of
+    // these — the gate line below can and should reach zero with office staff on it.
+    activeNoDept:act.filter(r=>!hasDepartment(r.department)).length,
     suggested:rows.filter(r=>suggestedDept(r)).length,
     noNum:rows.filter(r=>!String(r.empNum).trim()).length,
-    noDept:rows.filter(r=>!r.department).length,
+    noDept:rows.filter(r=>!hasDepartment(r.department)).length,
     changed:rows.filter(r=>normEmpNum(r.empNum)!==r.origNum||r.department!==r.origDept).length
   };
 }
@@ -2049,6 +2097,76 @@ function backfillDupes(){
   return dupes;
 }
 
+// Where the manual work actually is. For every distinct legacy dept value carried
+// by an ACTIVE employee: how many people carry it, how many of those still have no
+// department, and whether it gets a suggestion. Nothing here is hardcoded — it is
+// computed from the back-fill rows, which are a projection of state.employees, so it
+// shrinks live as the operator works and it tells the truth about whatever legacy
+// values the roster actually contains rather than the handful first reported.
+function legacyDeptBreakdown(rows){
+  const order=[],by=Object.create(null);
+  (rows||[]).filter(r=>r&&r.status==='Active').forEach(r=>{
+    const raw=String(r.dept==null?'':r.dept).trim();
+    const key=raw.toLowerCase();
+    if(!by[key]){by[key]={label:raw,blank:!raw,total:0,unassigned:0,suggestion:raw?legacySuggestionFor(raw):''};order.push(key);}
+    by[key].total++;
+    if(!hasDepartment(r.department)) by[key].unassigned++;
+  });
+  // Most outstanding work first — that is the question the operator is asking.
+  return order.map(k=>by[k]).sort((a,b)=>(b.unassigned-a.unassigned)||(b.total-a.total)||String(a.label).localeCompare(String(b.label)));
+}
+
+function legacyBreakdownHtml(){
+  const items=legacyDeptBreakdown(state.backfill);
+  if(!items.length) return '';
+  const tot=items.reduce((a,i)=>({total:a.total+i.total,unassigned:a.unassigned+i.unassigned}),{total:0,unassigned:0});
+  // The split that decides how much of this is actually work: rows whose legacy dept
+  // carries a same-name/rename suggestion clear in a couple of clicks, rows whose
+  // legacy dept has none (Sawmill, SG&A, blank) need a decision per person.
+  const withSug=items.filter(i=>i.suggestion), noSug=items.filter(i=>!i.suggestion);
+  const sugUnassigned=withSug.reduce((n,i)=>n+i.unassigned,0);
+  const handUnassigned=noSug.reduce((n,i)=>n+i.unassigned,0);
+  const cell='padding:5px 10px;border-bottom:1px solid var(--border)';
+  const num=cell+';text-align:right;font-variant-numeric:tabular-nums';
+  const hdr='font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700';
+  const group=(label,note,bg)=>`<tr><td colspan="4" style="padding:5px 10px;border-bottom:1px solid var(--border);background:${bg};font-size:11px;font-weight:700">${label} <span style="font-weight:400;color:var(--muted)">${note}</span></td></tr>`;
+  const body=it=>`<tr>
+            <td style="${cell};font-weight:${it.blank?'400':'600'}${it.blank?';color:var(--muted)':''}">${it.blank?'— none on file —':esc(it.label)}</td>
+            <td style="${num}">${it.total}</td>
+            <td style="${num};font-weight:700;color:${it.unassigned?'var(--brick)':'#2a7a47'}">${it.unassigned}</td>
+            <td style="${cell};font-size:11px">${it.suggestion
+              ?`<span style="background:#fff8e6;border:1px solid #e3c789;border-radius:3px;padding:1px 6px;color:#6b5200">&rarr; ${esc(it.suggestion)}</span>`
+              :'<span style="color:var(--muted)">none — decide per person</span>'}</td>
+          </tr>`;
+  return `<div style="margin-top:10px;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:var(--surface)">
+      <div style="padding:7px 10px;background:var(--surface2);font-size:11px;font-weight:700">Legacy roster dept — where the remaining work is
+        <span style="font-weight:400;color:var(--muted)">· active employees only · reference for assigning, never applied for you</span></div>
+      <div style="padding:6px 10px;font-size:11px;color:var(--textDim);border-bottom:1px solid var(--border);line-height:1.5">
+        Of the <strong>${tot.unassigned}</strong> active employee${tot.unassigned===1?'':'s'} still unassigned,
+        <strong style="color:#6b5200">${sugUnassigned}</strong> ${sugUnassigned===1?'sits':'sit'} on a legacy value with a same-name or rename suggestion — accept those in bulk —
+        and <strong style="color:var(--brick)">${handUnassigned}</strong> ${handUnassigned===1?'needs':'need'} a decision per person.
+      </div>
+      <table style="font-size:12px">
+        <tbody>
+          <tr>
+            <td style="${cell};${hdr}">Roster dept</td>
+            <td style="${num};${hdr}">Active</td>
+            <td style="${num};${hdr}">Still unassigned</td>
+            <td style="${cell};${hdr}">Suggestion</td>
+          </tr>
+          ${withSug.length?group('Has a suggestion','· same name or a rename — no inference in it','#fff8e6')+withSug.map(body).join(''):''}
+          ${noSug.length?group('No suggestion','· no defensible mapping — assign by hand','var(--surface2)')+noSug.map(body).join(''):''}
+          <tr>
+            <td style="${cell};border-bottom:none;font-weight:700">All active</td>
+            <td style="${num};border-bottom:none;font-weight:700">${tot.total}</td>
+            <td style="${num};border-bottom:none;font-weight:700;color:${tot.unassigned?'var(--brick)':'#2a7a47'}">${tot.unassigned}</td>
+            <td style="${cell};border-bottom:none"></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
 function backfillMetaHtml(){
   const c=backfillCounts();
   const dupes=backfillDupes();
@@ -2059,7 +2177,9 @@ function backfillMetaHtml(){
        <div style="font-size:11px;color:var(--muted);margin-bottom:10px">The legacy roster dept column is ready to be dropped.</div>`;
   const suggestBlock=c.suggested?`<div style="margin-top:10px;background:#fff8e6;border:1px solid #e3c789;border-radius:4px;padding:8px 10px;font-size:11px;color:#6b5200;line-height:1.5">
       <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-        <span><strong>${c.suggested} suggested value${c.suggested===1?'':'s'}</strong> — a guess from the legacy roster dept, shown in amber. Nothing is saved unless you accept it. Only Filing Room → Saw Filing is suggested; Sawmill, Log Yard and SG&amp;A have no defensible mapping, so those are left blank on purpose.</span>
+        <span><strong>${c.suggested} suggested value${c.suggested===1?'':'s'}</strong> — read off the legacy roster dept, shown in amber. Nothing is saved unless you accept it.
+          <strong>Suggested:</strong> ${LEGACY_DEPT_RENAMES.map(pair=>esc(pair[0])+' → '+esc(pair[1])).join(', ')} (a rename), and any legacy dept already spelled exactly like a production department (${PRODUCTION_DEPARTMENTS.map(esc).join(', ')}) — same department, same name, no guess in it.
+          <strong>Never suggested:</strong> Sawmill, SG&amp;A or any other legacy value — there is no defensible mapping, so they stay blank on purpose. ${esc(NON_PRODUCTION_DEPARTMENT)} is never suggested from anything either — not from dept, wage, salaried status or job title. It is only ever set by hand.</span>
         <button class="btn btn-outline btn-sm" style="white-space:nowrap" onclick="acceptAllSuggestions()">Accept all suggestions</button>
       </div>
     </div>`:'';
@@ -2069,6 +2189,7 @@ function backfillMetaHtml(){
       <span style="color:var(--muted)">${c.changed} row${c.changed===1?'':'s'} changed</span>
     </div>
     ${suggestBlock}
+    ${legacyBreakdownHtml()}
     ${dupes.length?`<div style="margin-top:8px;background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 10px;font-size:12px;color:#7a1f1f"><strong>Duplicate employee #:</strong> ${dupes.map(esc).join(', ')} — the database rejects the second one, so fix these before saving.</div>`:''}`;
 }
 
@@ -2112,7 +2233,7 @@ function renderBackfill(){
         <div class="modal-body" style="padding:20px 24px">
           <div style="font-size:12px;color:var(--textDim);line-height:1.55;margin-bottom:12px">
             Employee # is the payroll system id that the daily hours file arrives with, zero-padded to four characters.
-            Department is the one department field on the roster. The Roster dept column below is the retired legacy taxonomy, kept visible here only as a reference while you assign — nothing is filled in automatically from it, from wage, or from the job title. Set it explicitly for every employee.
+            Department is the one department field on the roster. The Roster dept column below is the retired legacy taxonomy, kept visible here only as a reference while you assign — nothing is filled in automatically from it, from wage, or from the job title. Set it explicitly for every employee — office, admin and other SG&amp;A staff go to ${NON_PRODUCTION_DEPARTMENT}, which counts as assigned and is what lets the count below reach zero honestly.
             Do this before importing payroll: <code>daily_hours</code> snapshots the department at import, so rows imported first land unassigned and have to be re-stamped.
           </div>
           <div id="bfMeta" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:12px">${backfillMetaHtml()}</div>

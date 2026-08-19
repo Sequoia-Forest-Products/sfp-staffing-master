@@ -49,6 +49,7 @@ sfp-staffing-master/
 ├── package.json
 ├── .env.example                # Environment variable template
 ├── SCHEMA_DAILY_HOURS.sql      # daily_hours + processed_emails + employee payroll fields
+├── SCHEMA_DEPARTMENT_VALUES.sql # Sets the six allowed department values on the CHECK
 ├── SCHEMA_DROP_DEPT.sql        # Step 5 of the department consolidation — gated, not yet run
 ├── SCHEMA_CHANGES.sql          # Superseded — the original weekly_hours OT report schema
 ├── SCHEMA_BIRTHDAY.sql         # Birthday data audit queries
@@ -127,7 +128,10 @@ sfp-staffing-master/
 column destroys the padding, which is why an older install's `INTEGER` column is converted by
 `SCHEMA_DAILY_HOURS.sql`. Every comparison normalises both sides with `lpad(...,4,'0')`.
 
-`department` (`Maintenance | Saw Filing | Shipping | Production`) is the one department field.
+`department` (`Maintenance | Saw Filing | Shipping | Production | Log Yard | Non-Production`) is
+the one department field. The first five are production departments; `Non-Production` is where
+SG&A and office staff go, and counts as assigned — without it the back-fill could never be finished, and
+finishing it is what gates retiring `dept`. Nobody is placed there automatically.
 Back-fill it on the Employees tab before importing payroll data — `daily_hours` snapshots the
 department at import time.
 

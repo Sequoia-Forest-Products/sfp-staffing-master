@@ -35,11 +35,33 @@ const EXPECTED_HEADERS = [
   'Pay Rate', 'Regular', 'OT', 'Total Hours', 'Total Earnings'
 ];
 
-// The four reporting departments, plus the bucket that null lands in. The
-// bucket is always shown: hiding unassigned hours is how a report quietly
-// stops adding up.
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production'];
+// The PRODUCTION reporting departments, plus the bucket that null lands
+// in. The bucket is always shown: hiding unassigned hours is how a report
+// quietly stops adding up.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
 const UNASSIGNED = 'Unassigned';
+
+// The one value employees.department accepts that is not a production
+// department: SG&A / office / salaried staff, who have no home among the
+// production departments. The back-fill screen
+// requires a department for every active employee, so without an explicit value
+// for these people the only option is blank — and blank is indistinguishable
+// from "nobody has got to this row yet", which is exactly what that screen's
+// counter is trying to drive to zero.
+//
+// It is NOT in DEPARTMENTS, and the two lists differing is the point rather
+// than an inconsistency to tidy up:
+//   DEPARTMENTS             the production breakdown this import reports over
+//   ASSIGNABLE_DEPARTMENTS  every value employees.department may legally hold
+//
+// Department is snapshotted from employees.department at import, so a
+// Non-Production employee with hours imports exactly like anybody else — not
+// rejected, not blanked, no flag. Its only effect here is the bucket's
+// position in the breakdown. Non-Production staff are salaried and their
+// all-zero rows are dropped above, so this bucket should normally be empty;
+// ot-report-lib.js is where a non-empty one is surfaced as a finding.
+const NON_PRODUCTION = 'Non-Production';
+const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -538,10 +560,18 @@ function buildImport({
 
   for (const key of Object.keys(totals)) totals[key] = round2(totals[key]);
 
-  // Real departments in their reporting order, then anything unexpected, then
-  // Unassigned last — present even when empty rows put nothing in it, because
-  // "Unassigned: 0" and "no Unassigned row" mean different things.
-  const order = [...DEPARTMENTS, ...[...buckets.keys()].filter(k => !DEPARTMENTS.includes(k) && k !== UNASSIGNED).sort(), UNASSIGNED];
+  // Production departments in their reporting order, then Non-Production
+  // (assignable, but not one of them), then anything unexpected, then Unassigned
+  // last — present even when empty rows put nothing in it, because
+  // "Unassigned: 0" and "no Unassigned row" mean different things. A bucket
+  // with no rows is skipped below, so Non-Production only appears when the file
+  // actually carried somebody sitting in it.
+  const order = [
+    ...DEPARTMENTS,
+    NON_PRODUCTION,
+    ...[...buckets.keys()].filter(k => !ASSIGNABLE_DEPARTMENTS.includes(k) && k !== UNASSIGNED).sort(),
+    UNASSIGNED
+  ];
   const departments = [];
   for (const key of order) {
     const bucket = buckets.get(key);
@@ -601,8 +631,12 @@ module.exports = {
   EXPECTED_SHEET,
   EXPECTED_HEADERS,
   // Shared with payroll-db.js / payroll-import.js so the department bucket and
-  // the timezone default have exactly one definition.
+  // the timezone default have exactly one definition. DEPARTMENTS is the
+  // production breakdown; ASSIGNABLE_DEPARTMENTS is every value a person may be
+  // assigned. Anything validating employees.department wants the latter.
   DEPARTMENTS,
+  NON_PRODUCTION,
+  ASSIGNABLE_DEPARTMENTS,
   UNASSIGNED,
   DEFAULT_TIME_ZONE
 };

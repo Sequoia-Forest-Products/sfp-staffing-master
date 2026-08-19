@@ -54,12 +54,29 @@ Employees tab -> **Back-fill payroll fields**. One screen, both fields, every em
   (`0319`, `0063`, `9290`). Enter it exactly as payroll shows it. Matching normalises
   both sides with `lpad(...,4,'0')`, so an unpadded `319` still matches `0319` — but
   store the padded form.
-- `department` is one of **Maintenance, Saw Filing, Shipping, Production**, and it is
-  now the *only* department field. The older `dept` (Sawmill / Filing Room / Log Yard /
+- `department` is one of **Maintenance, Saw Filing, Shipping, Production, Log Yard** — or
+  **Non-Production** for SG&A and office staff — and it is now the *only* department field. The older `dept` (Sawmill / Filing Room / Log Yard /
   SG&A / ...) is retired: nothing reads it functionally and nothing writes to it, and
   it is dropped by `SCHEMA_DROP_DEPT.sql` once this back-fill is verified complete.
   Until then it stays visible on the back-fill screen as reference, because it is what
   you read while deciding.
+
+  **Non-Production is a real answer, not a skipped row.** The production
+  departments have no home for salaried office staff, and the back-fill's
+  "still needs a department" count is what gates retiring `dept` — so without a
+  fifth value that count could never honestly reach zero. Leaving those people
+  blank does not work either: the screen cannot tell a deliberate blank from a
+  row nobody has reached yet. Non-Production records the decision.
+
+  Nobody is *put* there automatically — not from `dept = 'SG&A'`, not from
+  salaried status, not from wage or job title. Same rule as everything else on
+  this screen.
+
+  These employees never reach the OT report: salaried rows are dropped at import,
+  before department is consulted, so the bucket is normally empty. If it ever
+  carries hours, somebody is hourly *and* non-production, and the report shows
+  that as a finding rather than folding it into another department. A bucket that
+  should be empty and isn't is worth seeing.
 
   **Nothing maps one onto the other.** `Maintenance` and `Shipping` do not exist in the
   old value set, so the people now in them are currently tagged Sawmill or Log Yard and

@@ -16,7 +16,10 @@ const {
   buildImport,
   validateWorkDate,
   EXPECTED_SHEET,
-  EXPECTED_HEADERS
+  EXPECTED_HEADERS,
+  DEPARTMENTS,
+  NON_PRODUCTION,
+  ASSIGNABLE_DEPARTMENTS
 } = require('../netlify/functions/payroll-lib');
 
 const { buildXlsx, buildPayrollXlsx, PAYROLL_HEADERS } = require('./helpers/make-xlsx');
@@ -397,6 +400,73 @@ test('the department snapshot comes from the roster, and gaps are visible rather
   const production = result.departments.find(d => d.department === 'Production');
   assert.strictEqual(production.employees, 1);
   assert.strictEqual(production.totalEarnings, 245);
+});
+
+test('Non-Production is assignable but is not one of the production departments', () => {
+  // Two lists, two questions. DEPARTMENTS is what the mill is reported over —
+  // Log Yard is an ordinary member of it. ASSIGNABLE_DEPARTMENTS is every value
+  // employees.department may hold, which is what the back-fill screen validates
+  // against, and it is the production departments plus Non-Production.
+  assert.strictEqual(NON_PRODUCTION, 'Non-Production');
+  assert.deepStrictEqual(DEPARTMENTS,
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard']);
+  assert.deepStrictEqual(ASSIGNABLE_DEPARTMENTS,
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Non-Production']);
+});
+
+test('a Non-Production employee imports normally and sorts after the production departments', () => {
+  // Department is snapshotted straight from employees.department, so this row
+  // is imported exactly like anybody else's: not rejected, not blanked, no flag.
+  // Its only effect is where the bucket sits in the breakdown. Owen's 'Kiln' is
+  // a legacy value that is not assignable at all, and sorts after Non-Production
+  // despite coming first alphabetically.
+  const result = importFrom([
+    row('0319', 'Acosta Ruiz',     'Miguel', 'No', 24.5, 10, 0,   10, 245),    // Production
+    row('0410', 'Ledger',          'Nora',   'No', 31,   10, 1,   11, 356.5),  // Non-Production
+    row('0412', 'Yardley',         'Lena',   'No', 26,   9,  0,   9,  234),    // Log Yard
+    row('0411', 'Kane',            'Owen',   'No', 20,   10, 0,   10, 200),    // Kiln — legacy
+    row('0884', 'Salazar De Leon', 'Rosa',   'No', 22,   10, 0,   10, 220)     // roster, no department
+  ], {
+    employees: ROSTER.concat([
+      { id: 'e7', name: 'Nora Ledger',  employee_number: '0410', department: 'Non-Production', wage: '31.00', status: 'Active' },
+      { id: 'e8', name: 'Owen Kane',    employee_number: '0411', department: 'Kiln',           wage: '20.00', status: 'Active' },
+      { id: 'e9', name: 'Lena Yardley', employee_number: '0412', department: 'Log Yard',       wage: '26.00', status: 'Active' }
+    ])
+  });
+
+  const nora = result.rows.find(r => r.employee_number === '0410');
+  assert.strictEqual(nora.department, 'Non-Production');
+  assert.deepStrictEqual(nora.flags, []);
+  assert.strictEqual(nora.ot_dollars, 46.5);          // 356.50 - 10 x 31.00
+  assert.deepStrictEqual(result.unmatched, []);
+  assert.deepStrictEqual(result.missingDepartment,
+    [{ employeeNumber: '0884', name: 'Rosa Salazar De Leon' }]);
+
+  // Log Yard is an ordinary production department and keeps its canonical
+  // position; Non-Production follows the production departments; the legacy
+  // 'Kiln' comes after both despite sorting first alphabetically.
+  assert.deepStrictEqual(result.departments.map(d => d.department),
+    ['Production', 'Log Yard', 'Non-Production', 'Kiln', 'Unassigned']);
+  const logYard = result.departments.find(d => d.department === 'Log Yard');
+  assert.strictEqual(logYard.employees, 1);
+  assert.strictEqual(logYard.totalHours, 9);
+  assert.strictEqual(logYard.totalEarnings, 234);
+  assert.deepStrictEqual(result.rows.find(r => r.employee_number === '0412').flags, []);
+
+  const np = result.departments.find(d => d.department === 'Non-Production');
+  assert.strictEqual(np.employees, 1);
+  assert.strictEqual(np.regularHours, 10);
+  assert.strictEqual(np.otHours, 1);
+  assert.strictEqual(np.totalHours, 11);
+  assert.strictEqual(np.totalEarnings, 356.5);
+  assert.strictEqual(np.otDollars, 46.5);
+
+  // Nothing was folded into a production department, and the breakdown still ties.
+  assert.strictEqual(result.departments.find(d => d.department === 'Production').totalHours, 10);
+  const sum = key => round2(result.departments.reduce((a, d) => a + d[key], 0));
+  assert.strictEqual(sum('totalHours'), result.totals.totalHours);
+  assert.strictEqual(sum('totalEarnings'), result.totals.totalEarnings);
+  assert.strictEqual(sum('otDollars'), result.totals.otDollars);
 });
 
 test('the department breakdown adds up to the totals', () => {
