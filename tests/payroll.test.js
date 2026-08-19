@@ -979,3 +979,129 @@ test('the id filter is chunked small enough to leave the proxy real headroom', a
   assert.ok(longest < 4096,
     `an id filter must stay well inside an 8 KB header buffer, measured ${longest}`);
 });
+
+// ------------------------------------------------------------
+// request() options and the week index
+// ------------------------------------------------------------
+//
+// The report's week index is the one read that has to prove it saw everything,
+// so payroll-db is what emits the projection, the ordering, the page and the
+// count preference — these check the URL and headers PostgREST would receive,
+// and what a Content-Range is read back as.
+
+// Like stubFetch above, but it also records the request headers and answers with
+// a Content-Range, which is where PostgREST puts an exact count.
+function stubFetchWithHeaders(t, reply) {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    calls.push({ url: String(url), method: opts.method || 'GET', headers: opts.headers || {} });
+    const { rows = [], contentRange } = reply(calls.length) || {};
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(rows),
+      headers: contentRange === undefined
+        ? undefined   // a proxy that stripped the header, or a response with none
+        : { get: name => (String(name).toLowerCase() === 'content-range' ? contentRange : null) }
+    };
+  };
+  t.after(() => { globalThis.fetch = original; });
+  return calls;
+}
+
+test('request() turns select/order/limit/offset into a query string and asks for the count', async (t) => {
+  const calls = stubFetchWithHeaders(t, () => ({ rows: [{ work_date: '2026-08-17' }], contentRange: '0-0/1' }));
+
+  const page = await payrollDb.request('GET', 'daily_hours?work_date=gte.2026-08-01', {
+    select: 'work_date,total_hours',
+    order: 'work_date.desc',
+    offset: 10,
+    limit: 500,
+    count: 'exact'
+  });
+
+  assert.strictEqual(calls.length, 1);
+  assert.match(calls[0].url, /daily_hours\?work_date=gte\.2026-08-01&select=work_date,total_hours&order=work_date\.desc&offset=10&limit=500$/);
+  assert.strictEqual(calls[0].headers.Prefer, 'count=exact',
+    'a counted read asks for the count, not for a representation of a write');
+  assert.strictEqual(calls[0].headers.apikey, 'service-key');
+  assert.match(calls[0].headers.Authorization, /^Bearer /);
+
+  assert.deepStrictEqual(page.rows, [{ work_date: '2026-08-17' }]);
+  assert.strictEqual(page.contentRange, '0-0/1');
+  assert.strictEqual(page.total, 1);
+});
+
+test('request() without options is the plain call the other helpers make', async (t) => {
+  const calls = stubFetchWithHeaders(t, () => ({ rows: [] }));
+
+  const page = await payrollDb.request('GET', 'employees?select=id');
+
+  assert.match(calls[0].url, /employees\?select=id$/, 'no options, no extra query string');
+  assert.strictEqual(calls[0].headers.Prefer, 'return=representation',
+    'the default Prefer is untouched when no count is asked for');
+  assert.strictEqual(page.total, null, 'a response with no headers at all proves nothing');
+});
+
+test('a Prefer set by the caller survives, with the count appended', async (t) => {
+  const calls = stubFetchWithHeaders(t, () => ({ rows: [], contentRange: '*/*' }));
+
+  await payrollDb.request('POST', 'daily_hours?on_conflict=work_date,employee_number', {
+    body: [{ work_date: '2026-08-17' }],
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
+    count: 'exact'
+  });
+
+  assert.strictEqual(calls[0].headers.Prefer,
+    'resolution=merge-duplicates,return=representation,count=exact');
+});
+
+test('fetchDailyHoursIndex reads three columns, newest first, one counted page', async (t) => {
+  const calls = stubFetchWithHeaders(t, () => ({
+    rows: [{ work_date: '2026-08-17', total_hours: 10, total_earnings: 280 }],
+    contentRange: '0-9/17384'
+  }));
+
+  const page = await payrollDb.fetchDailyHoursIndex('2025-07-14', '2026-08-23', { offset: 0, limit: 5000 });
+
+  assert.strictEqual(calls.length, 1);
+  assert.match(calls[0].url, /select=work_date,total_hours,total_earnings/);
+  assert.ok(!/pay_rate|ot_dollars|employee_number/.test(calls[0].url),
+    'the index must not drag the payroll detail columns through the window scan');
+  // Descending, so a server-side row cap drops the OLDEST weeks, never the one
+  // the report is about to default to.
+  assert.match(calls[0].url, /order=work_date\.desc/);
+  assert.match(calls[0].url, /offset=0&limit=5000/);
+  assert.match(calls[0].url, /work_date=gte\.2025-07-14&work_date=lte\.2026-08-23/);
+  assert.strictEqual(calls[0].headers.Prefer, 'count=exact');
+
+  // "0-9/17384" is the shape a capped page has: ten rows in hand, 17,384 that
+  // exist. The count is what lets the caller tell those apart.
+  assert.strictEqual(page.total, 17384);
+  assert.strictEqual(page.rows.length, 1);
+});
+
+test('an unparseable or missing Content-Range reads as null, never as zero', async (t) => {
+  stubFetchWithHeaders(t, call => ({
+    rows: [],
+    // First call: PostgREST answered without computing a count. Second: a proxy
+    // dropped the header entirely.
+    contentRange: call === 1 ? '*/*' : undefined
+  }));
+
+  const starred = await payrollDb.fetchDailyHoursIndex('2026-08-01', '2026-08-07');
+  assert.strictEqual(starred.total, null, '"*" is "not counted", not "none"');
+
+  const stripped = await payrollDb.fetchDailyHoursIndex('2026-08-01', '2026-08-07');
+  assert.strictEqual(stripped.total, null, 'a missing header proves nothing either');
+  assert.strictEqual(stripped.contentRange, null);
+});
+
+test('fetchDailyHoursIndex defaults to a single full page', async (t) => {
+  const calls = stubFetchWithHeaders(t, () => ({ rows: [], contentRange: '*/0' }));
+
+  await payrollDb.fetchDailyHoursIndex('2026-08-01', '2026-08-07');
+
+  assert.match(calls[0].url, /offset=0&limit=5000/);
+});

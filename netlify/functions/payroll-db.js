@@ -36,10 +36,64 @@ function hdrs(extra = {}) {
   };
 }
 
-async function request(method, path, { body, headers } = {}) {
+// PostgREST's query-string vocabulary, spelled as options rather than left for
+// every caller to concatenate by hand. select/order are PostgREST syntax — the
+// commas in a column list and the dots in `work_date.desc` are grammar, not
+// data, so they are appended literally; every value that IS data goes through
+// encode() at the call site. Only this module supplies them.
+function withQuery(path, { select, order, limit, offset } = {}) {
+  // Always emitted in the same order — select, order, offset, limit — so the
+  // URL a given call produces is stable enough to assert on. offset and limit
+  // are floored to integers because PostgREST rejects "limit=5e3", which is
+  // what String(5000) is one careless multiplication away from.
+  const parts = [];
+  if (select) parts.push(`select=${select}`);
+  if (order) parts.push(`order=${order}`);
+  if (offset !== undefined && offset !== null) {
+    parts.push(`offset=${Math.max(0, Math.floor(Number(offset)) || 0)}`);
+  }
+  if (limit !== undefined && limit !== null) {
+    parts.push(`limit=${Math.max(1, Math.floor(Number(limit)) || 1)}`);
+  }
+  if (!parts.length) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${parts.join('&')}`;
+}
+
+// "0-4999/17384" -> 17384. A "*" total (the count was not computed) and a
+// missing header both read as null, which means "not proven", never "zero" —
+// the caller has to be able to tell "there are none" from "nobody said".
+function parseContentRangeTotal(header) {
+  const m = /\/(\d+|\*)\s*$/.exec(String(header == null ? '' : header));
+  if (!m || m[1] === '*') return null;
+  return Number(m[1]);
+}
+
+// One PostgREST call. opts: { body, headers, select, order, limit, offset, count }.
+//
+// It resolves to { rows, contentRange, total } rather than to the rows alone.
+// A paged read cannot tell a complete page from a silently capped one without
+// seeing Content-Range, and a helper that returns only an array has already
+// thrown that away. Everything below that wants just the rows goes through
+// requestRows(), so no existing helper's return shape changes.
+async function request(method, path, opts = {}) {
+  const { body, count } = opts;
+  const headers = { ...(opts.headers || {}) };
+
+  // Prefer carries two unrelated things: what a write should hand back, and
+  // whether a read should be counted. A caller that sets it itself (the upserts,
+  // which need merge-duplicates) keeps what it set and gets the count appended;
+  // a plain counted read sends count=exact alone, replacing the return=
+  // representation default that means nothing on a GET.
+  if (count) {
+    const pref = `count=${count === true ? 'exact' : count}`;
+    headers.Prefer = headers.Prefer ? `${headers.Prefer},${pref}` : pref;
+  }
+
+  const url = withQuery(path, opts);
+
   let res;
   try {
-    res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    res = await fetch(`${SUPABASE_URL}/rest/v1/${url}`, {
       method,
       headers: hdrs(headers),
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
@@ -50,16 +104,31 @@ async function request(method, path, { body, headers } = {}) {
     // connection) on err.cause. Carry it into the message so the Netlify log
     // says what actually broke, and keep the original as the cause.
     const reason = err && err.cause && err.cause.message ? `: ${err.cause.message}` : '';
-    throw new Error(`${method} ${path} — ${err.message}${reason}`, { cause: err });
+    throw new Error(`${method} ${url} — ${err.message}${reason}`, { cause: err });
   }
   if (!res.ok) {
-    throw new Error(`${method} ${path} ${res.status}: ${await res.text()}`);
+    throw new Error(`${method} ${url} ${res.status}: ${await res.text()}`);
   }
+
+  // A proxy is free to strip Content-Range, and a stubbed fetch need not carry
+  // headers at all, so reading it is defensive and its absence reads as null.
+  const contentRange = res.headers && typeof res.headers.get === 'function'
+    ? res.headers.get('content-range')
+    : null;
+  const envelope = rows => ({ rows, contentRange, total: parseContentRangeTotal(contentRange) });
+
   // DELETE and PATCH still return representation, but a 204 has no body.
-  if (res.status === 204) return [];
+  if (res.status === 204) return envelope([]);
   const text = await res.text();
-  if (!text) return [];
-  return JSON.parse(text);
+  if (!text) return envelope([]);
+  return envelope(JSON.parse(text));
+}
+
+// The rows-only form every helper below is built on. Keeping it separate is what
+// lets request() grow a header-aware envelope without touching a dozen call
+// sites in payroll-import.js and payroll-email-lib.js.
+async function requestRows(method, path, opts) {
+  return (await request(method, path, opts)).rows;
 }
 
 const encode = v => encodeURIComponent(String(v));
@@ -74,6 +143,16 @@ const DAILY_COLUMNS = [
   'upload_batch_id', 'created_at'
 ].join(',');
 
+// The three columns a week index is built from. The 400-day window the OT
+// report scans covers ~17,000 rows at a full mill, and pulling all 23
+// daily_hours columns for every one of them just to list the weeks that have
+// data is most of a megabyte of payroll detail nobody reads.
+const DAILY_INDEX_COLUMNS = 'work_date,total_hours,total_earnings';
+
+// One page of the window scan. Big enough that a normal window is one request,
+// small enough to stay well inside any proxy's response limits.
+const DAILY_INDEX_PAGE_SIZE = 5000;
+
 // ============================================================
 // ROSTER
 // ============================================================
@@ -83,12 +162,12 @@ const DAILY_COLUMNS = [
 // The whole roster is returned, inactive people included: somebody terminated
 // last week still has hours on last week's file.
 function fetchEmployees() {
-  return request('GET',
+  return requestRows('GET',
     'employees?select=id,name,employee_number,department,wage,status&order=name.asc');
 }
 
 function fetchOvertime() {
-  return request('GET',
+  return requestRows('GET',
     'overtime?select=id,name,ot_type,hours,description&order=ot_type.asc,name.asc');
 }
 
@@ -98,7 +177,7 @@ function fetchOvertime() {
 
 // Inclusive on both ends.
 function fetchDailyHours(fromDate, toDate) {
-  return request('GET',
+  return requestRows('GET',
     `daily_hours?select=${DAILY_COLUMNS}` +
     `&work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}` +
     `&order=work_date.asc,employee_number.asc`);
@@ -115,15 +194,48 @@ function fetchDailyHoursForDate(workDate) {
   return fetchDailyHours(workDate, workDate);
 }
 
+// The narrow projection a week picker needs, one page at a time, with the exact
+// count so the caller can prove it saw everything.
+//
+// Two details here are load-bearing, not preference:
+//
+//   * `order=work_date.desc` decides which end survives if a project-level row
+//     cap does cut the result short. Ordered ascending — the way fetchDailyHours
+//     orders it — a cap silently drops the NEWEST rows, the current week
+//     disappears from the index, and a report defaults to a stale week while
+//     still answering ok. A missing old week is a smaller lie than that.
+//   * `count=exact` makes PostgREST report the true number of matching rows in
+//     Content-Range, so what arrived can be compared against what exists rather
+//     than trusted. `total` is null when the header is missing or unparseable,
+//     which means "not proven" — never "zero".
+//
+// Returns { rows, contentRange, total }; the caller does the paging, because
+// only the caller knows how many pages it is willing to walk.
+async function fetchDailyHoursIndex(fromDate, toDate, { offset = 0, limit = DAILY_INDEX_PAGE_SIZE } = {}) {
+  const page = await request('GET',
+    `daily_hours?work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}`,
+    {
+      select: DAILY_INDEX_COLUMNS,
+      order: 'work_date.desc',
+      offset,
+      limit,
+      count: 'exact'
+    });
+
+  // A select answers with an array; anything else is a proxy's error page that
+  // arrived with a 200, and it must not be spread into the index as rows.
+  return { ...page, rows: Array.isArray(page.rows) ? page.rows : [] };
+}
+
 function findRowsByFileHash(fileHash) {
   if (!fileHash) return Promise.resolve([]);
-  return request('GET',
+  return requestRows('GET',
     `daily_hours?select=${DAILY_COLUMNS}&file_hash=eq.${encode(fileHash)}` +
     `&order=work_date.asc,employee_number.asc`);
 }
 
 function fetchRowsByBatch(uploadBatchId) {
-  return request('GET',
+  return requestRows('GET',
     `daily_hours?select=${DAILY_COLUMNS}&upload_batch_id=eq.${encode(uploadBatchId)}` +
     `&order=work_date.asc,employee_number.asc`);
 }
@@ -138,7 +250,7 @@ async function upsertDailyHours(rows) {
   const written = [];
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const chunk = rows.slice(i, i + CHUNK_SIZE);
-    const result = await request('POST',
+    const result = await requestRows('POST',
       'daily_hours?on_conflict=work_date,employee_number',
       { body: chunk, headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' } });
     written.push(...result);
@@ -147,7 +259,7 @@ async function upsertDailyHours(rows) {
 }
 
 async function deleteDailyHoursForDate(workDate) {
-  const deleted = await request('DELETE', `daily_hours?work_date=eq.${encode(workDate)}`);
+  const deleted = await requestRows('DELETE', `daily_hours?work_date=eq.${encode(workDate)}`);
   return deleted.length;
 }
 
@@ -158,14 +270,14 @@ async function deleteDailyHoursForDate(workDate) {
 // delete-then-insert pair — two independent PostgREST calls with no transaction
 // around them — cannot promise.
 async function deleteOtherBatchesForDate(workDate, uploadBatchId) {
-  const deleted = await request('DELETE',
+  const deleted = await requestRows('DELETE',
     `daily_hours?work_date=eq.${encode(workDate)}` +
     `&upload_batch_id=neq.${encode(uploadBatchId)}`);
   return deleted.length;
 }
 
 async function deleteDailyHoursForBatch(uploadBatchId) {
-  const deleted = await request('DELETE',
+  const deleted = await requestRows('DELETE',
     `daily_hours?upload_batch_id=eq.${encode(uploadBatchId)}`);
   return deleted.length;
 }
@@ -174,7 +286,7 @@ async function deleteDailyHoursForBatch(uploadBatchId) {
 // because a date a human corrected is no longer an inferred one, and the
 // missed-delivery check must not treat it as machine-derived afterwards.
 async function updateBatchWorkDate(uploadBatchId, newWorkDate) {
-  return request('PATCH',
+  return requestRows('PATCH',
     `daily_hours?upload_batch_id=eq.${encode(uploadBatchId)}`,
     { body: { work_date: newWorkDate, date_source: 'manual' } });
 }
@@ -253,7 +365,7 @@ async function restampDepartments(fromDate, toDate) {
   for (const { department, flags, ids } of byTarget.values()) {
     for (let i = 0; i < ids.length; i += ID_FILTER_CHUNK) {
       const slice = ids.slice(i, i + ID_FILTER_CHUNK);
-      const result = await request('PATCH',
+      const result = await requestRows('PATCH',
         `daily_hours?id=in.(${slice.map(encode).join(',')})`,
         { body: { department, flags } });
       updated += result.length;
@@ -271,13 +383,13 @@ async function restampDepartments(fromDate, toDate) {
 // human inbox and the ingester must not flag, move or delete anything in it.
 
 async function getProcessedEmail(messageId) {
-  const rows = await request('GET',
+  const rows = await requestRows('GET',
     `processed_emails?select=*&message_id=eq.${encode(messageId)}&limit=1`);
   return rows[0] || null;
 }
 
 async function upsertProcessedEmail(record) {
-  const rows = await request('POST',
+  const rows = await requestRows('POST',
     'processed_emails?on_conflict=message_id',
     { body: record, headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' } });
   return Array.isArray(rows) ? rows[0] || null : rows;
@@ -293,14 +405,18 @@ function listProcessedEmails(opts = {}) {
   if (opts.to) filters.push(`received_at=lte.${encode(opts.to)}`);
   filters.push('order=processed_at.desc');
   filters.push(`limit=${Number(opts.limit) > 0 ? Math.floor(Number(opts.limit)) : 100}`);
-  return request('GET', `processed_emails?${filters.join('&')}`);
+  return requestRows('GET', `processed_emails?${filters.join('&')}`);
 }
 
 module.exports = {
+  // The raw call, for readers that need a projection, a page or the row count.
+  // Everything else here is a thin wrapper over it.
+  request,
   fetchEmployees,
   fetchDailyHours,
   fetchDaySummaries,
   fetchDailyHoursForDate,
+  fetchDailyHoursIndex,
   upsertDailyHours,
   deleteDailyHoursForDate,
   deleteOtherBatchesForDate,

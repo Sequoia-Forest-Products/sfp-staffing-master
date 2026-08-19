@@ -25,12 +25,6 @@ const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
 // the whole table. ~57 weeks of history is plenty for a week picker.
 const WINDOW_DAYS = 400;
 
-// The three columns availableWeeks is built from. The window covers ~17,000
-// rows at a full mill, and pulling all 23 daily_hours columns for every one of
-// them just to list the weeks that have data is most of a megabyte of payroll
-// detail nobody reads.
-const WEEK_INDEX_COLUMNS = 'work_date,total_hours,total_earnings';
-
 // Page size for the window scan, and the ceiling on how many pages it will walk
 // before it gives up and says so. 40 pages covers 200,000 rows outright, and
 // still covers 40,000 against a project that caps responses at 1,000 rows.
@@ -114,64 +108,14 @@ function num(value) {
 
 // ---- the week index ---------------------------------------------------
 //
-// The one query in this file that talks to PostgREST directly instead of going
-// through payroll-db.js. Its helpers return whole rows, send no limit and never
-// read Content-Range, and this is the query that has to PROVE it saw everything:
+// The window scan asks payroll-db for a narrow, ordered, counted page —
+// fetchDailyHoursIndex is where the projection, `order=work_date.desc` and
+// `Prefer: count=exact` live, and why each of the three matters. What is left
+// here is the only part that is this function's business: how many pages it is
+// willing to walk, and what it is willing to call complete.
 //
-//   * `Prefer: count=exact` makes PostgREST report the true number of matching
-//     rows in Content-Range ("0-4999/17384"), so what arrived can be compared
-//     against what exists instead of trusted.
-//   * `order=work_date.desc` decides which end survives if something does cut
-//     the result short. Ordered ascending — the way fetchDailyHours orders it —
-//     a db-max-rows cap silently drops the NEWEST rows, availableWeeks loses the
-//     current week, and the report quietly defaults to a stale one while still
-//     answering ok:true. A missing current week is worse than a loud error.
-//
-// Completeness is only ever claimed, never assumed: the caller passes the flag
-// straight out to the client so the UI can say the list may be incomplete.
-
-function weekIndexHeaders() {
-  const key = process.env.SUPABASE_SERVICE_KEY;
-  if (!process.env.SUPABASE_URL || !key) {
-    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
-  }
-  // The same headers db.js and payroll-db.js send, except that a read asks for
-  // the count rather than for a representation of a write.
-  return {
-    'Content-Type': 'application/json',
-    'apikey': key,
-    'Authorization': `Bearer ${key}`,
-    'Prefer': 'count=exact'
-  };
-}
-
-// "0-4999/17384" -> 17384. A "*" total (the count was not computed) and a
-// missing header both read as null, which means "not proven", never "zero".
-function parseContentRangeTotal(header) {
-  const m = /\/(\d+|\*)\s*$/.exec(String(header == null ? '' : header));
-  if (!m || m[1] === '*') return null;
-  return Number(m[1]);
-}
-
-async function fetchWeekIndexPage(fromDate, toDate, offset, limit) {
-  const path = `daily_hours?select=${WEEK_INDEX_COLUMNS}` +
-    `&work_date=gte.${encodeURIComponent(fromDate)}` +
-    `&work_date=lte.${encodeURIComponent(toDate)}` +
-    `&order=work_date.desc&offset=${offset}&limit=${limit}`;
-
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
-    method: 'GET',
-    headers: weekIndexHeaders()
-  });
-  if (!res.ok) throw new Error(`GET ${path} ${res.status}: ${await res.text()}`);
-
-  const text = await res.text();
-  const body = text ? JSON.parse(text) : [];
-  return {
-    rows: Array.isArray(body) ? body : [],
-    total: parseContentRangeTotal(res.headers && res.headers.get('content-range'))
-  };
-}
+// Completeness is only ever claimed, never assumed: the flag goes straight out
+// to the client so the UI can say the list may be incomplete.
 
 // Pages the window until it can show it is complete: either the exact count says
 // so, or an empty page proves the offset ran past the end. Anything else — the
@@ -186,7 +130,10 @@ async function fetchWeekIndex(fromDate, toDate) {
     // The offset is the number of rows already held, never page * pageSize: a
     // server-side row cap hands back fewer rows than were asked for, and
     // stepping by the requested size would skip everything the cap withheld.
-    const result = await fetchWeekIndexPage(fromDate, toDate, rows.length, WEEK_INDEX_PAGE_SIZE);
+    const result = await payrollDb.fetchDailyHoursIndex(fromDate, toDate, {
+      offset: rows.length,
+      limit: WEEK_INDEX_PAGE_SIZE
+    });
     if (result.total !== null) total = result.total;
 
     if (!result.rows.length) {
