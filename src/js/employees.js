@@ -112,15 +112,16 @@ function renderEmployees(){
           }).join('')}
           <th style="width:96px">SMS</th><th style="width:60px"></th>
         </tr></thead>
+        <!-- Cost class is read-only on the roster, and after the v2 activation this is
+             the only screen that shows it at all, so this column is how the data gets
+             audited. Its values go through esc() — 'SG&A' has an ampersand. Kept out of
+             the row template so the comment is not repeated once per employee. -->
         <tbody>
           ${filtered.length?filtered.map(e=>`
             <tr>
               <td style="font-weight:600">${e.name}</td>
               <td>${fmtWage(e)}</td>
               <td${hasDepartment(e.department)?'':' style="color:var(--muted)"'}>${hasDepartment(e.department)?esc(e.department):'—'}</td>
-              <!-- Cost class is read-only here and this is the only screen that shows
-                   it, so it is how the column gets audited. esc() because 'SG&A' has
-                   an ampersand. -->
               <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
               <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>

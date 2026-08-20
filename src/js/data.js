@@ -28,6 +28,9 @@ async function loadData(){
       // rather than defaulted, so isSalaried falls back to the legacy wage
       // marker instead of reading a guess as a stated fact.
       payType:r.pay_type||'', costClass:r.cost_class||'',
+      // The third axis of the v2 model. Legitimately null for anyone who is not
+      // manufacturing floor staff, so a blank here is a real answer, not a gap.
+      positionGroup:r.position_group||'',
       annualSalary:r.annual_salary==null?'':r.annual_salary
     }));
 
@@ -74,7 +77,9 @@ const OPTIONAL_EMPLOYEE_COLUMNS = {
   sms_opted_out:'the SMS opt-out needs SCHEMA_SMS_OPTOUT.sql to persist',
   pay_type:'the pay type needs SCHEMA_V2_MODEL.sql section 5b to persist',
   employee_number:'the payroll employee # needs SCHEMA_DAILY_HOURS.sql to persist',
-  department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist'
+  department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist',
+  cost_class:'the cost class needs SCHEMA_V2_MODEL.sql section 2 to persist',
+  position_group:'the position group needs SCHEMA_V2_MODEL.sql section 3 to persist'
 };
 
 async function writeEmployeeRow(url, method, row){
@@ -170,7 +175,11 @@ async function syncToSheet(){
         birthday:e.birthday, phone:e.phone, language:e.language,
         email:e.email, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null,
-        employee_number:normEmpNum(e.empNum)||null, department:e.department||null
+        employee_number:normEmpNum(e.empNum)||null, department:e.department||null,
+        // Written here too: this loop re-writes every row on the roster, so leaving
+        // the two new axes out would not preserve them — it would just make Sync the
+        // one path that never carries them.
+        cost_class:e.costClass||null, position_group:e.positionGroup||null
       };
       if(e.id){
         await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
@@ -194,6 +203,9 @@ async function syncToSheet(){
       // rather than defaulted, so isSalaried falls back to the legacy wage
       // marker instead of reading a guess as a stated fact.
       payType:r.pay_type||'', costClass:r.cost_class||'',
+      // The third axis of the v2 model. Legitimately null for anyone who is not
+      // manufacturing floor staff, so a blank here is a real answer, not a gap.
+      positionGroup:r.position_group||'',
       annualSalary:r.annual_salary==null?'':r.annual_salary
     }));
 
