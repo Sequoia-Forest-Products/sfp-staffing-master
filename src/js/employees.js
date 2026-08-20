@@ -23,24 +23,56 @@ function getFiltered(){
   });
 }
 
+// ---------------------------------------------------------------------------
+// The three taxonomy selects, built here so the roster filter and the edit modal
+// cannot drift apart on what is offered.
+//
+// ESCAPING: every value lands in HTML twice — once as option TEXT and once inside
+// the option's value ATTRIBUTE — and the optgroup label is an attribute too.
+// 'Sales & Marketing' and the 'SG&A' cost class carry ampersands, and an
+// unescaped & in an attribute is where markup actually breaks, so all three go
+// through esc(). esc() only touches what goes INTO the HTML: this.value read back
+// off the select is the raw 'Sales & Marketing', which is what reaches the payload.
+function taxonomyOptions(list,selected){
+  return list.map(v=>`<option value="${esc(v)}"${selected===v?' selected':''}>${esc(v)}</option>`).join('');
+}
+
+// Twelve flat options are unreadable, so they are grouped by cost class. The
+// grouping is presentation ONLY — choosing a department never sets the cost class.
+function departmentOptions(selected){
+  return COST_CLASSES.map(cc=>
+    `<optgroup label="${esc(cc)}">${taxonomyOptions(DEPARTMENTS_BY_COST_CLASS[cc]||[],selected)}</optgroup>`
+  ).join('');
+}
+
+// A stored value that is no longer offered — a row still on the retired 'SG&A'
+// department, say — is real data somebody chose. It is shown, selected, and
+// labelled as needing reassignment. Dropping it would make the select display a
+// value the row does not hold, and the next save would write that blank over it.
+function retiredOption(v,list){
+  const s=String(v==null?'':v).trim();
+  if(!s||list.indexOf(s)>=0) return '';
+  return `<option value="${esc(s)}" selected>${esc(s)} — retired, please reassign</option>`;
+}
+
 function renderEmployees(){
   const active=state.employees.filter(e=>e.status==='Active');
   const en=active.filter(e=>e.language==='English').length;
   const es=active.filter(e=>e.language==='Spanish').length;
-  // Staffed PRODUCTION departments, out of the six — not out of all seven assignable
-  // values. A card reading "5 of 7" while two production departments sit empty would
-  // be misleading if SG&A were silently making up the difference, so the
-  // non-production bucket is counted and labelled on its own instead.
-  const deptCount=PRODUCTION_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length;
-  const nonProd=active.filter(e=>e.department===NON_PRODUCTION_DEPARTMENT).length;
-  // SG&A is assigned, so it is not in this number.
+  // Staffed MANUFACTURING departments, out of the six — not out of all twelve
+  // assignable values. A card reading "8 of 12" while two production departments sit
+  // empty would be misleading if office departments were silently making up the
+  // difference, so everything outside manufacturing is counted and labelled on its own.
+  const deptCount=MANUFACTURING_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length;
+  const offMfg=active.filter(e=>hasDepartment(e.department)&&MANUFACTURING_DEPARTMENTS.indexOf(e.department)<0).length;
+  // Any department is an assignment, so an assigned person is not in this number.
   const noDept=active.filter(e=>!hasDepartment(e.department)).length;
   const filtered=getFiltered();
   return `
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${active.length}</div><div class="stat-sub">of ${state.employees.length} total</div></div>
       <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${en}</div><div class="stat-sub">${es} Spanish</div></div>
-      <div class="stat-card"><div class="stat-label">Departments staffed</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${PRODUCTION_DEPARTMENTS.length} production · ${nonProd} active in ${esc(NON_PRODUCTION_DEPARTMENT)} · ${noDept} active unassigned</div></div>
+      <div class="stat-card"><div class="stat-label">Departments staffed</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${MANUFACTURING_DEPARTMENTS.length} production · ${offMfg} active outside manufacturing · ${noDept} active unassigned</div></div>
       <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${state.employees.length-active.length}</div><div class="stat-sub">on roster</div></div>
     </div>
     <div class="section-head">
@@ -52,13 +84,15 @@ function renderEmployees(){
     </div>
     <div class="search-row">
       <input type="text" id="empSearch" placeholder="Search by name…" value="${state.filterName}" oninput="state.filterName=this.value;renderEmployeeList()">
-      <!-- The assignable set, so SG&A is filterable: it is a real assignment people
-           will want to pull up, and it is NOT the same thing as unassigned. Both the
-           option value and its label go through esc() — SG&A has an ampersand in it,
-           and the value that comes back off this select is the raw 'SG&A'. -->
+      <!-- All twelve assignable departments, grouped by cost class: somebody on
+           'Sales & Marketing' or 'Mill Overhead' has to be findable, and being
+           assigned to one of them is NOT the same thing as being unassigned. Both the
+           option value attribute and the optgroup label go through esc() — two of
+           these values carry an ampersand — and the value that comes back off this
+           select is the raw 'Sales & Marketing'. -->
       <select onchange="state.filterDept=this.value;renderEmployeeList()">
         <option value="all" ${state.filterDept==='all'?'selected':''}>All departments</option>
-        ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${esc(d)}" ${state.filterDept===d?'selected':''}>${esc(d)}</option>`).join('')}
+        ${departmentOptions(state.filterDept)}
         <option value="__none__" ${state.filterDept==='__none__'?'selected':''}>— unassigned —</option>
       </select>
       <select onchange="state.filterStatus=this.value;renderEmployeeList()">
@@ -70,8 +104,8 @@ function renderEmployees(){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          ${['name','wage','department','status','language','days','phone'].map(col=>{
-            const labels={name:'Name',wage:'Wage/hr',department:'Department',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
+          ${['name','wage','department','costClass','status','language','days','phone'].map(col=>{
+            const labels={name:'Name',wage:'Wage/hr',department:'Department',costClass:'Cost class',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
             const active=state.sortCol===col;
             const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
             return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
@@ -83,7 +117,11 @@ function renderEmployees(){
             <tr>
               <td style="font-weight:600">${e.name}</td>
               <td>${fmtWage(e)}</td>
-              <td${e.department?'':' style="color:var(--muted)"'}>${e.department?esc(e.department):'—'}</td>
+              <td${hasDepartment(e.department)?'':' style="color:var(--muted)"'}>${hasDepartment(e.department)?esc(e.department):'—'}</td>
+              <!-- Cost class is read-only here and this is the only screen that shows
+                   it, so it is how the column gets audited. esc() because 'SG&A' has
+                   an ampersand. -->
+              <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
               <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
               <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
@@ -91,7 +129,7 @@ function renderEmployees(){
               <td>${smsCell(e)}</td>
               <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
             </tr>`).join(''):
-            '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
+            '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -158,7 +196,10 @@ function renderEmployeeList() {
   // Update stat cards
   const active = state.employees.filter(e => e.status === 'Active');
   const spanish = active.filter(e => e.language === 'Spanish').length;
-  const depts = [...new Set(active.map(e => e.department).filter(Boolean))].length;
+  // The same count the full render puts in this card: staffed MANUFACTURING
+  // departments out of six. Counting distinct department values instead would now
+  // print numbers up to twelve under a label that says "of 6 production".
+  const depts = MANUFACTURING_DEPARTMENTS.filter(d => state.employees.some(e => e.department === d)).length;
   const inactive = state.employees.filter(e => e.status === 'Inactive').length;
 
   const statEls = document.querySelectorAll('.stat-value');
@@ -174,7 +215,7 @@ function renderEmployeeList() {
   if (!tbody) return;
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
     return;
   }
 
@@ -183,7 +224,8 @@ function renderEmployeeList() {
     return `<tr>
       <td style="font-weight:600">${e.name}</td>
       <td>${e.wage||'—'}</td>
-      <td style="color:${e.department?'var(--text)':'var(--muted)'}">${e.department?esc(e.department):'—'}</td>
+      <td style="color:${hasDepartment(e.department)?'var(--text)':'var(--muted)'}">${hasDepartment(e.department)?esc(e.department):'—'}</td>
+      <td style="color:${e.costClass?'var(--text)':'var(--muted)'}">${e.costClass?esc(e.costClass):'—'}</td>
       <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status}</span></td>
       <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
       <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
@@ -268,7 +310,11 @@ function openEdit(idx){
   setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
 }
 
-function openAdd(){state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
+// Every taxonomy field starts BLANK on a new employee — no cost class implied by a
+// department, no department implied by a position group. Each is a decision about a
+// real person, and a default that follows from another field is the coupling the v2
+// model exists to remove.
+function openAdd(){state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 
@@ -302,7 +348,12 @@ async function saveEdit(){
       birthday:e.birthday, phone:e.phone, language:e.language,
       email:e.email, sms_opted_out:e.smsOptedOut===true,
       drive_folder_id:e.driveFolderId||null,
-      employee_number:normEmpNum(e.empNum)||null, department:e.department||null
+      employee_number:normEmpNum(e.empNum)||null, department:e.department||null,
+      // The other two axes of the v2 model, each written from its own select and
+      // neither derived from the other. Blank means "not decided" and is stored as
+      // NULL, not as ''. Both are in OPTIONAL_EMPLOYEE_COLUMNS (data.js), so a
+      // database without the columns still saves the rest of the row.
+      cost_class:e.costClass||null, position_group:e.positionGroup||null
     };
 
     if(e.id){
@@ -358,11 +409,25 @@ function renderModal(){
             onblur="formatWageInput(this)"></div>
           ${salariedHere?`<div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Hourly rates come from the daily payroll file; a salaried person has none, and their salary is entered on the Salaries &amp; Wages page, not here.</div></div>`:''}
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
+          <!-- The three taxonomy axes: three separate selects, three separate columns,
+               and no handler here touches more than its own field. Changing the
+               department does not set the cost class and does not filter this list. -->
           <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.department=this.value">
-            <option value="" ${e.department?'':'selected'}>— not set —</option>
-            ${PAYROLL_DEPARTMENTS.map(d=>`<option value="${esc(d)}" ${e.department===d?'selected':''}>${esc(d)}</option>`).join('')}
+            <option value=""${hasDepartment(e.department)?'':' selected'}>— not set —</option>
+            ${retiredOption(e.department,PAYROLL_DEPARTMENTS)}
+            ${departmentOptions(e.department)}
           </select></div>
-          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. Department is never filled in automatically — it is set here, one employee at a time. Office, admin and other salaried staff belong in ${esc(NON_PRODUCTION_DEPARTMENT)}: it is a real assignment, not a blank, and it is never filled in for you.</div></div>
+          <div class="form-group"><label class="form-label">Cost class</label><select onchange="state.editing.costClass=this.value">
+            <option value=""${e.costClass?'':' selected'}>— not set —</option>
+            ${retiredOption(e.costClass,COST_CLASSES)}
+            ${taxonomyOptions(COST_CLASSES,e.costClass)}
+          </select></div>
+          <div class="form-group"><label class="form-label">Position group</label><select onchange="state.editing.positionGroup=this.value">
+            <option value=""${e.positionGroup?'':' selected'}>— none —</option>
+            ${retiredOption(e.positionGroup,POSITION_GROUPS)}
+            ${taxonomyOptions(POSITION_GROUPS,e.positionGroup)}
+          </select></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. None of these three is ever filled in automatically — each is set here, one employee at a time. <b>Department</b> is the accounting line; the list is grouped by cost class only so twelve values stay readable. <b>Cost class</b> is a separate fact and must be chosen on its own: a salaried person can sit in Manufacturing and an hourly person in ${esc('SG&A')}. <b>Position group</b> describes where in the mill somebody stands; it is for manufacturing floor staff and is correctly left as “— none —” for everyone else.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
           <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>

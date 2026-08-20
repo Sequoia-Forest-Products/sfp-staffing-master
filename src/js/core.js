@@ -97,40 +97,70 @@ function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 // PAYROLL SHARED HELPERS
 // ============================================================
 
-// The department taxonomy, used by both the roster and payroll reporting. The
-// legacy employees.dept column (Sawmill / Filing Room / Log Yard / SG&A) is retired;
-// department is assigned by hand per employee on the Employees tab.
+// The employee taxonomy (Architecture v2, SCHEMA_V2_MODEL.sql). THREE independent
+// axes, and none of them is derived from another — not here, not in the UI, and not
+// by a default that follows from a neighbouring field:
 //
-// TWO lists, deliberately different sizes — do not "fix" them into one:
-//   PRODUCTION_DEPARTMENTS — the six production cost centres. This is the list to
-//     count and compare against ("N of 6 departments staffed"), which is a question
-//     about production only. Clean-up is ordinary production labour: it belongs here.
-//   PAYROLL_DEPARTMENTS — what a person can be ASSIGNED to: those six plus the one
-//     non-production bucket, which is exactly the seven values the
-//     employees.department CHECK constraint allows and nothing else.
-// Rule of thumb: assign from PAYROLL_DEPARTMENTS, count against PRODUCTION_DEPARTMENTS.
+//   cost_class      which accounting bucket   Manufacturing / Mill Overhead / SG&A
+//   department      which line within it      twelve values, grouped below
+//   position_group  where in the mill         nine values, planning only, often null
 //
-// NON_PRODUCTION_DEPARTMENT names a ROLE, not a label. The role: the single home for
-// office / admin / salaried staff who belong to no production department — a real
-// assignment rather than a blank, counted as assigned, and never part of the
-// production count. The label carrying that role is now 'SG&A' (it was previously
-// the literal string 'Non-Production'; the database renamed the bucket, the role did
-// not change). So read this as "the non-production department", NOT as "the
-// department named Non-Production" — the name is deliberately about the job it does.
-// Without such a value those ~dozen people could only be left blank, and blank is
-// indistinguishable from "nobody has got to this row yet".
+// A salaried person can be Manufacturing (Eduardo Rivera) and an hourly person can be
+// SG&A (Axeri Ramirez), so neither cost class nor department can be read off pay type
+// or off each other. Some department and position-group names coincide (Maintenance,
+// Saw Filing, Log Yard, Shipping) and the match is NOT a mapping: Supervisors spans
+// departments, so one exception already makes it not a rule.
 //
-// 'SG&A' carries an ampersand, so it has to survive a round trip: every place it
-// lands in HTML goes through esc(), and nothing re-encodes it on the way back out —
-// the value read off a <select> and PATCHed to the API is the raw 'SG&A'.
-const PRODUCTION_DEPARTMENTS=['Maintenance','Saw Filing','Shipping','Production','Log Yard','Clean-up'];
-const NON_PRODUCTION_DEPARTMENT='SG&A';
-const PAYROLL_DEPARTMENTS=PRODUCTION_DEPARTMENTS.concat([NON_PRODUCTION_DEPARTMENT]);
+// TWO department lists, deliberately different sizes — do not "fix" them into one:
+//   MANUFACTURING_DEPARTMENTS — the six production cost centres, i.e. the departments
+//     of the Manufacturing cost class. This is the list to COUNT and compare against
+//     ("N of 6 departments staffed"), which is a question about production only.
+//     Clean-up is ordinary production labour: it belongs here.
+//   PAYROLL_DEPARTMENTS — what a person can be ASSIGNED to: all twelve, which is
+//     exactly what the employees.department CHECK constraint allows once
+//     SCHEMA_V2_TIGHTEN_DEPARTMENTS.sql has run, and nothing else.
+// Rule of thumb: assign from PAYROLL_DEPARTMENTS, count against
+// MANUFACTURING_DEPARTMENTS. Collapsing them would either make the stat card claim
+// office staff as production, or stop half the roster from being assignable.
+//
+// 'SG&A' is RETIRED as a department value — it is a cost class now, with five
+// departments of its own (Sales & Marketing, Procurement, Accounting, HR, Corporate),
+// and it is deliberately absent from PAYROLL_DEPARTMENTS. Rows that still hold it are
+// real data until they are reassigned, so the edit modal still DISPLAYS the value it
+// no longer offers (see renderModal) rather than blanking a good value on save.
+//
+// 'Sales & Marketing' and the 'SG&A' cost class both carry an ampersand, so both have
+// to survive a round trip: everything that lands in HTML — option text, option value,
+// optgroup label — goes through esc(), and nothing re-encodes on the way back out.
+// The value read off a <select> and PATCHed to the API is the raw 'Sales & Marketing'.
+const MANUFACTURING_DEPARTMENTS=['Log Yard','Clean-up','Shipping','Maintenance','Production','Saw Filing'];
+const MILL_OVERHEAD_DEPARTMENTS=['Mill Overhead'];
+const SGA_DEPARTMENTS=['Sales & Marketing','Procurement','Accounting','HR','Corporate'];
+const COST_CLASSES=['Manufacturing','Mill Overhead','SG&A'];
 
-// SG&A is an assignment like any other, so a row carrying it is DONE and must never
-// be counted as still needing a department — that is the entire point of having a
-// non-production value at all. Every "is this row complete?" test goes through here
-// so the screens cannot drift apart on what "unassigned" means.
+// Grouping for READABILITY only — twelve flat options are unreadable, so the dropdown
+// groups them by cost class. Picking a department must never set the cost class, and
+// picking a cost class must never filter or set the department: they are separate
+// fields on the form and separate columns in the database.
+const DEPARTMENTS_BY_COST_CLASS={
+  'Manufacturing':MANUFACTURING_DEPARTMENTS,
+  'Mill Overhead':MILL_OVERHEAD_DEPARTMENTS,
+  'SG&A':SGA_DEPARTMENTS
+};
+
+// The twelve assignable department values, in cost-class order.
+const PAYROLL_DEPARTMENTS=COST_CLASSES.reduce((all,cc)=>all.concat(DEPARTMENTS_BY_COST_CLASS[cc]),[]);
+
+// The planning layer. Nullable for everyone, and legitimately null for anybody who is
+// not manufacturing floor staff — that is NOT enforced against cost class here or in
+// the database, so the form offers a blank and leaves it blank.
+const POSITION_GROUPS=['Supervisors','Maintenance','Saw Filing','Log Yard','Sawmill Operators',
+  'Bakerville','Green Chain','Extras','Shipping'];
+
+// Any department is an assignment, so a row carrying one is DONE and must never be
+// counted as still needing a department. Every "is this row complete?" test goes
+// through here so the screens cannot drift apart on what "unassigned" means. A row on
+// the retired 'SG&A' still counts as assigned: it holds a value somebody chose.
 function hasDepartment(v){return !!String(v==null?'':v).trim();}
 const DAY_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
