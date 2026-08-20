@@ -10,6 +10,15 @@
 // dates as serial numbers (there is no date column — see the ingestion docs),
 // formulas beyond their cached value, styles, merged cells, and ZIP64.
 // Anything unsupported raises rather than guessing.
+//
+// Two writers produce the files we see, and they spell the same OOXML
+// differently. Excel/openpyxl put the spreadsheet namespace on a default xmlns
+// and write bare elements (<sheet>, <row>, <c>) into xl/worksheets/sheet1.xml.
+// The payroll vendor's exporter binds that namespace to a prefix and writes
+// <x:sheet>/<x:row>/<x:c> into a singular xl/worksheets/sheet.xml, puts a UTF-8
+// BOM on every part, and gives absolute rels targets. Both are valid, so this
+// reader matches on local names, tolerates a BOM anywhere, and takes part paths
+// from the rels instead of guessing at file names.
 
 const zlib = require('zlib');
 
@@ -109,10 +118,29 @@ function decodeXml(text) {
   });
 }
 
+// A UTF-8 BOM is legal at the start of any XML part and some writers emit one on
+// every part (the payroll vendor's does). It is not markup, so strip it before
+// anything tries to match `<?xml` or a root element.
+function partText(buffer) {
+  if (!buffer) return '';
+  const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer);
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+// Namespace prefixes are arbitrary. Excel and openpyxl put the spreadsheet
+// namespace on a default xmlns and write bare <sheet>/<row>/<c>; other writers
+// declare it as a prefix and write <x:sheet>/<x:row>/<x:c> — the same document,
+// and the prefix could just as well be <ss:row>. So every element match here
+// keys on the LOCAL NAME with an optional "anyprefix:" in front, and never on a
+// literal `x:`.
+const PREFIX = '(?:[A-Za-z_][A-Za-z0-9_.-]*:)?';
+
 // Every <tag ...>inner</tag>, plus self-closing <tag ... />, in document order.
-// Self-closing tags yield inner === ''.
+// Self-closing tags yield inner === ''. `tag` is a local name; any prefix on the
+// element (or on its close tag) matches, and the two need not agree.
 function* eachElement(xml, tag) {
-  const open = new RegExp(`<${tag}(\\s[^>]*?)?(/?)>`, 'g');
+  const open = new RegExp(`<${PREFIX}${tag}(\\s[^>]*?)?(/?)>`, 'g');
+  const close = new RegExp(`</${PREFIX}${tag}\\s*>`, 'g');
   let match;
   while ((match = open.exec(xml)) !== null) {
     const attrs = match[1] || '';
@@ -120,19 +148,40 @@ function* eachElement(xml, tag) {
       yield { attrs, inner: '' };
       continue;
     }
-    const close = xml.indexOf(`</${tag}>`, open.lastIndex);
-    if (close === -1) {
+    // First close tag after the open, not a depth-counted match. Safe because
+    // none of the elements read here (si, t, v, c, row, sheet, Relationship)
+    // may contain another element of the same name in the OOXML schema, so the
+    // first close is always the matching one. Anything that could nest inside
+    // itself would need real depth tracking here.
+    close.lastIndex = open.lastIndex;
+    const end = close.exec(xml);
+    if (end === null) {
       yield { attrs, inner: xml.slice(open.lastIndex) };
       return;
     }
-    yield { attrs, inner: xml.slice(open.lastIndex, close) };
-    open.lastIndex = close + tag.length + 3;
+    yield { attrs, inner: xml.slice(open.lastIndex, end.index) };
+    open.lastIndex = end.index + end[0].length;
   }
 }
 
+// Attribute lookup is deliberately EXACT, not namespace-agnostic: unprefixed
+// attributes are not in any namespace, and being loose here would make
+// attr(attrs, 'id') match r:id on <sheet> — two different attributes that
+// happen to end in the same letters. Callers that want a prefixed attribute ask
+// for it by local name through attrAnyPrefix().
 function attr(attrs, name) {
   const match = attrs.match(new RegExp(`\\s${name}="([^"]*)"`));
   return match ? decodeXml(match[1]) : null;
+}
+
+// A prefixed attribute whose prefix is arbitrary — r:id in Excel's output, but
+// the relationships namespace can be bound to any prefix. A prefixed match wins
+// over a bare one so that a file carrying BOTH r:id="rId1" and id="..." resolves
+// to the relationship id rather than to whichever happened to come first.
+function attrAnyPrefix(attrs, name) {
+  const prefixed = attrs.match(new RegExp(`\\s[A-Za-z_][A-Za-z0-9_.-]*:${name}="([^"]*)"`));
+  if (prefixed) return decodeXml(prefixed[1]);
+  return attr(attrs, name);
 }
 
 // Concatenate every <t> under an element, which is how a shared string with
@@ -166,13 +215,16 @@ function rowNumber(cellRef) {
 function readSharedStrings(files) {
   const xml = files['xl/sharedStrings.xml'];
   if (!xml) return [];
-  const text = xml.toString('utf8');
+  const text = partText(xml);
   const strings = [];
   for (const si of eachElement(text, 'si')) strings.push(textOf(si.inner));
   return strings;
 }
 
 function cellValue(attrs, inner, sharedStrings) {
+  // t= is the cell TYPE. s= (a style index into xl/styles.xml) is read by
+  // nobody here on purpose: no column in this export is date-formatted, so a
+  // number stays a number and is never reinterpreted as a date serial.
   const type = attr(attrs, 't');
 
   if (type === 'inlineStr') {
@@ -197,6 +249,28 @@ function cellValue(attrs, inner, sharedStrings) {
   return Number.isFinite(num) ? num : raw;
 }
 
+// A rels Target can be spelled three ways for the same part: relative to the
+// rels file's own directory ("worksheets/sheet.xml"), the same with a "./" on
+// the front, or as an absolute package path with a leading slash
+// ("/xl/worksheets/sheet.xml"). Return the candidate package paths in
+// preference order so the caller can pick the one actually in the container.
+function relTargetCandidates(target, baseDir) {
+  const cleaned = target.replace(/\\/g, '/').replace(/^\.\//, '');
+  const absolute = cleaned.startsWith('/');
+  const bare = absolute ? cleaned.slice(1) : cleaned;
+  const relative = baseDir ? `${baseDir}/${bare}` : bare;
+  // An absolute target is already a package path; a relative one hangs off the
+  // base directory. Both are offered either way, because a writer that emits
+  // "xl/worksheets/sheet.xml" without the leading slash means the package path.
+  const ordered = absolute ? [bare, relative] : [relative, bare];
+  return ordered.filter((p, i) => p && ordered.indexOf(p) === i);
+}
+
+function resolveTarget(files, target, baseDir) {
+  const candidates = relTargetCandidates(target, baseDir);
+  return candidates.find(p => files[p]) || candidates[0] || null;
+}
+
 // Sheet name -> part path, resolved through workbook.xml + its rels.
 function sheetPaths(files) {
   const workbook = files['xl/workbook.xml'];
@@ -205,24 +279,33 @@ function sheetPaths(files) {
   const relsXml = files['xl/_rels/workbook.xml.rels'];
   const targets = {};
   if (relsXml) {
-    for (const rel of eachElement(relsXml.toString('utf8'), 'Relationship')) {
+    for (const rel of eachElement(partText(relsXml), 'Relationship')) {
       const id = attr(rel.attrs, 'Id');
-      let target = attr(rel.attrs, 'Target');
+      const target = attr(rel.attrs, 'Target');
       if (!id || !target) continue;
-      target = target.replace(/^\/?xl\//, '').replace(/^\.\//, '');
-      targets[id] = `xl/${target}`;
+      targets[id] = resolveTarget(files, target, 'xl');
     }
   }
 
   const order = [];
   const byName = {};
+  const guessed = new Set();
   let fallback = 1;
 
-  for (const sheet of eachElement(workbook.toString('utf8'), 'sheet')) {
+  for (const sheet of eachElement(partText(workbook), 'sheet')) {
     const name = attr(sheet.attrs, 'name');
     if (!name) continue;
-    const relId = attr(sheet.attrs, 'r:id') || attr(sheet.attrs, 'id');
-    const path = (relId && targets[relId]) || `xl/worksheets/sheet${fallback}.xml`;
+    // r:id, but the relationships namespace prefix is the writer's choice.
+    const relId = attrAnyPrefix(sheet.attrs, 'id');
+    // The rels are authoritative. Only when they are missing or silent does the
+    // numbered convention get guessed at — and the singular "sheet.xml" some
+    // writers use is just as valid a name as "sheet1.xml". A guessed part is
+    // claimed, so two sheets can never be pointed at the same one.
+    const guesses = [`xl/worksheets/sheet${fallback}.xml`, 'xl/worksheets/sheet.xml'];
+    const path = (relId && targets[relId])
+      || guesses.find(p => files[p] && !guessed.has(p))
+      || guesses[0];
+    guessed.add(path);
     fallback++;
     order.push(name);
     byName[name] = path;
@@ -239,7 +322,7 @@ function sheetPaths(files) {
 // data is never silently dropped; duplicate headers get a "Name (2)" suffix for
 // the same reason.
 function readSheetPart(xmlBuffer, sharedStrings) {
-  const xml = xmlBuffer.toString('utf8');
+  const xml = partText(xmlBuffer);
   const headersByColumn = [];
   const rows = [];
   let seenHeaderRow = false;

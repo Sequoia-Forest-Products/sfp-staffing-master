@@ -6,9 +6,9 @@
 // the ingest parked in pending_review or error. All logic lives in
 // payroll-email-lib.js.
 //
-// It deliberately escalates only for a missing Mon-Thu scheduled day. Fri/Sat/Sun
-// are legitimate work days but not promised ones — no rows usually means nobody
-// worked, and alerting on that trains everyone to ignore the alert.
+// It escalates for EVERY missing day, weekends included. BBSI sends the report
+// seven days a week, so a day with no data means a delivery failed — the
+// weekday/weekend distinction says nothing about whether the report was owed.
 
 const { runMissedDeliveryCheck } = require('./payroll-email-lib');
 
