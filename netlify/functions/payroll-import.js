@@ -18,6 +18,7 @@ const db = require('./payroll-db');
 const {
   buildImport, validateWorkDate, workDateInfo, DEFAULT_TIME_ZONE
 } = require('./payroll-lib');
+const { planWageSync } = require('./wage-sync');
 
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || DEFAULT_TIME_ZONE;
@@ -270,11 +271,39 @@ async function commit(body) {
     ? await db.deleteOtherBatchesForDate(workDate, result.uploadBatchId)
     : 0;
 
+  // The wage sync runs HERE — at commit, after the hours are safely written,
+  // and never at preview. Preview is a dry run: it must not create employees or
+  // move a single rate. And a failed hours write must not leave wages moved,
+  // which is why this is below the upsert rather than beside it.
+  //
+  // It is driven by result.rows — the parsed FILE — never by the roster. An
+  // active employee absent from today's file keeps their rate untouched; see
+  // rule 1 in wage-sync.js.
+  //
+  // A wage-sync failure does not fail the import. The day's hours are already
+  // in by this point, so throwing would report a successful write as a failure
+  // and invite a retry; the error is returned instead, and logged so Netlify's
+  // alerting sees it.
+  let wageSync;
+  try {
+    wageSync = await db.applyWageSync(
+      planWageSync({ fileRows: result.rows, employees, workDate })
+    );
+    if (wageSync.errors.length) {
+      console.error(`payroll-import commit: wage sync reported ${wageSync.errors.length} error(s):`,
+        wageSync.errors.join(' | '));
+    }
+  } catch (err) {
+    console.error('payroll-import commit: wage sync failed:', err);
+    wageSync = { failed: true, error: err.message, errors: [err.message] };
+  }
+
   return {
     uploadBatchId: result.uploadBatchId,
     inserted: written.length,
     replaced: existing ? existing.rowCount : 0,
     removed,
+    wageSync,
     summary: { ...summaryOf(result), validation }
   };
 }

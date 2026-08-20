@@ -279,6 +279,7 @@ function toIsoString(value) {
 function resolveDeps(deps = {}) {
   const lib = () => require('./payroll-lib');
   const db  = () => require('./payroll-db');
+  const wage = () => require('./wage-sync');
   const from = (loader, name) => (...args) => loader()[name](...args);
 
   return {
@@ -290,6 +291,11 @@ function resolveDeps(deps = {}) {
     upsertProcessedEmail: deps.upsertProcessedEmail || from(db, 'upsertProcessedEmail'),
     listProcessedEmails:  deps.listProcessedEmails  || from(db, 'listProcessedEmails'),
     buildImport:          deps.buildImport          || from(lib, 'buildImport'),
+    // The wage sync: planWageSync decides (pure), applyWageSync writes. Both
+    // injectable, and applyWageSync makes no request at all for a plan with
+    // nothing in it, so a run whose file carried no usable rate touches nothing.
+    planWageSync:         deps.planWageSync         || from(wage, 'planWageSync'),
+    applyWageSync:        deps.applyWageSync        || from(db, 'applyWageSync'),
     hashFile:             deps.hashFile             || defaultHashFile,
     sendAlert:            deps.sendAlert            || sendAlert
   };
@@ -538,7 +544,42 @@ function describeItem(item) {
   ];
   if (item.flags.length) lines.push(`  Flags   : ${item.flags.join(', ')}`);
   if (item.error) lines.push(`  Detail  : ${item.error}`);
+  lines.push(...describeWageSync(item.wageSync));
   return lines.join('\n');
+}
+
+// New arrivals and flagged rate changes ride in the same digest as everything
+// else, because they are the two things about a wage sync that need a decision:
+// somebody to classify, or a rate to confirm. Unchanged and skipped rows are
+// counted and not listed.
+function describeWageSync(sync) {
+  if (!sync) return [];
+  const lines = [];
+
+  if (sync.failed || (sync.errors && sync.errors.length)) {
+    lines.push(`  WAGE SYNC FAILED — the hours are imported, the rates are NOT:`);
+    for (const err of sync.errors || [sync.error]) lines.push(`    ${err}`);
+  }
+
+  for (const create of sync.created || []) {
+    lines.push(
+      `  NEW EMPLOYEE — Emp # ${create.employeeNumber} ${create.name || '(no name)'} ` +
+      `at ${Number(create.rate).toFixed(2)}/hr, created from the file with no department, ` +
+      `cost class or position group. Their cost is landing nowhere until they are set up.`
+    );
+  }
+
+  for (const change of sync.flagged || []) {
+    lines.push(
+      `  LARGE RATE CHANGE — Emp # ${change.employeeNumber} ${change.name || '(no name)'}: ` +
+      `${change.from === null ? 'no rate' : Number(change.from).toFixed(2)} -> ` +
+      `${Number(change.to).toFixed(2)}` +
+      `${change.changePct === null ? '' : ` (${change.changePct > 0 ? '+' : ''}${change.changePct}%)`}` +
+      ` — APPLIED and flagged. Confirm it is a real raise.`
+    );
+  }
+
+  return lines;
 }
 
 // A pending row that has been sitting there for days should read louder each
@@ -593,6 +634,71 @@ function mergeRowFlags(rows, extraFlags) {
     row.flags = [...new Set([...existing, ...extraFlags])];
   }
   return rows;
+}
+
+// The daily file is the source of truth for hourly wages, so importing a day's
+// hours and not syncing its rates would leave the app holding yesterday's money
+// for ever. Runs only after a successful import, never in a dry run.
+//
+// Three outcomes deserve a human's attention and each raises the item's alert:
+// a person the app had never heard of (their cost is landing nowhere until
+// somebody classifies them), a rate move past the threshold (either a raise or
+// a vendor keying error, indistinguishable without looking) and a write that
+// failed (the hours are in and the rates are not).
+//
+// `employees` is the roster snapshot the whole run shares, and it is MUTATED
+// here on purpose — see the create loop at the bottom.
+async function syncWages(item, rows, employees, d, log) {
+  try {
+    const plan = d.planWageSync({ fileRows: rows, employees, workDate: item.workDate });
+    const applied = await d.applyWageSync(plan);
+    item.wageSync = applied;
+
+    const created = applied.created || [];
+    const flagged = applied.flagged || [];
+    const errors = applied.errors || [];
+
+    if (created.length) {
+      addFlag(item, 'new_employee');
+      item.alert = true;
+    }
+    if (flagged.length) {
+      addFlag(item, 'wage_change_flagged');
+      item.alert = true;
+    }
+    if (errors.length) {
+      addFlag(item, 'wage_sync_error');
+      item.alert = true;
+    }
+
+    log(`Wage sync ${item.workDate}: ${applied.ratesUpdated} rate(s) updated, ` +
+        `${created.length} employee(s) created, ${flagged.length} flagged, ` +
+        `${errors.length} error(s).`);
+
+    // A back-fill run imports several days from one roster read. Without this,
+    // a person created from Monday's file is still unknown when Tuesday's file
+    // is processed in the same run, and would be created a second time — two
+    // employees rows for one employee number. Fold them into the shared
+    // snapshot, carrying the wage just written so an unchanged rate the next
+    // day reads as unchanged rather than as a fresh first observation.
+    for (const person of created) {
+      employees.push({
+        id: person.employeeId,
+        name: person.name,
+        employee_number: person.employeeNumber,
+        department: null,
+        wage: Number(person.rate).toFixed(2),
+        status: 'Active'
+      });
+    }
+  } catch (err) {
+    // The import itself stands — the hours are written and the status stays
+    // 'imported'. This says, loudly, that the wages behind them did not move.
+    item.wageSync = { failed: true, error: err.message, errors: [err.message] };
+    addFlag(item, 'wage_sync_error');
+    item.alert = true;
+    log(`Wage sync failed for ${item.workDate}: ${err.message}`);
+  }
 }
 
 function ledgerRecord(item, notifiedAt) {
@@ -812,7 +918,9 @@ async function runPayrollIngest({
         }
       }
 
-      if (!employees) employees = await d.fetchEmployees();
+      // Mutated by syncWages() when the file creates somebody, so a multi-day
+      // run does not create the same person twice off one stale snapshot.
+      if (!employees) employees = (await d.fetchEmployees()) || [];
 
       const uploadBatchId = randomUUID();
       const built = d.buildImport({
@@ -842,6 +950,12 @@ async function runPayrollIngest({
         item.status = 'imported';
         item.rowsImported = rows.length;
         log(`Imported ${rows.length} row(s) for ${item.workDate} (batch ${uploadBatchId})`);
+
+        // The wage sync, on the same terms as the manual commit in
+        // payroll-import.js: after the hours are written, driven by the parsed
+        // FILE rather than the roster, and never in a dry run. A failure here
+        // does not un-import the day — it is reported and alerted on.
+        await syncWages(item, rows, employees, d, log);
       }
     } catch (err) {
       item.ready = false;
@@ -929,7 +1043,8 @@ async function runPayrollIngest({
     dayName: i.dayName || null,
     isScheduledDay: i.isScheduledDay === undefined ? null : i.isScheduledDay,
     arrivalHour: i.arrivalHour === undefined ? null : i.arrivalHour,
-    previousStatus: i.previousStatus || null
+    previousStatus: i.previousStatus || null,
+    wageSync: i.wageSync || null
   }));
 
   const imported = results.filter(r => r.status === 'imported' || r.status === 'dry_run').length;

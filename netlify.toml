@@ -5,6 +5,13 @@
 [functions]
   node_bundler = "esbuild"
 
+# session.js assembles the page from app.html and src/js/*.js at request time.
+# The module paths are built from a manifest array rather than written as literal
+# requires, so nothing can infer them — they have to be listed here or they are
+# not in the function bundle at all.
+[functions."session"]
+  included_files = ["app.html", "src/js/*.js"]
+
 # Birthday notifications — Mon-Thu. No Friday run: Thursday's 3-day look-ahead
 # already covers Fri/Sat/Sun, so a Friday run would double-announce.
 # Netlify cron is UTC: 13:30 UTC = 7:30 AM Mountain (MDT) / 6:30 AM (MST in winter).
@@ -48,16 +55,60 @@
   to = "/.netlify/functions/:splat"
   status = 200
 
+# publish = "." serves the whole repo tree, so the script modules would otherwise
+# be fetchable one by one at /src/js/core.js and friends. They are only ever meant
+# to reach a browser assembled by the session function, behind the session check,
+# exactly as the inline script was. force = true because the files really do exist
+# in the publish directory, and a rule without it would be shadowed by them.
+[[redirects]]
+  from = "/src/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+# force = true on both, and it is load-bearing rather than tidying.
+#
+# Netlify does not apply a redirect whose `from` matches a file that exists in
+# the publish directory unless it is forced, and app.html sits at the publish
+# root because publish = ".". Without force, /app.html was served as a STATIC
+# file and never reached the session function at all — which is invisible while
+# the script is inline, because core.js reads `window.__SFP_USER__ || {}` and
+# simply renders no user name. It is not invisible now: the script lives in
+# src/js and only the session function assembles it, so a static hit would serve
+# a page with no application on it.
+#
+# It also means the page itself was never actually behind the session check.
+# The API always was, so no data was exposed, but the gate this rule exists to
+# enforce was not being enforced.
 [[redirects]]
   from = "/app.html"
   to = "/.netlify/functions/session"
   status = 200
   conditions = {Cookie = ["sfp_session"]}
+  force = true
 
 [[redirects]]
   from = "/app.html"
   to = "/index.html"
   status = 302
+  force = true
+
+# Stale full copy of the pre-split app, publicly fetchable at /app.html.backup
+# and outside the session check. Git holds the history, so the file has no job
+# to do; 404 it now and delete it when convenient. The .sql files are
+# development artefacts for the Supabase editor and have no reason to be served
+# either.
+[[redirects]]
+  from = "/app.html.backup"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/*.sql"
+  to = "/index.html"
+  status = 404
+  force = true
 
 [[headers]]
   for = "/app.html"
