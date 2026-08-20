@@ -66,6 +66,16 @@
   status = 404
   force = true
 
+# Same reasoning for the test tree. publish = "." was serving all of tests/ —
+# the suites, the workbook generators, and tests/fixtures/, which holds a real
+# vendor payroll export with its values replaced. Nothing under tests/ is meant
+# to be fetchable by a browser at all.
+[[redirects]]
+  from = "/tests/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
 # force = true on both, and it is load-bearing rather than tidying.
 #
 # Netlify does not apply a redirect whose `from` matches a file that exists in
