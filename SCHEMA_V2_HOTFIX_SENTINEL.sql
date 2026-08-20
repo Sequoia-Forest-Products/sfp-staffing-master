@@ -1,4 +1,24 @@
 -- ============================================================================
+-- NOT NEEDED. Confirmed against the live database, do not run.
+--
+--   select count(*) from employees where status='Active' and pay_type='Salaried';
+--   -> 0
+--
+-- There are no active salaried employees, so nothing was ever being miscounted
+-- on the live roster. Section 5b's wage-clear also turns out not to have taken
+-- effect: every salaried person in the database still carries wage = 'Salary'
+-- alongside pay_type = 'Salaried'. Both halves of the alarm this file was
+-- written for were wrong.
+--
+-- Kept for one reason only: once the roster cleanup activates the salaried
+-- staff (SCHEMA_V2_ROSTER_CLEANUP.sql §6), salaried_active stops being zero and
+-- the sentinel starts mattering again for as long as the deployed code reads
+-- wage. §4 of that script sets it, so this file is still not the thing to run —
+-- but STEP 2 below is the correct way to clear the sentinel afterwards, once the
+-- pay_type-aware build is live.
+-- ============================================================================
+
+-- ============================================================================
 -- HOTFIX — restore the wage sentinel until the pay_type code is deployed
 --
 -- Situation this addresses: SCHEMA_V2_MODEL.sql section 5b ran BEFORE the code
