@@ -106,17 +106,139 @@
 
 # Stale full copy of the pre-split app, publicly fetchable at /app.html.backup
 # and outside the session check. Git holds the history, so the file has no job
-# to do; 404 it now and delete it when convenient. The .sql files are
-# development artefacts for the Supabase editor and have no reason to be served
-# either.
+# to do; 404 it now and delete it when convenient.
 [[redirects]]
   from = "/app.html.backup"
   to = "/index.html"
   status = 404
   force = true
 
+# The server source. publish = "." was serving every function as a static file:
+# /netlify/functions/db.js returned the real 1,940 bytes, Supabase header
+# construction and all, to anyone who asked. No env var is IN these files, but
+# the auth flow, the session check, the PostgREST calls and the payroll
+# pipeline were all readable without a session.
+#
+# This does NOT touch how functions are invoked. They run at
+# /.netlify/functions/* — a different path, with the leading dot — which is
+# where the /api/* rewrite above points. Only the static copies are blocked.
 [[redirects]]
-  from = "/*.sql"
+  from = "/netlify/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+# ---------------------------------------------------------------------------
+# Root-level development artefacts.
+#
+# READ THIS BEFORE ADDING A RULE HERE. The rule this replaces was
+#
+#   from = "/*.sql"
+#
+# and it never matched anything. Netlify's `*` is a TRAILING SPLAT — "the rest
+# of the path" — not an extension glob, so that pattern silently matched no
+# request and all eleven .sql files were served for as long as it was in place.
+# It read like protection and was not, which is worse than no rule at all.
+#
+# Only two `from` shapes are known to work here: an exact path, and a prefix
+# ending in /* (as /src/*, /tests/* and /netlify/* above). Every rule below is
+# an exact path for that reason. tests/public-exposure.test.js enforces both
+# halves of this: that no rule uses an unsupported shape, and that every file
+# in the publish tree is either explicitly public or covered.
+# ---------------------------------------------------------------------------
+
+[[redirects]]
+  from = "/package.json"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/package-lock.json"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/README.md"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/PAYROLL_INGESTION.md"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/OT_REPORT_SETUP.md"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_BIRTHDAY.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_CHANGES.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_DAILY_HOURS.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_DEPARTMENT_VALUES.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_DROP_DEPT.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_SMS_OPTOUT.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_V2_CLEANUP_CORRECTIONS.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_V2_HOTFIX_SENTINEL.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_V2_MODEL.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_V2_ROSTER_CLEANUP.sql"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/SCHEMA_V2_TIGHTEN_DEPARTMENTS.sql"
   to = "/index.html"
   status = 404
   force = true
