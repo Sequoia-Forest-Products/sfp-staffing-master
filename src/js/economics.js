@@ -6,9 +6,13 @@ function calcDollarPerM(wage){
   return wage * (1 + state.burden) / state.mhr;
 }
 
+// The hourly rate behind a position. Salaried staff are filtered out of this
+// report before they reach here, but the guard is explicit rather than assumed:
+// employees.wage is an hourly rate or nothing, so a salaried person has no
+// number to contribute and 0 is the honest answer, not a rate of zero.
 function getEmpWage(name){
   const emp = state.employees.find(e=>e.name===name);
-  if(!emp) return 0;
+  if(!emp || isSalaried(emp)) return 0;
   const w = String(emp.wage||'').replace(/[$,]/g,'');
   return parseFloat(w)||0;
 }
@@ -20,7 +24,10 @@ function renderEcon(){
   // Active hourly employees. This report is about hourly labour wages, and the old
   // test against the LEGACY dept column's 'SG&A' value (not the current
   // department field, which now carries an SG&A of its own) was only ever a proxy
-  // for "salaried", so test the wage.
+  // for "salaried". The real question goes through isSalaried in core.js, which
+  // reads employees.pay_type and falls back to the retired wage marker — reading
+  // the wage here directly would put every salaried person into this report the
+  // moment SCHEMA_V2_MODEL.sql section 5b nulls their wage.
   const eligible = state.employees.filter(e=>e.status==='Active' && !isSalaried(e));
 
   // Find duplicates

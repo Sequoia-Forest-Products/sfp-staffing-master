@@ -18,7 +18,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  weekStartFor, weekDates, buildReport,
+  weekStartFor, weekDates, buildReport, isSalaried,
   DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, DEFAULT_GRACE_HOURS
 } = require('../netlify/functions/ot-report-lib');
 
@@ -533,6 +533,70 @@ test('a salaried employee has no hourly rate to grace and no place in the headco
   assert.strictEqual(byName(r.employees, 'Sam Ledger'), undefined);
   assert.ok(!r.preApproved.grace.rateMissing.includes('Sam Ledger'),
     'a salaried employee is excluded, not reported as missing a rate');
+});
+
+test('pay_type Salaried with a nulled wage is still outside the grace headcount', () => {
+  // The shape SCHEMA_V2_MODEL.sql section 5b leaves the roster in: the pay type
+  // is stated in its own column and the wage sentinel is gone. Deciding this by
+  // reading employees.wage puts every salaried person back into the headcount
+  // the moment that migration runs — which is the silent inflation this asserts
+  // against. The number is what matters: 3, not 4.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g6', name: 'Sam Ledger', employee_number: '0106', department: 'Production',
+        pay_type: 'Salaried', wage: null, status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 3,
+    'a salaried person with no wage sentinel left is still not an hourly employee');
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  assert.strictEqual(r.preApproved.grace.dollars, 55.88, 'and not a dollar of theirs either');
+  assert.strictEqual(byName(r.employees, 'Sam Ledger'), undefined);
+  assert.ok(!r.preApproved.grace.rateMissing.includes('Sam Ledger'),
+    'excluded, not reported as an hourly employee whose rate is missing');
+
+  // Nothing of theirs reached the summary or a department bucket.
+  assert.strictEqual(r.summary.totalHours, 50);
+  assert.strictEqual(r.issues.reconciliation.balanced, true);
+});
+
+test('pay_type Hourly overrides a stale Salary left in the wage column', () => {
+  // A row the migration classified Hourly whose wage was never cleaned. pay_type
+  // is the stated fact, so this person IS in the headcount — and their rate is
+  // unreadable, so they are named as missing a rate rather than dropped.
+  const r = graceReport({
+    graceHoursPerEmployee: 0.5,
+    employees: GRACE_EMPLOYEES.concat([
+      { id: 'g7', name: 'Nia Grant', employee_number: '0108', department: 'Production',
+        pay_type: 'Hourly', wage: 'Salary', status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(r.preApproved.grace.headcount, 4,
+    'an explicit Hourly is not overruled by a leftover sentinel');
+  assert.strictEqual(r.preApproved.grace.hours, 2);
+  assert.strictEqual(byName(r.employees, 'Nia Grant').graceHours, 0.5);
+  assert.strictEqual(byName(r.employees, 'Nia Grant').graceDollars, 0,
+    "'Salary' is not a rate, so the hours count and the dollars are honestly zero");
+  assert.ok(r.preApproved.grace.rateMissing.includes('Nia Grant'),
+    'and the name is reported, because a zero contributed silently cannot be audited');
+});
+
+test('the roster salaried test reads pay_type first and the wage marker only as a fallback', () => {
+  // The predicate itself, so the ordering is locked independently of the
+  // headcount it moves. Mirrors isSalaried() in wage-sync.js and core.js.
+  assert.strictEqual(isSalaried({ pay_type: 'Salaried', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: 'salaried', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: '  Salaried  ', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: 'Hourly', wage: 'Salary' }), false);
+  assert.strictEqual(isSalaried({ wage: 'Salary' }), true);
+  assert.strictEqual(isSalaried({ wage: '  SALARY  ' }), true);
+  assert.strictEqual(isSalaried({ wage: '25.00' }), false);
+  assert.strictEqual(isSalaried({ wage: null }), false);
+  assert.strictEqual(isSalaried({}), false);
+  assert.strictEqual(isSalaried(null), false);
 });
 
 test('an employee whose own rows this week say salaried is excluded too', () => {

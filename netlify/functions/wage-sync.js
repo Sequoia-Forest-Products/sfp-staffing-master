@@ -28,10 +28,11 @@
 //   3. SALARIED ROWS ARE OUTSIDE THIS FLOW. payroll-lib drops EVERY salaried
 //      row at import — unconditionally, whatever it carries for pay rate, hours
 //      or earnings — and anything that still reaches here marked salaried, by
-//      the file's Is Salary column or by employees.wage holding the literal
-//      string 'Salary', is skipped. An hourly rate is never written onto a
-//      salaried person, because that column's 'Salary' sentinel is currently
-//      what identifies them (see SCHEMA_V2_MODEL.sql section 5). A salaried
+//      the file's Is Salary column or by the roster's own pay type, is skipped.
+//      An hourly rate is never written onto a salaried person. Pay type is
+//      employees.pay_type, with the retired employees.wage = 'Salary' sentinel
+//      read only as a fallback (see isSalaried below and SCHEMA_V2_MODEL.sql
+//      section 5b). A salaried
 //      person's hourly cost is annual_salary / 2080 and nothing else; see
 //      effectiveHourlyRate below.
 //
@@ -89,8 +90,36 @@ function pick(row, ...keys) {
   return undefined;
 }
 
-// employees.wage is TEXT and holds either an hourly rate or the literal string
-// 'Salary'. Trimmed and case-insensitive, matching ot-report-lib.js.
+// THE backend answer to 'is this person salaried'. Ask it with the whole
+// employee, never with a wage on its own.
+//
+// employees.pay_type is its own column now — 'Hourly' or 'Salaried',
+// SCHEMA_V2_MODEL.sql section 5b. Before that migration the marker lived inside
+// employees.wage as the literal string 'Salary', and the migration NULLS wage
+// for salaried people. So a test that reads wage alone reads every salaried
+// person as HOURLY the moment the migration runs, which would hand them an
+// hourly rate off the file — the one thing rule 3 at the top of this file
+// forbids.
+//
+// Hence the order: pay_type when it is present and recognised, the legacy wage
+// marker only as the fallback. Correct before AND after the migration, and a
+// stale 'Salary' left sitting in wage never overrides an explicit 'Hourly'.
+//
+// Duplicated — deliberately, five lines — as isSalaried() in ot-report-lib.js
+// (Netlify bundles those two functions separately) and in src/js/core.js for the
+// frontend. Three copies, one rule: change all three together.
+function isSalaried(employee) {
+  const emp = employee || {};
+  const declared = String(pick(emp, 'pay_type', 'payType') ?? '').trim().toLowerCase();
+  if (declared === 'salaried') return true;
+  if (declared === 'hourly') return false;
+  return isSalaryWage(emp.wage);
+}
+
+// The value-only path, kept for a caller holding nothing but a wage string. It
+// answers a NARROWER question than isSalaried — 'does this wage carry the
+// retired sentinel' — and post-migration it is false for everybody, which is why
+// no decision in this module is made on it alone.
 function isSalaryWage(value) {
   return String(value === null || value === undefined ? '' : value).trim().toLowerCase() === 'salary';
 }
@@ -181,14 +210,14 @@ const money = rate => (rate === null || rate === undefined ? 'no rate' : rate.to
 //
 // For an hourly employee a rate from the file wins, then the stored
 // employees.wage. `source: 'file'` covers both, and that is not a fudge:
-// employees.wage holds nothing but what the BBSI file last put there. The
-// result is never written back into employees.wage — the 'Salary' sentinel in
-// that column is what identifies salaried people.
+// employees.wage holds nothing but what the BBSI file last put there. The result
+// is never written back onto a salaried person's row — employees.wage means an
+// hourly rate or nothing, and pay type is employees.pay_type.
 function effectiveHourlyRate(employee) {
   const emp = employee || {};
 
   // ---- salaried: the file is not read, at all, on any branch ----
-  if (isSalaryWage(emp.wage)) {
+  if (isSalaried(emp)) {
     const costClass = textOf(pick(emp, 'cost_class', 'costClass'));
     if (costClass !== MANUFACTURING) return { rate: null, source: 'none' };
 
@@ -343,7 +372,7 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
     // carries $0, so testing the rate first would file every salaried person
     // under "no rate" and hide the fact that they were correctly skipped.
     const salaried = isSalaryFlag(pick(row, 'is_salary', 'isSalary', 'Is Salary')) ||
-                     (employee && isSalaryWage(employee.wage));
+                     (employee && isSalaried(employee));
     if (salaried) {
       skipped.salaried++;
       continue;
@@ -457,7 +486,7 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
     const key = normalizeEmpNumber(emp && emp.employee_number);
     if (seen.has(key)) continue;
     if (!isActive(emp)) continue;
-    if (isSalaryWage(emp.wage)) continue;
+    if (isSalaried(emp)) continue;
     skipped.absentFromFile++;
   }
 
@@ -483,5 +512,9 @@ module.exports = {
   // Shared with payroll-db.js so the source string and the salaried test have
   // one definition each rather than a copy in the writer.
   SOURCE,
+  // isSalaried takes the whole employee and is what every decision here uses;
+  // isSalaryWage is the narrow value-only sentinel test kept for callers that
+  // hold nothing else.
+  isSalaried,
   isSalaryWage
 };

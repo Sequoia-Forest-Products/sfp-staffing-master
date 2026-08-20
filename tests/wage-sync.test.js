@@ -17,11 +17,20 @@ const {
   normalizeRate,
   effectiveHourlyRate,
   planWageSync,
+  isSalaried,
+  isSalaryWage,
   DEFAULT_THRESHOLD_PCT,
   SALARY_HOURS_PER_YEAR
 } = require('../netlify/functions/wage-sync');
 
-const { applyWageSync } = require('../netlify/functions/payroll-db');
+// payroll-db reads these once, at require time, so they have to exist before it
+// is loaded — the roster-projection tests below drive the real Supabase helper
+// against a stubbed fetch and would otherwise fail on missing configuration.
+process.env.SUPABASE_URL = 'https://example.supabase.co';
+process.env.SUPABASE_SERVICE_KEY = 'service-key';
+
+const payrollDb = require('../netlify/functions/payroll-db');
+const { applyWageSync } = payrollDb;
 
 // The file describes Monday the 17th. "Today" is deliberately never this date —
 // effective_date must be the day the file describes.
@@ -774,4 +783,210 @@ test('a flagged change whose write failed is not reported as applied', async () 
   const applied = await applyWageSync(plan([fileRow('0063', 37.50)]), writers);
   assert.deepStrictEqual(applied.flagged, []);
   assert.strictEqual(applied.errors.length, 1);
+});
+
+
+// ============================================================
+// isSalaried — the ordering the migration depends on
+// ============================================================
+//
+// SCHEMA_V2_MODEL.sql section 5b moves the salaried marker out of employees.wage
+// into employees.pay_type and then NULLS wage for salaried people. The code has
+// to be right on BOTH sides of that, so each case below is one of the two shapes
+// the roster can be in, and the pay_type-first order is what makes them agree.
+
+test('pay_type Salaried with a null wage is salaried — the post-migration shape', () => {
+  // The case the whole change exists for. Read the wage instead and this person
+  // is hourly, which puts them in the clock-grace headcount and hands them a
+  // rate off the daily file.
+  assert.strictEqual(isSalaried({ pay_type: 'Salaried', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: 'Salaried', wage: '' }), true);
+  assert.strictEqual(isSalaried({ payType: 'Salaried', wage: null }), true,
+    'camelCase is read too, for a caller that has not been through PostgREST');
+});
+
+test('pay_type Hourly beats a stale Salary left in the wage column', () => {
+  // A row the migration has classified as Hourly whose wage was never cleaned.
+  // pay_type is the stated fact; the wage marker is only a fallback for rows
+  // that have no pay_type at all.
+  assert.strictEqual(isSalaried({ pay_type: 'Hourly', wage: 'Salary' }), false);
+  assert.strictEqual(isSalaried({ pay_type: 'Hourly', wage: '25.00' }), false);
+});
+
+test('with no pay_type at all the legacy wage marker still decides', () => {
+  // The pre-migration shape. This is what makes the code safe to deploy BEFORE
+  // section 5b runs.
+  assert.strictEqual(isSalaried({ wage: 'Salary' }), true);
+  assert.strictEqual(isSalaried({ wage: '25.00' }), false);
+  assert.strictEqual(isSalaried({ wage: '' }), false);
+  assert.strictEqual(isSalaried({ wage: null }), false,
+    'a new hire with no rate yet is hourly without a rate, not of unknown pay type');
+  assert.strictEqual(isSalaried({}), false);
+  assert.strictEqual(isSalaried(null), false);
+  // An empty or unrecognised pay_type is the same as none: fall back, do not
+  // guess, and do not read a blank column as a decision.
+  assert.strictEqual(isSalaried({ pay_type: '', wage: 'Salary' }), true);
+  assert.strictEqual(isSalaried({ pay_type: null, wage: 'Salary' }), true);
+  assert.strictEqual(isSalaried({ pay_type: 'Contractor', wage: 'Salary' }), true);
+});
+
+test('pay_type and the wage marker are both trimmed and case-insensitive', () => {
+  assert.strictEqual(isSalaried({ pay_type: 'salaried', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: '  Salaried  ', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: 'SALARIED', wage: null }), true);
+  assert.strictEqual(isSalaried({ pay_type: '  hourly  ', wage: 'Salary' }), false);
+  assert.strictEqual(isSalaried({ wage: '  SALARY  ' }), true);
+});
+
+test('isSalaryWage is the narrow value-only test, and post-migration it is blind', () => {
+  // Kept for callers holding nothing but a wage string. It answers a smaller
+  // question than isSalaried, which is exactly why no decision is made on it.
+  assert.strictEqual(isSalaryWage('Salary'), true);
+  assert.strictEqual(isSalaryWage(' salary '), true);
+  assert.strictEqual(isSalaryWage(null), false);
+  assert.strictEqual(isSalaryWage('25.00'), false);
+});
+
+test('effectiveHourlyRate is keyed on pay_type, not on the wage sentinel', () => {
+  // Post-migration: pay_type says salaried and wage is null. salary / 2080 for
+  // Manufacturing, exactly as before the migration.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ pay_type: 'Salaried', wage: null,
+                          cost_class: 'Manufacturing', annual_salary: 104000 }),
+    { rate: 50, source: 'salary/2080' }
+  );
+  // And the file is still not consulted for them, rate or no rate.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ pay_type: 'Salaried', wage: null, cost_class: 'Manufacturing',
+                          annual_salary: 104000, pay_rate: 45.00 }),
+    { rate: 50, source: 'salary/2080' }
+  );
+  // Outside Manufacturing there is still no hourly rate to give them.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ pay_type: 'Salaried', wage: null,
+                          cost_class: 'SG&A', annual_salary: 90000 }),
+    { rate: null, source: 'none' }
+  );
+  // A stale sentinel under an explicit Hourly does NOT divert into the salaried
+  // branch — the stored wage is unreadable as a rate, so there is no rate.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ pay_type: 'Hourly', wage: 'Salary',
+                          cost_class: 'Manufacturing', annual_salary: 104000 }),
+    { rate: null, source: 'none' }
+  );
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ pay_type: 'Hourly', wage: 'Salary', cost_class: 'Manufacturing',
+                          annual_salary: 104000, pay_rate: 26.75 }),
+    { rate: 26.75, source: 'file' }
+  );
+});
+
+test('planWageSync still skips a post-migration salaried person, and counts them as salaried', () => {
+  // The same two people as the pre-migration test above, in the shape section 5b
+  // leaves them in: pay_type set, wage nulled. Nothing may be written to them,
+  // and they must be counted as salaried rather than as a missing rate — a
+  // "no rate" count is a data problem somebody would go and fix.
+  const roster = ROSTER.map(e => (e.wage === 'Salary'
+    ? { ...e, pay_type: 'Salaried', wage: null }
+    : { ...e, pay_type: 'Hourly' }));
+
+  const result = plan([fileRow('0007', 45.00, { is_salary: false }),
+                       fileRow('0011', 43.27, { is_salary: false })],
+                      { employees: roster });
+
+  assert.deepStrictEqual(result.updates, []);
+  assert.deepStrictEqual(result.creates, []);
+  assert.deepStrictEqual(result.history, []);
+  assert.deepStrictEqual(result.ops, []);
+  assert.strictEqual(result.skipped.salaried, 2);
+  assert.strictEqual(result.skipped.noRate, 0);
+});
+
+test('a post-migration salaried person absent from the file is not counted as absent', () => {
+  // absentFromFile is the population rule 1 protects. Salaried staff are outside
+  // this flow, so reading their nulled wage as hourly would add every one of
+  // them to that count, every single day.
+  const roster = ROSTER.map(e => (e.wage === 'Salary'
+    ? { ...e, pay_type: 'Salaried', wage: null }
+    : { ...e, pay_type: 'Hourly' }));
+
+  const result = plan([fileRow('0319', 24.50)], { employees: roster });
+
+  // 0063, 0771, 0884 and 905 are active and hourly and were not in the file.
+  // 0007 and 0011 are salaried; 0400 is terminated.
+  assert.strictEqual(result.skipped.absentFromFile, 4);
+});
+
+// ============================================================
+// fetchEmployees — the roster projection
+// ============================================================
+//
+// The new columns have to be asked for, or effectiveHourlyRate can never see a
+// cost class or a salary. But they do not exist until the migration runs, and
+// PostgREST answers a select naming a missing column with a 400 and no rows at
+// all — which would take the payroll import down rather than degrade it.
+
+function stubRosterFetch(t, reply) {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const call = { url: String(url), method: opts.method || 'GET' };
+    calls.push(call);
+    const answer = reply(call, calls.length);
+    if (answer instanceof Error) {
+      return { ok: false, status: 400, text: async () => answer.message };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify(answer || []) };
+  };
+  t.after(() => { globalThis.fetch = original; });
+  return calls;
+}
+
+test('the roster read asks for pay_type, cost_class and annual_salary', async (t) => {
+  const calls = stubRosterFetch(t, () => [{ id: 'e1', name: 'Ana Smith', pay_type: 'Hourly' }]);
+
+  const rows = await payrollDb.fetchEmployees();
+
+  assert.strictEqual(calls.length, 1, 'one request when the columns are there');
+  for (const column of ['id', 'name', 'employee_number', 'department', 'wage', 'status',
+                        'pay_type', 'cost_class', 'annual_salary']) {
+    assert.ok(calls[0].url.includes(column), `the projection must name ${column}`);
+  }
+  assert.match(calls[0].url, /order=name\.asc/);
+  assert.deepStrictEqual(rows, [{ id: 'e1', name: 'Ana Smith', pay_type: 'Hourly' }]);
+});
+
+test('a column that does not exist falls back to the pre-migration projection', async (t) => {
+  const legacyRows = [{ id: 'e1', name: 'Ana Smith', wage: 'Salary', status: 'Active' }];
+  const calls = stubRosterFetch(t, (call, n) => {
+    if (n === 1) {
+      return new Error('{"code":"42703","details":null,"hint":null,' +
+                       '"message":"column employees.pay_type does not exist"}');
+    }
+    return legacyRows;
+  });
+
+  // The whole point: a database where SCHEMA_V2_MODEL.sql has not been run still
+  // returns a roster instead of throwing, and the legacy wage marker still says
+  // who is salaried.
+  const rows = await payrollDb.fetchEmployees();
+
+  assert.strictEqual(calls.length, 2, 'one retry, not a loop');
+  assert.ok(calls[0].url.includes('pay_type'));
+  assert.ok(!calls[1].url.includes('pay_type'), 'the retry drops the new columns');
+  assert.ok(!calls[1].url.includes('cost_class'));
+  assert.ok(!calls[1].url.includes('annual_salary'));
+  assert.ok(calls[1].url.includes('wage'), 'everything that did exist is still read');
+  assert.deepStrictEqual(rows, legacyRows);
+  assert.strictEqual(isSalaried(rows[0]), true,
+    'on the pre-migration projection the wage marker is all there is, and it still works');
+});
+
+test('a failure that is not a missing column is not downgraded into a narrower read', async (t) => {
+  // Auth, a 502, a network drop: propagate. Retrying with fewer columns would
+  // hide a broken database behind a roster that looks merely out of date.
+  const calls = stubRosterFetch(t, () => new Error('JWT expired'));
+
+  await assert.rejects(() => payrollDb.fetchEmployees(), /JWT expired/);
+  assert.strictEqual(calls.length, 1, 'no retry on an unrelated failure');
 });

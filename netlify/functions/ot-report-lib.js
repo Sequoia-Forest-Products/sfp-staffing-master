@@ -10,7 +10,7 @@
 //   weekStart     any 'YYYY-MM-DD' inside the wanted week; snapped to its Monday
 //   dailyRows     daily_hours rows (SCHEMA_DAILY_HOURS.sql)
 //   overtimeRows  overtime rows: {id, name, ot_type, hours, description}
-//   employees     {id, name, employee_number, department, wage, status}
+//   employees     {id, name, employee_number, department, wage, status, pay_type}
 //   expectedDays  optional array of 'YYYY-MM-DD' that a delivery was expected
 //                 for; defaults to the scheduled block (Mon-Thu) of the week
 //   graceHoursPerEmployee
@@ -242,11 +242,34 @@ function isYes(value) {
   return s === 'yes' || s === 'true' || s === 'y' || s === 't' || s === '1';
 }
 
-// employees.wage is free text; salaried staff carry the literal word 'Salary'
-// there and a $0 pay rate in the payroll export, so there is no hourly rate to
-// grace and no dollars that could honestly be derived for them.
+// Salaried staff have no hourly rate to grace and a $0 pay rate in the payroll
+// export, so there are no dollars that could honestly be derived for them and no
+// place for them in the hourly headcount.
+//
+// employees.pay_type is its own column now — 'Hourly' or 'Salaried',
+// SCHEMA_V2_MODEL.sql section 5b. Before that migration the marker lived inside
+// employees.wage as the literal word 'Salary', and the migration NULLS wage for
+// salaried people. A test that reads wage alone therefore reads every salaried
+// person as HOURLY the moment the migration runs, silently inflating the
+// clock-grace headcount and the allowance built on it.
+//
+// So: pay_type when present and recognised, the legacy wage marker only as the
+// fallback. Correct before AND after the migration, and a stale 'Salary' in wage
+// never overrides an explicit 'Hourly'.
+//
+// This is a deliberate five-line copy of isSalaried() in wage-sync.js (Netlify
+// bundles the two functions separately) and of the one in src/js/core.js. Three
+// copies, one rule: change all three together.
 function isSalaryWage(value) {
   return String(value == null ? '' : value).trim().toLowerCase() === 'salary';
+}
+
+function isSalaried(emp) {
+  const e = emp || {};
+  const declared = String((e.pay_type != null ? e.pay_type : e.payType) ?? '').trim().toLowerCase();
+  if (declared === 'salaried') return true;
+  if (declared === 'hourly') return false;
+  return isSalaryWage(e.wage);
 }
 
 // employees.status is 'Active' | 'Inactive', and the roster UI writes 'Active'
@@ -653,9 +676,9 @@ function buildReport({
       const worked   = people.get(key) || null;
       const hasHours = !!(worked && worked.hasHoursThisWeek);
 
-      // Salaried by the roster's own word, or by the week's rows. Either way
+      // Salaried by the roster's own pay type, or by the week's rows. Either way
       // there is no hourly rate and no grace.
-      if (isSalaryWage(emp.wage) || (worked && worked.isSalary)) continue;
+      if (isSalaried(emp) || (worked && worked.isSalary)) continue;
 
       graceHeadcount++;
 
@@ -1084,5 +1107,8 @@ module.exports = {
   // DEPARTMENTS is the production breakdown; ASSIGNABLE_DEPARTMENTS is the full
   // set of values employees.department may hold. They are different questions
   // and both are exported so neither caller has to rebuild the other's list.
-  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, UNASSIGNED
+  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, UNASSIGNED,
+  // Exported so the grace exclusion can be asserted directly rather than only
+  // through the headcount it moves.
+  isSalaried
 };

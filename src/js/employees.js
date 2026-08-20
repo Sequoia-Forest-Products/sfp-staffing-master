@@ -82,7 +82,7 @@ function renderEmployees(){
           ${filtered.length?filtered.map(e=>`
             <tr>
               <td style="font-weight:600">${e.name}</td>
-              <td>${fmtWage(e.wage)}</td>
+              <td>${fmtWage(e)}</td>
               <td${e.department?'':' style="color:var(--muted)"'}>${e.department?esc(e.department):'—'}</td>
               <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
               <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
@@ -99,19 +99,47 @@ function renderEmployees(){
   `;
 }
 
+// The wage input is an HOURLY RATE and nothing else. It used to write the literal
+// string 'Salary' into employees.wage, which is exactly the conflation
+// SCHEMA_V2_MODEL.sql section 5b removes — pay type is its own column now, so
+// this must never put a word where a rate goes.
+//
+// Somebody typing 'salary' out of habit is still meaning something real, so it
+// is honoured as a pay-type change rather than discarded: pay type flips to
+// Salaried, the rate is cleared, and the re-render disables the field.
 function formatWageInput(input) {
   const val = input.value.trim();
-  if (!val || val.toLowerCase() === 'salary') {
-    input.value = 'Salary';
-    state.editing.wage = 'Salary';
+  if (isSalaried(state.editing)) { state.editing.wage = ''; return; }
+
+  if (val.toLowerCase() === 'salary') {
+    state.editing.payType = 'Salaried';
+    state.editing.wage = '';
+    render();
     return;
   }
+  if (!val) { state.editing.wage = ''; input.value = ''; return; }
+
   const num = parseFloat(val.replace(/[$,]/g, ''));
   if (!isNaN(num)) {
     const formatted = '$' + num.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     input.value = formatted;
     state.editing.wage = num;
+    return;
   }
+  // Not a number and not the old word. It cannot be stored, so it is cleared on
+  // the spot rather than left looking accepted and then dropped on save.
+  input.value = '';
+  state.editing.wage = '';
+}
+
+// The pay type select. Switching to Salaried clears the hourly rate in the same
+// move — leaving a stale rate behind on a salaried person is how a number nobody
+// entered ends up in a report. Re-renders so the wage field's disabled state and
+// its note follow the choice immediately.
+function setPayType(v) {
+  state.editing.payType = v === 'Salaried' ? 'Salaried' : 'Hourly';
+  if (state.editing.payType === 'Salaried') state.editing.wage = '';
+  render();
 }
 
 function sortEmployees(col) {
@@ -240,7 +268,7 @@ function openEdit(idx){
   setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
 }
 
-function openAdd(){state.editing={name:'',wage:'',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 
@@ -250,19 +278,25 @@ async function saveEdit(){
 
   setSyncStatus('saving');
   try{
-    // Normalize wage: convert formatted string to number if needed
+    // Pay type is the fact; wage is only ever an hourly rate. A salaried person
+    // is written with a NULL wage — never the literal 'Salary', which is the
+    // sentinel SCHEMA_V2_MODEL.sql section 5b retires. Salaried compensation is
+    // annual_salary, edited elsewhere.
+    const payType = isSalaried(e) ? 'Salaried' : 'Hourly';
     let wage = e.wage;
-    if(typeof wage === 'string'){
-      if(wage.toLowerCase() === 'salary'){
-        wage = 'Salary';
-      } else {
-        wage = parseFloat(wage.replace(/[$,]/g,'')) || wage;
-      }
+    if(payType === 'Salaried'){
+      wage = null;
+    } else if(typeof wage === 'string'){
+      // A rate or nothing. Anything unparseable is NOT stored as text — that is
+      // how 'Salary' got into this column in the first place.
+      const parsed = parseFloat(wage.replace(/[$,]/g,''));
+      wage = isNaN(parsed) ? null : parsed;
     }
-    e.wage = wage; // Update the editing object with normalized wage
+    e.wage = wage === null ? '' : wage;   // what the roster row will render
+    e.payType = payType;
 
     const row={
-      name:e.name, wage:wage, status:e.status,
+      name:e.name, wage:wage, pay_type:payType, status:e.status,
       days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
@@ -300,6 +334,9 @@ async function saveEdit(){
 
 function renderModal(){
   const e=state.editing;
+  // Asked once, through the shared predicate, so the disabled state of the wage
+  // field and the note under it cannot disagree with the select above them.
+  const salariedHere=isSalaried(e);
   return `
     <div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -312,9 +349,14 @@ function renderModal(){
         <div id="modal-details-pane">
         <div class="form-grid">
           <div class="form-group full"><label class="form-label">Full name</label><input type="text" value="${e.name}" oninput="state.editing.name=this.value"></div>
-          <div class="form-group"><label class="form-label">Wage ($/hr or Salary)</label><input type="text" value="${e.wage}" id="wageInput"
+          <div class="form-group"><label class="form-label">Pay type</label><select onchange="setPayType(this.value)">
+            ${PAY_TYPES.map(t=>`<option value="${t}" ${payTypeOf(e)===t?'selected':''}>${t}</option>`).join('')}
+          </select></div>
+          <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label><input type="text" value="${salariedHere?'':esc(String(e.wage==null?'':e.wage))}" id="wageInput"
+            ${salariedHere?'disabled readonly placeholder="—"':''}
             oninput="state.editing.wage=this.value"
             onblur="formatWageInput(this)"></div>
+          ${salariedHere?`<div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Hourly rates come from the daily payroll file; a salaried person has none, and their salary is entered on the Salaries &amp; Wages page, not here.</div></div>`:''}
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
           <div class="form-group"><label class="form-label">Department</label><select onchange="state.editing.department=this.value">
             <option value="" ${e.department?'':'selected'}>— not set —</option>

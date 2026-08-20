@@ -48,21 +48,50 @@ let state = {
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
-// Reads the salaried marker through isSalaried so the roster and Staffing
-// Economics cannot disagree about the same employee: a lowercase 'salary'
-// used to render as $NaN here while being correctly excluded there. A blank
-// wage is unknown, not salaried — it used to display as 'Salary', which made a
+
+// Takes the whole employee, not a bare wage, because 'is this person salaried'
+// is no longer a fact about the wage column — see isSalaried below. A wage value
+// is still accepted so a caller holding nothing else keeps the legacy reading.
+//
+// Everything routes through isSalaried so the roster and Staffing Economics
+// cannot disagree about the same employee: a lowercase 'salary' used to render
+// as $NaN here while being correctly excluded there. A blank wage on an hourly
+// person is unknown, not salaried — it used to display as 'Salary', which made a
 // half-entered new hire look like staff they are not.
-function fmtWage(w){
-  if(isSalaried({wage:w}))return 'Salary';
-  const n=parseFloat(String(w==null?'':w).replace(/[$,]/g,''));
+function fmtWage(empOrWage){
+  const emp = (empOrWage&&typeof empOrWage==='object') ? empOrWage : {wage:empOrWage};
+  if(isSalaried(emp))return 'Salary';
+  const n=parseFloat(String(emp.wage==null?'':emp.wage).replace(/[$,]/g,''));
   return isNaN(n)?'—':('$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
 }
 
-// employees.wage holds the literal 'Salary' for salaried staff instead of a rate
-// — the same literal fmtWage and formatWageInput key on. Compared trimmed and
-// case-insensitively because the edit form only normalizes casing on blur.
-function isSalaried(emp){return String((emp&&emp.wage)||'').trim().toLowerCase()==='salary';}
+// THE one frontend answer to 'is this person salaried'. Every screen asks here.
+//
+// Pay type is its own column now: employees.pay_type holds 'Hourly' or
+// 'Salaried' (SCHEMA_V2_MODEL.sql section 5b). Before that migration the marker
+// lived inside employees.wage as the literal string 'Salary', and the migration
+// NULLS wage for salaried people — so code that decides this by reading wage
+// alone reads every salaried person as HOURLY the moment the migration runs,
+// which puts them into Staffing Economics and into the clock-grace headcount
+// and silently inflates both.
+//
+// Hence the order: pay_type when it is present and recognised, the legacy wage
+// marker only as a fallback. That is correct before AND after the migration, and
+// a stale 'Salary' left in wage never overrides an explicit pay_type of Hourly.
+// Trimmed and case-insensitive on both, because the edit form only normalises
+// casing on blur and the database column is plain text.
+//
+// Mirrored by isSalaried() in netlify/functions/wage-sync.js and
+// netlify/functions/ot-report-lib.js — three runtimes, one rule. Change all
+// three together.
+function isSalaried(emp){
+  const pt=String((emp&&(emp.pay_type!=null?emp.pay_type:emp.payType))||'').trim().toLowerCase();
+  if(pt==='salaried')return true;
+  if(pt==='hourly')return false;
+  return String((emp&&emp.wage)||'').trim().toLowerCase()==='salary';
+}
+const PAY_TYPES=['Hourly','Salaried'];
+function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 
 // ============================================================
 // PAYROLL SHARED HELPERS

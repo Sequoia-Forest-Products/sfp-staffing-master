@@ -161,9 +161,54 @@ const DAILY_INDEX_PAGE_SIZE = 5000;
 // is here for the OT report's dollar fallback, status for headcount filtering.
 // The whole roster is returned, inactive people included: somebody terminated
 // last week still has hours on last week's file.
-function fetchEmployees() {
-  return requestRows('GET',
-    'employees?select=id,name,employee_number,department,wage,status&order=name.asc');
+//
+// pay_type, cost_class and annual_salary are the three columns the four-axis
+// model adds (SCHEMA_V2_MODEL.sql sections 5, 5b). pay_type is what decides
+// salaried — reading employees.wage for that stops working the moment section 5b
+// nulls the sentinel — and cost_class plus annual_salary are what
+// effectiveHourlyRate() needs to convert a salaried person at salary / 2080.
+//
+// They are asked for even on a database where the migration has not run, because
+// leaving them out is what made the salaried test read the wrong column in the
+// first place. PostgREST answers a select naming a column that does not exist
+// with 400 / 42703 and NO rows at all, which would take the whole payroll import
+// down — so the read falls back once to the projection that predates the
+// migration and says so in the log, rather than failing or silently narrowing
+// forever.
+const EMPLOYEE_COLUMNS = 'id,name,employee_number,department,wage,status,pay_type,cost_class,annual_salary';
+const EMPLOYEE_COLUMNS_PRE_V2 = 'id,name,employee_number,department,wage,status';
+
+// PostgREST's undefined-column error, in the shapes it actually arrives in:
+// 42703 is the Postgres SQLSTATE, the message is 'column employees.pay_type does
+// not exist', and a schema-cache miss says 'could not find the ... column'. A
+// failure that is NOT this — auth, a 502, a network drop — must propagate, not
+// quietly downgrade the projection and hide a broken database.
+function isUndefinedColumnError(err) {
+  return /\b42703\b|does not exist|could not find/i.test(String((err && err.message) || ''));
+}
+
+let warnedAboutEmployeeColumns = false;
+
+async function fetchEmployees() {
+  try {
+    return await requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS}&order=name.asc`);
+  } catch (err) {
+    if (!isUndefinedColumnError(err)) throw err;
+
+    // Once per cold start. Every subsequent call still tries the full projection
+    // first, so the day the migration runs the new columns appear without a
+    // deploy — but the log is not one line per read until then.
+    if (!warnedAboutEmployeeColumns) {
+      warnedAboutEmployeeColumns = true;
+      console.warn(
+        'employees is missing pay_type / cost_class / annual_salary — run ' +
+        'SCHEMA_V2_MODEL.sql sections 5 and 5b. Falling back to the pre-v2 ' +
+        'projection: salaried staff are identified by the legacy wage marker ' +
+        'and no salary can be converted to an hourly rate until then. ' +
+        `(${err.message})`);
+    }
+    return requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS_PRE_V2}&order=name.asc`);
+  }
 }
 
 function fetchOvertime() {
@@ -575,6 +620,10 @@ module.exports = {
   // Everything else here is a thin wrapper over it.
   request,
   fetchEmployees,
+  // Exported so a test can assert the projection rather than the string that
+  // builds it, and so the fallback boundary is nameable.
+  EMPLOYEE_COLUMNS,
+  EMPLOYEE_COLUMNS_PRE_V2,
   fetchDailyHours,
   fetchDaySummaries,
   fetchDailyHoursForDate,

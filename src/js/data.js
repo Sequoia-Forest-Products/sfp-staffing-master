@@ -23,7 +23,12 @@ async function loadData(){
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
       email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||'', department:r.department||''
+      empNum:r.employee_number||'', department:r.department||'',
+      // pay_type is absent until SCHEMA_V2_MODEL.sql section 5b runs. Left blank
+      // rather than defaulted, so isSalaried falls back to the legacy wage
+      // marker instead of reading a guess as a stated fact.
+      payType:r.pay_type||'', costClass:r.cost_class||'',
+      annualSalary:r.annual_salary==null?'':r.annual_salary
     }));
 
     // Economics
@@ -67,6 +72,7 @@ function setSyncStatus(s){
 // so the write is retried once without them rather than losing the user's edit.
 const OPTIONAL_EMPLOYEE_COLUMNS = {
   sms_opted_out:'the SMS opt-out needs SCHEMA_SMS_OPTOUT.sql to persist',
+  pay_type:'the pay type needs SCHEMA_V2_MODEL.sql section 5b to persist',
   employee_number:'the payroll employee # needs SCHEMA_DAILY_HOURS.sql to persist',
   department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist'
 };
@@ -153,7 +159,12 @@ async function syncToSheet(){
   try{
     for(const e of state.employees){
       const row={
-        name:e.name, wage:e.wage, status:e.status,
+        // A salaried person's wage is NULL, never '' and never the retired
+        // 'Salary' sentinel — this loop re-writes every row on the roster, so an
+        // empty string here would put junk back into a column the migration just
+        // cleaned.
+        name:e.name, wage:isSalaried(e)?null:(e.wage===''||e.wage==null?null:e.wage),
+        pay_type:payTypeOf(e), status:e.status,
         days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
@@ -178,7 +189,12 @@ async function syncToSheet(){
       clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
       email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||'', department:r.department||''
+      empNum:r.employee_number||'', department:r.department||'',
+      // pay_type is absent until SCHEMA_V2_MODEL.sql section 5b runs. Left blank
+      // rather than defaulted, so isSalaried falls back to the legacy wage
+      // marker instead of reading a guess as a stated fact.
+      payType:r.pay_type||'', costClass:r.cost_class||'',
+      annualSalary:r.annual_salary==null?'':r.annual_salary
     }));
 
     state.dirty=false;
