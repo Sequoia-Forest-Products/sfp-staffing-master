@@ -161,9 +161,54 @@ const DAILY_INDEX_PAGE_SIZE = 5000;
 // is here for the OT report's dollar fallback, status for headcount filtering.
 // The whole roster is returned, inactive people included: somebody terminated
 // last week still has hours on last week's file.
-function fetchEmployees() {
-  return requestRows('GET',
-    'employees?select=id,name,employee_number,department,wage,status&order=name.asc');
+//
+// pay_type, cost_class and annual_salary are the three columns the four-axis
+// model adds (SCHEMA_V2_MODEL.sql sections 5, 5b). pay_type is what decides
+// salaried — reading employees.wage for that stops working the moment section 5b
+// nulls the sentinel — and cost_class plus annual_salary are what
+// effectiveHourlyRate() needs to convert a salaried person at salary / 2080.
+//
+// They are asked for even on a database where the migration has not run, because
+// leaving them out is what made the salaried test read the wrong column in the
+// first place. PostgREST answers a select naming a column that does not exist
+// with 400 / 42703 and NO rows at all, which would take the whole payroll import
+// down — so the read falls back once to the projection that predates the
+// migration and says so in the log, rather than failing or silently narrowing
+// forever.
+const EMPLOYEE_COLUMNS = 'id,name,employee_number,department,wage,status,pay_type,cost_class,annual_salary';
+const EMPLOYEE_COLUMNS_PRE_V2 = 'id,name,employee_number,department,wage,status';
+
+// PostgREST's undefined-column error, in the shapes it actually arrives in:
+// 42703 is the Postgres SQLSTATE, the message is 'column employees.pay_type does
+// not exist', and a schema-cache miss says 'could not find the ... column'. A
+// failure that is NOT this — auth, a 502, a network drop — must propagate, not
+// quietly downgrade the projection and hide a broken database.
+function isUndefinedColumnError(err) {
+  return /\b42703\b|does not exist|could not find/i.test(String((err && err.message) || ''));
+}
+
+let warnedAboutEmployeeColumns = false;
+
+async function fetchEmployees() {
+  try {
+    return await requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS}&order=name.asc`);
+  } catch (err) {
+    if (!isUndefinedColumnError(err)) throw err;
+
+    // Once per cold start. Every subsequent call still tries the full projection
+    // first, so the day the migration runs the new columns appear without a
+    // deploy — but the log is not one line per read until then.
+    if (!warnedAboutEmployeeColumns) {
+      warnedAboutEmployeeColumns = true;
+      console.warn(
+        'employees is missing pay_type / cost_class / annual_salary — run ' +
+        'SCHEMA_V2_MODEL.sql sections 5 and 5b. Falling back to the pre-v2 ' +
+        'projection: salaried staff are identified by the legacy wage marker ' +
+        'and no salary can be converted to an hourly rate until then. ' +
+        `(${err.message})`);
+    }
+    return requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS_PRE_V2}&order=name.asc`);
+  }
 }
 
 function fetchOvertime() {
@@ -376,6 +421,168 @@ async function restampDepartments(fromDate, toDate) {
 }
 
 // ============================================================
+// WAGES
+// ============================================================
+//
+// The writers behind wage-sync.js. The decisions are all made there, purely and
+// testably; these four functions do nothing but write what they are handed.
+//
+// wage_history is append-only and the constraint is a trigger, so the service
+// key does not bypass it: there is no PATCH and no DELETE here, and there never
+// can be. A correction is a new row.
+
+// One POST per call, chunked only against a bulk back-fill. A normal day moves
+// a handful of rates.
+async function insertWageHistory(rows) {
+  const list = (rows || []).filter(Boolean);
+  if (!list.length) return [];
+
+  const written = [];
+  for (let i = 0; i < list.length; i += CHUNK_SIZE) {
+    written.push(...await requestRows('POST', 'wage_history', { body: list.slice(i, i + CHUNK_SIZE) }));
+  }
+  return written;
+}
+
+// employees.wage is TEXT, holding either an hourly rate or the literal string
+// 'Salary'. Only ever called after the matching wage_history row is safely in.
+async function updateEmployeeWage(employeeId, wage) {
+  const id = String(employeeId || '').trim();
+  if (!id) throw new Error('updateEmployeeWage needs an employee id');
+  return requestRows('PATCH', `employees?id=eq.${encode(id)}`, { body: { wage } });
+}
+
+async function createEmployee(row) {
+  const rows = await requestRows('POST', 'employees', { body: row });
+  const created = Array.isArray(rows) ? rows[0] || null : rows;
+  if (!created || !created.id) {
+    // return=representation always echoes what it wrote, so no id back means no
+    // row was written — and the wage_history row that follows would then be
+    // attached to nobody.
+    throw new Error(
+      `Creating employee ${row && row.employee_number} returned no row — the insert did not take effect.`
+    );
+  }
+  return created;
+}
+
+// unique(employee_number) means one open arrival per person. ignore-duplicates
+// (ON CONFLICT DO NOTHING) rather than merge-duplicates on purpose: a re-import
+// of the same day must neither fail nor move first_seen_date forward, and must
+// certainly not resurrect a task somebody has already signed off. An ignored
+// insert comes back as no rows, which is success, not a failure.
+async function upsertSetupTask(row) {
+  const rows = await requestRows('POST',
+    'employee_setup_tasks?on_conflict=employee_number',
+    { body: row, headers: { 'Prefer': 'resolution=ignore-duplicates,return=representation' } });
+  return Array.isArray(rows) ? rows[0] || null : rows;
+}
+
+// employees.wage as text. Two decimals so the column reads like the rest of the
+// roster ('24.50'), which humans do still look at.
+const wageText = rate => Number(rate).toFixed(2);
+
+// Apply a plan from wage-sync.planWageSync(). Walks plan.ops in order, because
+// the order is the safety property: the history row for a change goes in before
+// the employees.wage write that makes the old rate unrecoverable, and a created
+// employee exists before the history row that references their id.
+//
+// Two behaviours are deliberate:
+//
+//   * One row at a time, per op, so a single bad row cannot take the rest of the
+//     day's wage sync down with it. A normal day is a handful of writes.
+//   * A failed write BLOCKS the rest of that employee's ops. If the history
+//     insert fails, the wage update behind it is skipped — an overwrite with no
+//     history is exactly what this module exists to prevent. If the create
+//     fails, its history row and setup task are skipped too, because both
+//     reference an employee that does not exist.
+//
+// Errors are collected rather than thrown: the hours for the day are already
+// written by the time this runs, and turning a wage-sync failure into a failed
+// import would report a successful write as a failure and invite a retry.
+// The caller surfaces `errors`.
+//
+// writers is injectable so this can be tested without a network.
+async function applyWageSync(plan, writers = {}) {
+  const w = {
+    insertWageHistory:  writers.insertWageHistory  || insertWageHistory,
+    updateEmployeeWage: writers.updateEmployeeWage || updateEmployeeWage,
+    createEmployee:     writers.createEmployee     || createEmployee,
+    upsertSetupTask:    writers.upsertSetupTask    || upsertSetupTask
+  };
+
+  const applied = {
+    workDate: (plan && plan.workDate) || null,
+    thresholdPct: plan && plan.thresholdPct !== undefined ? plan.thresholdPct : null,
+    created: [],
+    ratesUpdated: 0,
+    historyWritten: 0,
+    setupTasks: 0,
+    flagged: [],
+    skipped: (plan && plan.skipped) || null,
+    errors: [],
+    blocked: []
+  };
+
+  const ops = (plan && plan.ops) || [];
+  if (!ops.length) return applied;
+
+  const createdIds = new Map();
+  const blocked = new Set();
+
+  // A create or a history row for a brand-new person is planned with a null
+  // employee_id, because the id does not exist until the insert returns.
+  const withId = row => ({
+    ...row,
+    employee_id: row.employee_id || createdIds.get(row.employee_number) || null
+  });
+
+  for (const op of ops) {
+    const key = op.employeeNumber || null;
+    if (key && blocked.has(key)) {
+      applied.blocked.push(`${op.kind} for Emp # ${key} skipped — an earlier write for this person failed.`);
+      continue;
+    }
+
+    try {
+      if (op.kind === 'create') {
+        const created = await w.createEmployee({
+          name: op.create.name,
+          employee_number: op.create.employeeNumber,
+          wage: wageText(op.create.rate),
+          status: 'Active',
+          // The bullpen, spelled out rather than left to the column defaults:
+          // these three being null is what employee_setup_tasks is queuing.
+          department: null,
+          cost_class: null,
+          position_group: null
+        });
+        createdIds.set(op.create.employeeNumber, created.id);
+        applied.created.push({ ...op.create, employeeId: created.id });
+
+      } else if (op.kind === 'history') {
+        await w.insertWageHistory([withId(op.row)]);
+        applied.historyWritten++;
+
+      } else if (op.kind === 'update') {
+        await w.updateEmployeeWage(op.update.employeeId, wageText(op.update.to));
+        applied.ratesUpdated++;
+        if (op.update.flagged) applied.flagged.push(op.update);
+
+      } else if (op.kind === 'setupTask') {
+        await w.upsertSetupTask(withId(op.row));
+        applied.setupTasks++;
+      }
+    } catch (err) {
+      if (key) blocked.add(key);
+      applied.errors.push(`${op.kind} for Emp # ${key || '(unknown)'} failed: ${err.message}`);
+    }
+  }
+
+  return applied;
+}
+
+// ============================================================
 // PROCESSED EMAIL LEDGER
 // ============================================================
 //
@@ -413,6 +620,10 @@ module.exports = {
   // Everything else here is a thin wrapper over it.
   request,
   fetchEmployees,
+  // Exported so a test can assert the projection rather than the string that
+  // builds it, and so the fallback boundary is nameable.
+  EMPLOYEE_COLUMNS,
+  EMPLOYEE_COLUMNS_PRE_V2,
   fetchDailyHours,
   fetchDaySummaries,
   fetchDailyHoursForDate,
@@ -426,6 +637,13 @@ module.exports = {
   updateBatchWorkDate,
   restampDepartments,
   fetchOvertime,
+  // Wage sync writers, plus the applier that orders them. The decisions live in
+  // wage-sync.js; nothing here decides anything.
+  insertWageHistory,
+  updateEmployeeWage,
+  createEmployee,
+  upsertSetupTask,
+  applyWageSync,
   getProcessedEmail,
   upsertProcessedEmail,
   listProcessedEmails

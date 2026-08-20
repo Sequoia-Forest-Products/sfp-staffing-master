@@ -10,7 +10,7 @@
 //   weekStart     any 'YYYY-MM-DD' inside the wanted week; snapped to its Monday
 //   dailyRows     daily_hours rows (SCHEMA_DAILY_HOURS.sql)
 //   overtimeRows  overtime rows: {id, name, ot_type, hours, description}
-//   employees     {id, name, employee_number, department, wage, status}
+//   employees     {id, name, employee_number, department, wage, status, pay_type}
 //   expectedDays  optional array of 'YYYY-MM-DD' that a delivery was expected
 //                 for; defaults to the scheduled block (Mon-Thu) of the week
 //   graceHoursPerEmployee
@@ -44,29 +44,38 @@
 // The PRODUCTION departments, in reporting order. This is what the report
 // breaks the mill down by, and it is deliberately NOT the list of values
 // employees.department accepts — see ASSIGNABLE_DEPARTMENTS below.
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
+// Clean-up is the hourly mill clean-up crew: ordinary production labour with no
+// special handling anywhere, listed last because that is its reporting order.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED  = 'Unassigned';
 
-// The one value employees.department accepts that is NOT a production
-// department. SG&A / office / salaried staff have no home among the production
-// departments, and the back-fill screen requires a department for every active
+// NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
+// mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
+// string is the label the database CHECK constraint now uses for it. The label
+// used to be 'Non-Production'; the role has not changed, so the constant name
+// and issues.nonProductionWithHours keep their names rather than churning every
+// caller for a rename that says nothing new.
+//
+// It is the one value employees.department accepts that is NOT a production
+// department: office / salaried staff, who have no home among the production
+// departments. The back-fill screen requires a department for every active
 // employee — its "still needs a department" counter is what gates retiring the
 // legacy `dept` column, so with no correct value to pick that counter could
 // never honestly reach zero. Leaving those people blank is not a fix: blank is
-// indistinguishable from "nobody has got to this row yet". Non-Production makes
-// it an explicit, recorded decision.
+// indistinguishable from "nobody has got to this row yet". SG&A makes it an
+// explicit, recorded decision.
 //
 // The two lists differ ON PURPOSE and must not be reconciled into one:
 //   DEPARTMENTS             what the report's normal breakdown is over
 //   ASSIGNABLE_DEPARTMENTS  what a person may legally be assigned to
-// Adding Non-Production to DEPARTMENTS would put a non-production row in every
-// production breakdown. Dropping it from ASSIGNABLE_DEPARTMENTS would make the
-// back-fill screen reject a value the database and the roster both accept.
+// Adding SG&A to DEPARTMENTS would put a non-production row in every production
+// breakdown. Dropping it from ASSIGNABLE_DEPARTMENTS would make the back-fill
+// screen reject a value the database and the roster both accept.
 //
-// Non-Production staff are salaried, so the import drops their rows and this
-// bucket should normally be empty. A bucket that exists is a finding, carried
-// in issues.nonProductionWithHours — never folded away, never silently dropped.
-const NON_PRODUCTION = 'Non-Production';
+// SG&A staff are salaried, so the import drops their rows and this bucket
+// should normally be empty. A bucket that exists is a finding, carried in
+// issues.nonProductionWithHours — never folded away, never silently dropped.
+const NON_PRODUCTION = 'SG&A';
 const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const OT_TYPES    = ['Pre-Shift', 'Post-Shift', 'Weekend'];
@@ -233,11 +242,34 @@ function isYes(value) {
   return s === 'yes' || s === 'true' || s === 'y' || s === 't' || s === '1';
 }
 
-// employees.wage is free text; salaried staff carry the literal word 'Salary'
-// there and a $0 pay rate in the payroll export, so there is no hourly rate to
-// grace and no dollars that could honestly be derived for them.
+// Salaried staff have no hourly rate to grace and a $0 pay rate in the payroll
+// export, so there are no dollars that could honestly be derived for them and no
+// place for them in the hourly headcount.
+//
+// employees.pay_type is its own column now — 'Hourly' or 'Salaried',
+// SCHEMA_V2_MODEL.sql section 5b. Before that migration the marker lived inside
+// employees.wage as the literal word 'Salary', and the migration NULLS wage for
+// salaried people. A test that reads wage alone therefore reads every salaried
+// person as HOURLY the moment the migration runs, silently inflating the
+// clock-grace headcount and the allowance built on it.
+//
+// So: pay_type when present and recognised, the legacy wage marker only as the
+// fallback. Correct before AND after the migration, and a stale 'Salary' in wage
+// never overrides an explicit 'Hourly'.
+//
+// This is a deliberate five-line copy of isSalaried() in wage-sync.js (Netlify
+// bundles the two functions separately) and of the one in src/js/core.js. Three
+// copies, one rule: change all three together.
 function isSalaryWage(value) {
   return String(value == null ? '' : value).trim().toLowerCase() === 'salary';
+}
+
+function isSalaried(emp) {
+  const e = emp || {};
+  const declared = String((e.pay_type != null ? e.pay_type : e.payType) ?? '').trim().toLowerCase();
+  if (declared === 'salaried') return true;
+  if (declared === 'hourly') return false;
+  return isSalaryWage(e.wage);
 }
 
 // employees.status is 'Active' | 'Inactive', and the roster UI writes 'Active'
@@ -299,10 +331,10 @@ function finishBlock(block) {
   };
 }
 
-// DEPARTMENTS first in their canonical order, then Non-Production — a real
-// assignable value, but not a production department — then anything unexpected
-// that the data actually contains, then Unassigned last so it reads as the
-// remainder. Non-Production sits between the production departments and the
+// DEPARTMENTS first in their canonical order, then NON_PRODUCTION ('SG&A') — a
+// real assignable value, but not a production department — then anything
+// unexpected that the data actually contains, then Unassigned last so it reads
+// as the remainder. SG&A sits between the production departments and the
 // unknowns because it is neither a real department nor an unknown one.
 function sortDepartments(names) {
   const rank = (name) => {
@@ -644,9 +676,9 @@ function buildReport({
       const worked   = people.get(key) || null;
       const hasHours = !!(worked && worked.hasHoursThisWeek);
 
-      // Salaried by the roster's own word, or by the week's rows. Either way
+      // Salaried by the roster's own pay type, or by the week's rows. Either way
       // there is no hourly rate and no grace.
-      if (isSalaryWage(emp.wage) || (worked && worked.isSalary)) continue;
+      if (isSalaried(emp) || (worked && worked.isSalary)) continue;
 
       graceHeadcount++;
 
@@ -982,15 +1014,15 @@ function buildReport({
   const hoursDelta         = round2(departmentHours - summary.totalHours);
   const earningsDelta      = round2(departmentEarnings - totalHourlyPayroll);
 
-  // A Non-Production bucket with anything in it is a FINDING, not a normal row.
-  // These people are salaried and dropped at import, so nothing should reach
-  // this bucket at all. Anything that does means somebody is hourly AND
+  // An SG&A bucket with anything in it is a FINDING, not a normal row. These
+  // people are salaried and dropped at import, so nothing should reach this
+  // bucket at all. Anything that does means somebody is hourly AND
   // non-production, and one of those two facts is wrong.
   //
   // The grace allowance counts as evidence on its own, with no daily_hours
   // behind it: clock grace is a policy about hourly staff, not about which
-  // department they sit in, so an hourly Non-Production employee draws it even
-  // in a week they never clocked in — and that allowance is then sitting in a
+  // department they sit in, so an hourly SG&A employee draws it even in a week
+  // they never clocked in — and that allowance is then sitting in a
   // department that should not have one. hours is 0 for such a row, and
   // graceHours says where it came from.
   //
@@ -1075,5 +1107,8 @@ module.exports = {
   // DEPARTMENTS is the production breakdown; ASSIGNABLE_DEPARTMENTS is the full
   // set of values employees.department may hold. They are different questions
   // and both are exported so neither caller has to rebuild the other's list.
-  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, UNASSIGNED
+  DEPARTMENTS, NON_PRODUCTION, ASSIGNABLE_DEPARTMENTS, UNASSIGNED,
+  // Exported so the grace exclusion can be asserted directly rather than only
+  // through the headcount it moves.
+  isSalaried
 };

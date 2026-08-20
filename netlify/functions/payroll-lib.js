@@ -37,13 +37,20 @@ const EXPECTED_HEADERS = [
 
 // The PRODUCTION reporting departments, plus the bucket that null lands
 // in. The bucket is always shown: hiding unassigned hours is how a report
-// quietly stops adding up.
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
+// quietly stops adding up. Clean-up is the hourly mill clean-up crew — an
+// ordinary production department with no special handling anywhere.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED = 'Unassigned';
 
-// The one value employees.department accepts that is not a production
-// department: SG&A / office / salaried staff, who have no home among the
-// production departments. The back-fill screen
+// NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
+// mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
+// string is the label the database CHECK constraint now uses for it. The label
+// used to be 'Non-Production'; the role is unchanged, so the constant keeps its
+// name instead of churning every caller for a rename that says nothing new.
+//
+// It is the one value employees.department accepts that is not a production
+// department: office / salaried staff, who have no home among the production
+// departments. The back-fill screen
 // requires a department for every active employee, so without an explicit value
 // for these people the only option is blank — and blank is indistinguishable
 // from "nobody has got to this row yet", which is exactly what that screen's
@@ -54,13 +61,13 @@ const UNASSIGNED = 'Unassigned';
 //   DEPARTMENTS             the production breakdown this import reports over
 //   ASSIGNABLE_DEPARTMENTS  every value employees.department may legally hold
 //
-// Department is snapshotted from employees.department at import, so a
-// Non-Production employee with hours imports exactly like anybody else — not
-// rejected, not blanked, no flag. Its only effect here is the bucket's
-// position in the breakdown. Non-Production staff are salaried and their
-// all-zero rows are dropped above, so this bucket should normally be empty;
-// ot-report-lib.js is where a non-empty one is surfaced as a finding.
-const NON_PRODUCTION = 'Non-Production';
+// Department is snapshotted from employees.department at import, so an SG&A
+// employee with hours imports exactly like anybody else — not rejected, not
+// blanked, no flag, and the '&' is carried through verbatim. Its only effect
+// here is the bucket's position in the breakdown. SG&A staff are salaried and
+// their all-zero rows are dropped above, so this bucket should normally be
+// empty; ot-report-lib.js is where a non-empty one is surfaced as a finding.
+const NON_PRODUCTION = 'SG&A';
 const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -376,7 +383,7 @@ function buildImport({
 
   let totalRows = 0;
   let salariedSkipped = 0;
-  let salariedWithHoursImported = 0;
+  let salariedWithHoursSkipped = 0;
 
   const cell = (record, canonical) => {
     const header = mapping[canonical];
@@ -442,17 +449,35 @@ function buildImport({
       numbers.regularHours !== 0 || numbers.otHours !== 0 ||
       numbers.totalHours !== 0 || numbers.totalEarnings !== 0;
 
-    // Salaried people appear on the file every day with a row of zeroes; they
-    // are not hourly payroll and are dropped. A salaried row carrying actual
-    // hours means the payroll system's behaviour changed, so it is imported
-    // and flagged rather than discarded along with the rest.
-    if (isSalary && !hasActivity) {
-      salariedSkipped++;
-      continue;
-    }
+    // Salaried people are outside this flow entirely. EVERY salaried row is
+    // dropped, unconditionally, whatever it carries — pay rate, hours,
+    // earnings, any of it — so that every figure this system reports is hourly
+    // payroll only. A salaried person's cost is annual_salary / 2080 (see
+    // wage-sync.effectiveHourlyRate) and never a number out of this file.
+    //
+    // Skipped is not silent, though. They normally arrive as a row of zeroes;
+    // one carrying actual hours or earnings means the vendor's file changed
+    // shape, and that is worth knowing even though the row is still dropped.
+    // So it is counted separately and reported as an anomaly naming what it
+    // carried, rather than imported and flagged as it once was.
     if (isSalary) {
-      salariedWithHoursImported++;
-      flags.push('salaried_with_hours');
+      salariedSkipped++;
+      if (hasActivity) {
+        salariedWithHoursSkipped++;
+        const salariedEmployee = byNumber.get(employeeNumber) || null;
+        anomalies.push({
+          employeeNumber,
+          name: displayName(salariedEmployee, { lastName, firstName }),
+          type: 'salaried_with_hours',
+          detail: `Emp # ${employeeNumber} is marked Is Salary = Yes but reported ` +
+                  `${numbers.totalHours} hours / ${numbers.totalEarnings.toFixed(2)} earnings ` +
+                  `at a pay rate of ${numbers.payRate.toFixed(2)}. Skipped like every salaried ` +
+                  `row — not imported, and contributing nothing to any total or department. ` +
+                  `Reported because a salaried row carrying activity means the payroll ` +
+                  `system's behaviour changed.`
+        });
+      }
+      continue;
     }
 
     // total_earnings is the payroll system's blended figure and is stored
@@ -490,16 +515,6 @@ function buildImport({
       }
     }
 
-    if (isSalary) {
-      anomalies.push({
-        employeeNumber,
-        name: displayName(employee, { lastName, firstName }),
-        type: 'salaried_with_hours',
-        detail: `Emp # ${employeeNumber} is marked Is Salary = Yes but reported ` +
-                `${numbers.totalHours} hours / ${numbers.totalEarnings.toFixed(2)} earnings. Imported anyway.`
-      });
-    }
-
     // Column names are the daily_hours columns, so this object POSTs as-is.
     // is_scheduled_day is a generated column — never send it.
     rows.push({
@@ -507,6 +522,8 @@ function buildImport({
       employee_number: employeeNumber,
       last_name: lastName,
       first_name: firstName,
+      // Always false: every salaried row was skipped above. Kept because it is
+      // a real daily_hours column and historic rows carry true.
       is_salary: isSalary,
       pay_rate: numbers.payRate,
       regular_hours: numbers.regularHours,
@@ -560,12 +577,12 @@ function buildImport({
 
   for (const key of Object.keys(totals)) totals[key] = round2(totals[key]);
 
-  // Production departments in their reporting order, then Non-Production
-  // (assignable, but not one of them), then anything unexpected, then Unassigned
-  // last — present even when empty rows put nothing in it, because
+  // Production departments in their reporting order, then NON_PRODUCTION
+  // ('SG&A' — assignable, but not one of them), then anything unexpected, then
+  // Unassigned last — present even when empty rows put nothing in it, because
   // "Unassigned: 0" and "no Unassigned row" mean different things. A bucket
-  // with no rows is skipped below, so Non-Production only appears when the file
-  // actually carried somebody sitting in it.
+  // with no rows is skipped below, so SG&A only appears when the file actually
+  // carried somebody sitting in it.
   const order = [
     ...DEPARTMENTS,
     NON_PRODUCTION,
@@ -610,7 +627,7 @@ function buildImport({
       totalRows,
       imported: rows.length,
       salariedSkipped,
-      salariedWithHoursImported
+      salariedWithHoursSkipped
     },
     totals,
     departments,

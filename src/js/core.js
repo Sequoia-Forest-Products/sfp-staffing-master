@@ -1,0 +1,258 @@
+// core — shared state, constants, formatting/DOM helpers and the tab dispatcher.
+//
+// Every file in src/js is a plain classic script, not an ES module. They are
+// concatenated in manifest order by netlify/functions/session.js and served as
+// ONE inline script tag, so they share a single global scope: the inline on*
+// handlers throughout app.html call these functions by bare name, and module
+// scope would break every one of them. Nothing here is exported or imported.
+//
+// This file comes first in the manifest and holds everything the feature files
+// share, so nothing is duplicated: `state`, the department taxonomy, the date
+// and money formatters, esc/jsStr, toast, and switchTab/goToTab/render.
+
+const user = window.__SFP_USER__ || {};
+document.getElementById('userName').textContent = user.name || user.email || '';
+if (user.picture) document.getElementById('userAvatar').src = user.picture;
+
+// The full shape of the emailSettings row. loadEmailSettings merges the stored
+// row over these rather than replacing state wholesale: settings.js stores one
+// JSON blob, so a row written before a field existed simply lacks it, and a
+// straight assignment would drop the field from state — after which the next
+// save writes the row back without it. That is how editing the manager list
+// would silently wipe the configured grace hours and revert the report to its
+// default without saying anything.
+const EMAIL_SETTINGS_DEFAULTS={managers:[], autoSend:false, otBudgetPercent:10, graceHoursPerEmployee:0.5};
+
+// settings.js writes value as a raw object on insert and as a JSON string on
+// update, so both shapes come back from the same key.
+function parseSettingsValue(v){
+  if(typeof v==='string'){try{return JSON.parse(v);}catch{return null;}}
+  return v&&typeof v==='object'?v:null;
+}
+
+let state = {
+  tab:'employees', employees:[], economics:[],
+  ot:{post:[],weekend:[],pre:[]}, points:[],
+  filterName:'', filterDept:'all', filterStatus:'Active',
+  editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
+  sortCol:'name', sortDir:'asc',
+  burden:0.44, mhr:15.0,
+  emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
+  otEmailSending:false,
+  dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null, dailyDupAck:false, dailyLastImport:null,
+  dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
+  dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
+  otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
+  otReportTruncated:false, otReportWindow:null,
+  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{}
+};
+
+function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+
+// Takes the whole employee, not a bare wage, because 'is this person salaried'
+// is no longer a fact about the wage column — see isSalaried below. A wage value
+// is still accepted so a caller holding nothing else keeps the legacy reading.
+//
+// Everything routes through isSalaried so the roster and Staffing Economics
+// cannot disagree about the same employee: a lowercase 'salary' used to render
+// as $NaN here while being correctly excluded there. A blank wage on an hourly
+// person is unknown, not salaried — it used to display as 'Salary', which made a
+// half-entered new hire look like staff they are not.
+function fmtWage(empOrWage){
+  const emp = (empOrWage&&typeof empOrWage==='object') ? empOrWage : {wage:empOrWage};
+  if(isSalaried(emp))return 'Salary';
+  const n=parseFloat(String(emp.wage==null?'':emp.wage).replace(/[$,]/g,''));
+  return isNaN(n)?'—':('$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+}
+
+// THE one frontend answer to 'is this person salaried'. Every screen asks here.
+//
+// Pay type is its own column now: employees.pay_type holds 'Hourly' or
+// 'Salaried' (SCHEMA_V2_MODEL.sql section 5b). Before that migration the marker
+// lived inside employees.wage as the literal string 'Salary', and the migration
+// NULLS wage for salaried people — so code that decides this by reading wage
+// alone reads every salaried person as HOURLY the moment the migration runs,
+// which puts them into Staffing Economics and into the clock-grace headcount
+// and silently inflates both.
+//
+// Hence the order: pay_type when it is present and recognised, the legacy wage
+// marker only as a fallback. That is correct before AND after the migration, and
+// a stale 'Salary' left in wage never overrides an explicit pay_type of Hourly.
+// Trimmed and case-insensitive on both, because the edit form only normalises
+// casing on blur and the database column is plain text.
+//
+// Mirrored by isSalaried() in netlify/functions/wage-sync.js and
+// netlify/functions/ot-report-lib.js — three runtimes, one rule. Change all
+// three together.
+function isSalaried(emp){
+  const pt=String((emp&&(emp.pay_type!=null?emp.pay_type:emp.payType))||'').trim().toLowerCase();
+  if(pt==='salaried')return true;
+  if(pt==='hourly')return false;
+  return String((emp&&emp.wage)||'').trim().toLowerCase()==='salary';
+}
+const PAY_TYPES=['Hourly','Salaried'];
+function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
+
+// ============================================================
+// PAYROLL SHARED HELPERS
+// ============================================================
+
+// The employee taxonomy (Architecture v2, SCHEMA_V2_MODEL.sql). THREE independent
+// axes, and none of them is derived from another — not here, not in the UI, and not
+// by a default that follows from a neighbouring field:
+//
+//   cost_class      which accounting bucket   Manufacturing / Mill Overhead / SG&A
+//   department      which line within it      twelve values, grouped below
+//   position_group  where in the mill         nine values, planning only, often null
+//
+// A salaried person can be Manufacturing (Eduardo Rivera) and an hourly person can be
+// SG&A (Axeri Ramirez), so neither cost class nor department can be read off pay type
+// or off each other. Some department and position-group names coincide (Maintenance,
+// Saw Filing, Log Yard, Shipping) and the match is NOT a mapping: Supervisors spans
+// departments, so one exception already makes it not a rule.
+//
+// TWO department lists, deliberately different sizes — do not "fix" them into one:
+//   MANUFACTURING_DEPARTMENTS — the six production cost centres, i.e. the departments
+//     of the Manufacturing cost class. This is the list to COUNT and compare against
+//     ("N of 6 departments staffed"), which is a question about production only.
+//     Clean-up is ordinary production labour: it belongs here.
+//   PAYROLL_DEPARTMENTS — what a person can be ASSIGNED to: all twelve, which is
+//     exactly what the employees.department CHECK constraint allows once
+//     SCHEMA_V2_TIGHTEN_DEPARTMENTS.sql has run, and nothing else.
+// Rule of thumb: assign from PAYROLL_DEPARTMENTS, count against
+// MANUFACTURING_DEPARTMENTS. Collapsing them would either make the stat card claim
+// office staff as production, or stop half the roster from being assignable.
+//
+// 'SG&A' is RETIRED as a department value — it is a cost class now, with five
+// departments of its own (Sales & Marketing, Procurement, Accounting, HR, Corporate),
+// and it is deliberately absent from PAYROLL_DEPARTMENTS. Rows that still hold it are
+// real data until they are reassigned, so the edit modal still DISPLAYS the value it
+// no longer offers (see renderModal) rather than blanking a good value on save.
+//
+// 'Sales & Marketing' and the 'SG&A' cost class both carry an ampersand, so both have
+// to survive a round trip: everything that lands in HTML — option text, option value,
+// optgroup label — goes through esc(), and nothing re-encodes on the way back out.
+// The value read off a <select> and PATCHed to the API is the raw 'Sales & Marketing'.
+const MANUFACTURING_DEPARTMENTS=['Log Yard','Clean-up','Shipping','Maintenance','Production','Saw Filing'];
+const MILL_OVERHEAD_DEPARTMENTS=['Mill Overhead'];
+const SGA_DEPARTMENTS=['Sales & Marketing','Procurement','Accounting','HR','Corporate'];
+const COST_CLASSES=['Manufacturing','Mill Overhead','SG&A'];
+
+// Grouping for READABILITY only — twelve flat options are unreadable, so the dropdown
+// groups them by cost class. Picking a department must never set the cost class, and
+// picking a cost class must never filter or set the department: they are separate
+// fields on the form and separate columns in the database.
+const DEPARTMENTS_BY_COST_CLASS={
+  'Manufacturing':MANUFACTURING_DEPARTMENTS,
+  'Mill Overhead':MILL_OVERHEAD_DEPARTMENTS,
+  'SG&A':SGA_DEPARTMENTS
+};
+
+// The twelve assignable department values, in cost-class order.
+const PAYROLL_DEPARTMENTS=COST_CLASSES.reduce((all,cc)=>all.concat(DEPARTMENTS_BY_COST_CLASS[cc]),[]);
+
+// The planning layer. Nullable for everyone, and legitimately null for anybody who is
+// not manufacturing floor staff — that is NOT enforced against cost class here or in
+// the database, so the form offers a blank and leaves it blank.
+const POSITION_GROUPS=['Supervisors','Maintenance','Saw Filing','Log Yard','Sawmill Operators',
+  'Bakerville','Green Chain','Extras','Shipping'];
+
+// Any department is an assignment, so a row carrying one is DONE and must never be
+// counted as still needing a department. Every "is this row complete?" test goes
+// through here so the screens cannot drift apart on what "unassigned" means. A row on
+// the retired 'SG&A' still counts as assigned: it holds a value somebody chose.
+function hasDepartment(v){return !!String(v==null?'':v).trim();}
+const DAY_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTH_ABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Dates come back as plain YYYY-MM-DD. new Date('2026-08-17') is parsed as UTC
+// and renders as the previous day in Pacific time, so split the string instead
+// of letting Date do it.
+function dateParts(s){const p=String(s||'').slice(0,10).split('-');return (p.length===3&&p[0])?[+p[0],+p[1],+p[2]]:null;}
+function fmtDate(s){const p=dateParts(s);return p?MONTH_ABBR[p[1]-1]+' '+p[2]+', '+p[0]:'—';}
+function fmtDateShort(s){const p=dateParts(s);return p?MONTH_ABBR[p[1]-1]+' '+p[2]:'—';}
+function isoDow(s){const p=dateParts(s);if(!p)return 0;const d=new Date(p[0],p[1]-1,p[2]).getDay();return d===0?7:d;}
+function dayNameOf(s){const p=dateParts(s);return p?DAY_NAMES[new Date(p[0],p[1]-1,p[2]).getDay()]:'';}
+function isScheduledDate(s){const d=isoDow(s);return d>=1&&d<=4;}
+function isoToday(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function isoShift(s,days){const p=dateParts(s);if(!p)return s;const d=new Date(p[0],p[1]-1,p[2]+days);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function fmtStamp(ts){if(!ts)return '—';const d=new Date(ts);return isNaN(d.getTime())?String(ts):d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+function fmtHrs(n){return (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmtCount(n){return n==null?'—':Number(n).toLocaleString('en-US');}
+
+// Whole calendar days between a stored timestamp and today. Both ends go through
+// dateParts for the same reason everything else here does: new Date('2026-08-11')
+// is UTC midnight, which is the 10th in Pacific, and an item that arrived this
+// morning would read as a day stale.
+function daysSince(ts){const a=dateParts(ts),b=dateParts(isoToday());if(!a||!b)return null;
+  return Math.round((Date.UTC(b[0],b[1]-1,b[2])-Date.UTC(a[0],a[1]-1,a[2]))/86400000);}
+function waitedLabel(ts){const d=daysSince(ts);
+  return d==null?'unresolved — arrival time unknown':d<=0?'unresolved, arrived today':d===1?'unresolved for 1 day':'unresolved for '+d+' days';}
+function waitedColor(ts){const d=daysSince(ts);return (d==null||d>=3)?'var(--brick)':d>=1?'#9a600a':'var(--muted)';}
+
+// Vendor message ids land inside a single-quoted JS string inside a double-quoted
+// HTML attribute, so they have to survive both layers — JS first, then HTML.
+function jsStr(v){return esc(String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'"));}
+function fmtPct(f){return f==null?'—':(Number(f)*100).toFixed(1)+'%';}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);}
+
+// Fri/Sat/Sun work is normal here — maintenance crews run weekends — so this
+// labels the day, it never warns about it.
+function schedBadge(isSched){return isSched?'<span class="badge active">Scheduled Mon–Thu</span>':'<span class="badge en">Non-scheduled Fri–Sun</span>';}
+
+// Every /api/payroll-import call goes through here so a failed request raises
+// instead of leaving a panel spinning on nothing.
+async function payrollPost(body){
+  const res=await fetch('/api/payroll-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(res.status===401){location.href='/';throw new Error('Session expired');}
+  let json=null;
+  try{json=await res.json();}catch(e){json=null;}
+  if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
+  return json;
+}
+
+function goToTab(tab){
+  const btn=document.querySelector('.sfp-tab[data-tab="'+tab+'"]');
+  switchTab(tab,btn);
+}
+
+
+function switchTab(tab,el){
+  state.tab=tab;
+  document.querySelectorAll('.sfp-tab').forEach(t=>t.classList.remove('active'));
+  const pill=el||document.querySelector('.sfp-tab[data-tab="'+tab+'"]');
+  if(pill) pill.classList.add('active');
+  render();
+  // The payroll tabs read their own endpoints, so they load on first open
+  // rather than on every page load.
+  if(tab==='otreport'&&!state.otReport&&!state.otReportLoading) loadOTReport(state.otReportWeek);
+  if(tab==='dailyhours'&&!state.dailyLoaded&&!state.dailyLoading) loadDailyDays();
+}
+
+function render(){
+  const el=document.getElementById('tabContent');
+  if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
+  if(state.tab==='employees')el.innerHTML=renderEmployees();
+  else if(state.tab==='economics')el.innerHTML=renderEcon();
+  else if(state.tab==='overtime')el.innerHTML=renderOT();
+  else if(state.tab==='points')el.innerHTML=renderPoints();
+  else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
+  else if(state.tab==='otreport')el.innerHTML=renderOTReport();
+  else if(state.tab==='settings')el.innerHTML=renderSettings();
+}
+
+
+function toast(msg,type){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.className=`toast ${type} show`;
+  setTimeout(()=>{el.className='toast';},4000);
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}

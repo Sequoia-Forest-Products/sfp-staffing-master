@@ -128,23 +128,44 @@ sfp-staffing-master/
 column destroys the padding, which is why an older install's `INTEGER` column is converted by
 `SCHEMA_DAILY_HOURS.sql`. Every comparison normalises both sides with `lpad(...,4,'0')`.
 
-`department` (`Maintenance | Saw Filing | Shipping | Production | Log Yard | Non-Production`) is
-the one department field. The first five are production departments; `Non-Production` is where
-SG&A and office staff go, and counts as assigned — without it the back-fill could never be finished, and
-finishing it is what gates retiring `dept`. Nobody is placed there automatically.
-Back-fill it on the Employees tab before importing payroll data — `daily_hours` snapshots the
-department at import time.
+### The four axes
+
+Architecture v2 separates four independent facts about a person. None is derived from another,
+and each answers only its own question:
+
+| Column | Question | Values |
+|---|---|---|
+| `pay_type` | Do daily hours flow in? | `Hourly`, `Salaried` |
+| `cost_class` | Which accounting bucket, which tab? | `Manufacturing`, `Mill Overhead`, `SG&A` |
+| `department` | Which line within that bucket? | twelve values, below |
+| `position_group` | Where in the mill do they work? | nine values, planning only |
+
+`department` — **Manufacturing:** `Log Yard`, `Clean-up`, `Shipping`, `Maintenance`, `Production`,
+`Saw Filing` · **Mill Overhead:** `Mill Overhead` · **SG&A:** `Sales & Marketing`, `Procurement`,
+`Accounting`, `HR`, `Corporate`.
+
+`position_group` — `Supervisors`, `Maintenance`, `Saw Filing`, `Log Yard`, `Sawmill Operators`,
+`Bakerville`, `Green Chain`, `Extras`, `Shipping`.
+
+**Department is never derived from position group, for anyone.** Four names appear in both lists
+and the match is not a mapping: `Supervisors` spans departments, so a supervisor's department is
+set independently of where they stand in the mill. `Extras` is a real position group — floor staff
+who move where they are needed — and is *not* the bullpen; the bullpen is the separate condition of
+having no classification at all.
+
+`pay_type` replaces the old convention of storing the literal string `Salary` in `wage`. That made
+one column both the wage and the pay-type flag, and the two disagreed: a lowercase `salary`
+rendered as `$NaN` on the roster while being correctly excluded from Staffing Economics. `wage` now
+holds an hourly rate or nothing; salaried compensation lives in `annual_salary`.
+Set it before importing payroll data — `daily_hours` snapshots the department at import time, so
+a row imported for an employee with no department lands as Unassigned.
 
 `dept` is the **retired** predecessor (Sawmill / Filing Room / Log Yard / SG&A / ...). Nothing
-reads it functionally any more and nothing writes to it; it survives only as the reference an
-operator reads while hand-assigning `department`, and is dropped by `SCHEMA_DROP_DEPT.sql` once
-the back-fill is verified complete.
+reads it functionally and nothing writes to it; it is dropped by `SCHEMA_DROP_DEPT.sql`.
 
-There is **no automatic migration between the two**, and that is expected rather than an omission:
-`Maintenance` and `Shipping` do not exist in the old value set at all, so the people now in them
-are currently tagged Sawmill or Log Yard and no mapping table can recover the right answer. Every
-employee is assigned by hand. `Filing Room` → `Saw Filing` is the single known rename and is
-offered on the back-fill screen as a marked suggestion that will not commit itself.
+There was **no automatic migration between the two** — the value sets do not correspond, so every
+employee was assigned by hand. The one-off bulk back-fill screen that existed for that migration
+has been removed now that it is done; departments are set per employee in the edit modal.
 
 ### economics
 `id, num, section, position, name, max_wage`
@@ -343,8 +364,10 @@ Netlify env vars to make even the scheduled run compose-and-log only.
 
 Full guide: **[`PAYROLL_INGESTION.md`](PAYROLL_INGESTION.md)**. The short version:
 
-The payroll system emails `Work Summary Payroll.xlsx` to `info@sequoiafp.com` every morning at
-~6:04 AM Pacific. A Gmail filter labels it `payroll import` and skips the inbox. An hourly
+BBSI emails `Work Summary Payroll.xlsx` to `info@sequoiafp.com` every morning at ~6:04 AM
+Pacific. (**BBSI and Central Servers are one vendor** — BBSI is the PEO, Central Servers is
+their reporting platform and the actual sender, `no-reply@centralservers.com`. Not two
+systems.) A Gmail filter labels it `payroll import` and skips the inbox. An hourly
 scheduled function searches **only that label** over IMAP, parses the attachment, and upserts one
 `daily_hours` row per employee. The OT Report tab reads that table; the Daily Hours tab is the
 manual upload path and the permanent fallback.
@@ -360,12 +383,15 @@ Four things about it are load-bearing and easy to undo by accident:
 3. **OT dollars are the residual** `Total Earnings - Regular x Pay Rate`, not
    `OT x rate x 1.5`. California 4x10 pays 2.0x above 12 hours, and the flat multiplier
    undercounts by ~3%.
-4. **Salaried employees are excluded at import**, so every dollar figure here is *hourly*
-   payroll. The UI labels it that way; without the label the Net OT percentage reads as
-   company-wide and is not.
+4. **Salaried employees are excluded at import** — unconditionally, whatever the file
+   carries for them — so every dollar figure here is *hourly* payroll. The UI labels it that
+   way; without the label the Net OT percentage reads as company-wide and is not. A salaried
+   row that arrives carrying hours is still *reported* as an anomaly, because that means the
+   file changed shape.
 
-Set-up order matters: run `SCHEMA_DAILY_HOURS.sql`, back-fill `employee_number` and `department`
-on the Employees tab, import a day by hand, *then* turn on the email pipeline.
+Set-up order matters: run `SCHEMA_DAILY_HOURS.sql`, make sure every employee has an
+`employee_number` and a `department` on the Employees tab, import a day by hand, *then* turn on
+the email pipeline.
 
 ### Testing
 

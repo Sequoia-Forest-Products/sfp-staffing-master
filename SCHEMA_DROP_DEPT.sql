@@ -15,7 +15,7 @@
 -- Sequence for the whole consolidation:
 --   1. Audit what reads dept                        (done — app.html only)
 --   2. Migrate the dependents to department         (done)
---   3. Back-fill every employee by hand             <- the Employees tab
+--   3. Give every employee a department            <- the Employees tab
 --   4. Run the gates below
 --   5. Drop dept                                    <- this file
 -- ============================================================================
@@ -32,10 +32,9 @@
 -- "Unassigned" bucket, and there is no longer a legacy value to work out where
 -- they belonged.
 --
--- 'Non-Production' counts as assigned and does not appear here. That is the
--- point of the value: SG&A and office staff belong to none of the production
--- departments, and without it this gate could never reach zero. A blank means
--- nobody has decided yet; 'Non-Production' means somebody did.
+-- 'SG&A' counts as assigned and does not appear here. That is the
+-- point of the value: office staff belong to none of the production
+-- departments. A blank means nobody has decided yet; 'SG&A' means somebody did.
 select id, name, dept, department, status
 from employees
 where status = 'Active'
@@ -72,7 +71,7 @@ order by dept, name;
 
 -- GATE 3: nothing is left holding a legacy value we never re-assigned.
 --
--- A sanity check on the back-fill rather than on the data model: an active
+-- A sanity check on the data rather than on the data model: an active
 -- employee whose department was set to a known rename (Filing Room -> Saw
 -- Filing) or kept its name (Maintenance, Shipping, Log Yard) is fine, but one
 -- still carrying an unrecognised value in `department` means a bad write got
@@ -81,23 +80,22 @@ select id, name, dept, department
 from employees
 where department is not null
   and department not in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard',
-                         'Non-Production')
+                         'Clean-up', 'SG&A')
 order by name;
 
 
--- NOT A GATE, but worth a look before you finish: employees marked
--- Non-Production who are paid hourly.
+-- NOT A GATE, but worth a look before you finish: employees marked SG&A who
+-- are paid hourly.
 --
--- Non-Production exists for salaried office staff, who never reach the OT
--- report because salaried rows are dropped at import. Somebody hourly and
--- non-production is a real combination, not an error — but it means their
--- hours WILL import and the OT report will show a Non-Production department
--- row, which it flags rather than hides. Better to know now than to meet it
+-- SG&A exists for salaried office staff, who never reach the OT report because
+-- salaried rows are dropped at import. Somebody hourly and non-production is a
+-- real combination, not an error — but it means their hours WILL import and the
+-- OT report will show an SG&A department row, which it flags rather than hides. Better to know now than to meet it
 -- in a weekly report.
 select name, dept, department, wage
 from employees
 where status = 'Active'
-  and department = 'Non-Production'
+  and department = 'SG&A'
   and btrim(lower(coalesce(wage, ''))) <> 'salary'
 order by name;
 
@@ -135,8 +133,8 @@ from employees;
 -- 4. AFTER THE DROP
 -- ----------------------------------------------------------------------------
 --
--- app.html still reads `dept` in three places that become dead but harmless
--- (the two loadData mappings coalesce a missing column to '', and the back-fill
--- screen's reference column simply renders an em-dash). Clean them up in the
--- same release, along with this file and the "Roster dept" column itself —
--- there is nothing left to reference once the column is gone.
+-- app.html may still read `dept` in places that become dead but harmless (a
+-- loadData mapping coalescing a missing column to ''). Clean those up in the
+-- same release, along with this file — there is nothing left to reference once
+-- the column is gone. The current list of readers is in the change that
+-- removed the back-fill screen.
