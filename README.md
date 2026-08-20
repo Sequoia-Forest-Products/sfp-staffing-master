@@ -128,23 +128,19 @@ sfp-staffing-master/
 column destroys the padding, which is why an older install's `INTEGER` column is converted by
 `SCHEMA_DAILY_HOURS.sql`. Every comparison normalises both sides with `lpad(...,4,'0')`.
 
-`department` (`Maintenance | Saw Filing | Shipping | Production | Log Yard | Non-Production`) is
-the one department field. The first five are production departments; `Non-Production` is where
-SG&A and office staff go, and counts as assigned — without it the back-fill could never be finished, and
-finishing it is what gates retiring `dept`. Nobody is placed there automatically.
-Back-fill it on the Employees tab before importing payroll data — `daily_hours` snapshots the
-department at import time.
+`department` (`Maintenance | Saw Filing | Shipping | Production | Log Yard | Clean-up | SG&A`) is
+the one department field. The first six are production departments; `SG&A` is where office and
+salaried staff go and is excluded from the OT report's production breakdown. Set it per employee
+on the Employees tab.
+Set it before importing payroll data — `daily_hours` snapshots the department at import time, so
+a row imported for an employee with no department lands as Unassigned.
 
 `dept` is the **retired** predecessor (Sawmill / Filing Room / Log Yard / SG&A / ...). Nothing
-reads it functionally any more and nothing writes to it; it survives only as the reference an
-operator reads while hand-assigning `department`, and is dropped by `SCHEMA_DROP_DEPT.sql` once
-the back-fill is verified complete.
+reads it functionally and nothing writes to it; it is dropped by `SCHEMA_DROP_DEPT.sql`.
 
-There is **no automatic migration between the two**, and that is expected rather than an omission:
-`Maintenance` and `Shipping` do not exist in the old value set at all, so the people now in them
-are currently tagged Sawmill or Log Yard and no mapping table can recover the right answer. Every
-employee is assigned by hand. `Filing Room` → `Saw Filing` is the single known rename and is
-offered on the back-fill screen as a marked suggestion that will not commit itself.
+There was **no automatic migration between the two** — the value sets do not correspond, so every
+employee was assigned by hand. The one-off bulk back-fill screen that existed for that migration
+has been removed now that it is done; departments are set per employee in the edit modal.
 
 ### economics
 `id, num, section, position, name, max_wage`
@@ -364,8 +360,9 @@ Four things about it are load-bearing and easy to undo by accident:
    payroll. The UI labels it that way; without the label the Net OT percentage reads as
    company-wide and is not.
 
-Set-up order matters: run `SCHEMA_DAILY_HOURS.sql`, back-fill `employee_number` and `department`
-on the Employees tab, import a day by hand, *then* turn on the email pipeline.
+Set-up order matters: run `SCHEMA_DAILY_HOURS.sql`, make sure every employee has an
+`employee_number` and a `department` on the Employees tab, import a day by hand, *then* turn on
+the email pipeline.
 
 ### Testing
 

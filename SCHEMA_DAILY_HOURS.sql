@@ -4,14 +4,17 @@
 -- Run this whole file in the Supabase SQL editor. It is idempotent — every
 -- statement is guarded, so re-running it is safe.
 --
--- Order matters: back-fill employees.department (Employees tab -> "Back-fill
--- payroll fields") BEFORE importing any payroll data. daily_hours snapshots
--- the department at import time (see the comment on daily_hours.department),
--- so rows imported before the back-fill land with a null department and have
--- to be re-stamped afterwards.
+-- Order matters: every employee needs a department BEFORE any payroll data is
+-- imported. daily_hours snapshots the department at import time (see the
+-- comment on daily_hours.department), so rows imported for an employee with no
+-- department land null and have to be re-stamped from the Daily Hours tab.
 --
--- The older employees.dept column is being retired once that back-fill is
--- complete; SCHEMA_DROP_DEPT.sql holds the gates and the drop.
+-- Departments are set per employee on the Employees tab. The one-off bulk
+-- back-fill screen that existed for the original migration has been removed
+-- now that the migration is done.
+--
+-- The older employees.dept column is retired by SCHEMA_DROP_DEPT.sql, which
+-- holds the gates and the drop.
 -- ============================================================================
 
 
@@ -45,10 +48,9 @@ create unique index if not exists employees_employee_number_key
   on employees (employee_number)
   where employee_number is not null;
 
--- Five production departments plus Non-Production, which is where SG&A /
--- office / salaried staff go. They belong to none of the production four, and
--- without a value for them the back-fill could never be finished — and an
--- unfinished back-fill is what gates dropping employees.dept. Non-Production
+-- Six production departments plus SG&A, which is where office and salaried
+-- staff go. They belong to none of the production four, and
+-- SG&A
 -- is an explicit decision; a blank is just an unvisited row, and the screen
 -- cannot tell those apart. These people never reach the OT report anyway:
 -- salaried rows are dropped at import, before department is consulted.
@@ -58,7 +60,7 @@ create unique index if not exists employees_employee_number_key
 --
 -- The one department column. It replaces the older employees.dept, which
 -- carried a different taxonomy (Sawmill / Filing Room / Log Yard / SG&A / ...)
--- and is retired by SCHEMA_DROP_DEPT.sql once the back-fill is verified.
+-- and is retired by SCHEMA_DROP_DEPT.sql.
 --
 -- Nothing maps one onto the other, and nothing can: Maintenance and Shipping
 -- do not exist in the old value set at all, so the people now in them are
@@ -78,8 +80,8 @@ begin
       and conrelid = 'employees'::regclass
   ) then
     alter table employees add constraint employees_department_check
-      check (department in ('Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard',
-                            'Non-Production'));
+      check (department in ('Maintenance', 'Saw Filing', 'Shipping', 'Production',
+                            'Log Yard', 'Clean-up', 'SG&A'));
   end if;
 end $$;
 
@@ -201,13 +203,12 @@ create index if not exists processed_emails_hash_idx      on processed_emails (f
 
 
 -- ----------------------------------------------------------------------------
--- 4. Audit queries — run these after the back-fill, before trusting a report
+-- 4. Audit queries — run these before trusting a report
 -- ----------------------------------------------------------------------------
 
 -- 4a. Employees still missing a payroll id or a department. Both must be
 --     filled in before any import, or those rows snapshot a null department.
---     Drop the `dept` column from the select once SCHEMA_DROP_DEPT.sql has run;
---     until then it is the reference for deciding what the department should be.
+--     Drop the `dept` column from the select once SCHEMA_DROP_DEPT.sql has run.
 -- select name, dept, employee_number, department
 -- from employees
 -- where status = 'Active' and (employee_number is null or department is null)

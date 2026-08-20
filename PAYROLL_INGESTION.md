@@ -46,29 +46,29 @@ If an older install created `employee_number` as `INTEGER` (the original
 `SCHEMA_CHANGES.sql` did), the migration converts it to `TEXT` and restores the
 zero-padding the integer type threw away.
 
-### 2. Back-fill `employee_number` and `department`
+### 2. Give every employee an `employee_number` and a `department`
 
-Employees tab -> **Back-fill payroll fields**. One screen, both fields, every employee.
+Employees tab, edit an employee. Both fields are on the edit modal.
 
 - `employee_number` is the payroll system's id, zero-padded to four characters
   (`0319`, `0063`, `9290`). Enter it exactly as payroll shows it. Matching normalises
   both sides with `lpad(...,4,'0')`, so an unpadded `319` still matches `0319` — but
   store the padded form.
-- `department` is one of **Maintenance, Saw Filing, Shipping, Production, Log Yard** — or
-  **Non-Production** for SG&A and office staff — and it is now the *only* department field. The older `dept` (Sawmill / Filing Room / Log Yard /
-  SG&A / ...) is retired: nothing reads it functionally and nothing writes to it, and
-  it is dropped by `SCHEMA_DROP_DEPT.sql` once this back-fill is verified complete.
-  Until then it stays visible on the back-fill screen as reference, because it is what
-  you read while deciding.
+- `department` is one of **Maintenance, Saw Filing, Shipping, Production, Log Yard, Clean-up**
+  — or **SG&A** for office and salaried staff — and it is the *only* department field.
 
-  **Non-Production is a real answer, not a skipped row.** The production
-  departments have no home for salaried office staff, and the back-fill's
-  "still needs a department" count is what gates retiring `dept` — so without a
-  fifth value that count could never honestly reach zero. Leaving those people
-  blank does not work either: the screen cannot tell a deliberate blank from a
-  row nobody has reached yet. Non-Production records the decision.
+  The older `dept` (Sawmill / Filing Room / Log Yard / SG&A / ...) is retired: nothing
+  reads it functionally and nothing writes to it, and it is dropped by
+  `SCHEMA_DROP_DEPT.sql`. Note the name collision — the retired `dept` column had an
+  `SG&A` value too, and the new `department` column now has one again. They are
+  different columns with different meanings; the report reads only `department`.
 
-  Nobody is *put* there automatically — not from `dept = 'SG&A'`, not from
+  **SG&A is a real answer, not a skipped row.** The production
+  departments have no home for salaried office staff, and leaving those people
+  blank does not work: a blank cannot be told apart from a row nobody has
+  reached yet. `SG&A` records the decision.
+
+  Nobody is put there automatically — not from `dept = 'SG&A'`, not from
   salaried status, not from wage or job title. Same rule as everything else on
   this screen.
 
@@ -531,8 +531,8 @@ the date as manually set rather than inferred. If the same file also imported un
 right date, delete the wrong day.
 
 **A whole department reads as Unassigned.**
-Those employees are missing `department` (or `employee_number`) on the roster. Back-fill
-them on the Employees tab, then **Re-stamp departments** over the affected date range.
+Those employees are missing `department` (or `employee_number`) on the roster. Set them
+on the Employees tab, then **Re-stamp departments** over the affected date range.
 Audit queries 4b and 4c in `SCHEMA_DAILY_HOURS.sql` list exactly who.
 
 **Department rows do not sum to the mill totals.**
