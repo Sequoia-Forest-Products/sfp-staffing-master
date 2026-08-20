@@ -1,4 +1,16 @@
 -- ============================================================================
+-- SUPERSEDED by SCHEMA_V2_MODEL.sql.
+--
+-- This file set the seven-value department list (six production departments
+-- plus SG&A). Architecture v2 replaces that taxonomy with twelve departments
+-- across three cost classes, and retires 'SG&A' as a department — it is now a
+-- cost_class with five departments of its own.
+--
+-- Do not run this file. It would narrow the constraint back and reject the new
+-- values. Kept only as a record of the previous rule.
+-- ============================================================================
+
+-- ============================================================================
 -- Set the full list of allowed employees.department values
 --
 -- Seven values: six production departments plus SG&A.
