@@ -12,7 +12,12 @@
 //   overtimeRows  overtime rows: {id, name, ot_type, hours, description}
 //   employees     {id, name, employee_number, department, wage, status, pay_type}
 //   expectedDays  optional array of 'YYYY-MM-DD' that a delivery was expected
-//                 for; defaults to the scheduled block (Mon-Thu) of the week
+//                 for; defaults to EVERY day of the week, since the vendor
+//                 sends daily. The default is deliberately naive about "today"
+//                 — it has no clock — so a caller reporting on the current week
+//                 must narrow it to days that have already happened, the way
+//                 payroll-report.js does. Anything not in the set reads as
+//                 'pending' rather than as a missed delivery.
 //   graceHoursPerEmployee
 //                 the timeclock grace allowance, in hours per active hourly
 //                 employee per week; DEFAULT_GRACE_HOURS when it is missing or
@@ -36,10 +41,17 @@
 //      keep them separable, because they are different promises to different
 //      people and a single merged number cannot be argued with.
 //
-// "No data" NEVER means "nobody worked". Fri/Sat/Sun are legitimate work days
-// (maintenance), so an empty Saturday is either a quiet Saturday or a missed
-// email and completeness says exactly that ('no-data-nonscheduled'). An empty
-// Mon-Thu is 'missing' — a probable missed delivery.
+// "No data" NEVER means "nobody worked". BBSI sends the Work Summary Payroll
+// report seven days a week, so a past day with no rows is a probable missed
+// delivery whichever day of the week it is — completeness calls every one of
+// them 'missing'. A day that simply has not happened yet is 'pending'.
+//
+// This used to carve out Fri/Sat/Sun as 'no-data-nonscheduled', on the grounds
+// that an empty Saturday might just be a quiet Saturday. That was reasoning
+// about the mill's schedule, not the vendor's: the report is owed daily, so the
+// ambiguity it described does not exist. The Mon-Thu block is still real and
+// still splits scheduled hours from weekend hours below — it just says nothing
+// about whether a report was owed.
 
 // The PRODUCTION departments, in reporting order. This is what the report
 // breaks the mill down by, and it is deliberately NOT the list of values
@@ -943,37 +955,43 @@ function buildReport({
   }).sort((a, b) => b.otHours - a.otHours || b.totalHours - a.totalHours || a.name.localeCompare(b.name));
 
   // ---- completeness ----------------------------------------------------
-  // "Expected" defaults to the scheduled block (Mon-Thu). Fri/Sat/Sun are never
-  // expected but absolutely can have data, so an empty one is reported as
-  // ambiguous rather than as a missed delivery. Callers can narrow the expected
-  // set (payroll-report.js drops days that have not happened yet).
+  // "Expected" now means every day, because the vendor sends every day. The
+  // only reason a day is not expected is that it has not happened yet, and the
+  // caller is the one that knows when "now" is — see the expectedDays note at
+  // the top of this file.
   const expectedSet = Array.isArray(expectedDays)
     ? new Set(expectedDays.map(normalizeDate).filter(Boolean))
-    : new Set(dates.filter(d => isoDowFromMs(dateToUTC(d)) <= LAST_SCHEDULED_ISO_DOW));
+    : new Set(dates);
 
   const completenessDays = days.map(day => {
     const expected = expectedSet.has(day.date);
     return {
       date: day.date,
       dayName: day.dayName,
+      // Kept because the report splits scheduled hours from weekend hours and
+      // the UI badges the difference. It no longer decides whether an empty day
+      // is a missed delivery.
       isScheduledDay: day.isScheduledDay,
       hasData: day.hasData,
       rowCount: day.rowCount,
       expected,
-      // 'data'                 rows are present
-      // 'missing'              expected (scheduled) and empty — a probable missed delivery
-      // 'no-data-nonscheduled' Fri-Sun and empty — either nobody worked or the
-      //                        email never arrived; this does NOT mean nobody worked
-      status: day.hasData ? 'data' : (expected ? 'missing' : 'no-data-nonscheduled')
+      // Three states, and every day of the week reaches all three:
+      //   'data'     rows are present
+      //   'missing'  the day has passed and is empty — a probable missed delivery
+      //   'pending'  the day is not in the expected set, i.e. it has not
+      //              happened yet. Never a judgement about whether anyone worked.
+      status: day.hasData ? 'data' : (expected ? 'missing' : 'pending')
     };
   });
 
   const expectedDayList = completenessDays.filter(d => d.expected);
   const completeness = {
     days: completenessDays,
-    missingScheduledDays: expectedDayList.filter(d => !d.hasData).map(d => d.date),
-    scheduledDaysWithData: expectedDayList.filter(d => d.hasData).length,
-    scheduledDaysExpected: expectedDayList.length
+    // Renamed off "scheduled": these count every day the vendor owed a report,
+    // which is all of them. A name promising Mon-Thu would now be a lie.
+    missingDays: expectedDayList.filter(d => !d.hasData).map(d => d.date),
+    daysWithData: expectedDayList.filter(d => d.hasData).length,
+    daysExpected: expectedDayList.length
   };
 
   // ---- issues ----------------------------------------------------------

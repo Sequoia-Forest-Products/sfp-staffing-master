@@ -171,16 +171,18 @@ async function resolveIngestionEmail(messageId){
 }
 
 // The days action omits dates that have no rows, so gaps have to be derived from
-// the range itself. A past Mon–Thu with nothing imported is a missed delivery; a
-// Fri–Sun with nothing is unknowable from here, so it is not listed as a problem.
-function missingScheduledDays(){
+// the range itself. BBSI sends the report seven days a week, so ANY past day
+// with nothing imported is a probable missed delivery — weekends included. This
+// used to skip Fri–Sun as unknowable, which was true of the mill's schedule and
+// never true of the vendor's.
+function missingDays(){
   const have={};
   (state.dailyDays||[]).forEach(d=>{have[d.workDate]=true;});
   const today=isoToday();
   const out=[];
   let cur=state.dailyFrom, guard=0;
   while(cur&&state.dailyTo&&cur<=state.dailyTo&&guard++<400){
-    if(cur<today&&isScheduledDate(cur)&&!have[cur]) out.push(cur);
+    if(cur<today&&!have[cur]) out.push(cur);
     cur=isoShift(cur,1);
   }
   return out;
@@ -328,7 +330,7 @@ function renderDailyHours(){
   const pendLog=pending?pending.filter(e=>!isActionable(e)):[];
   const li=state.dailyLastImport;
   const rr=state.restampResult;
-  const gaps=state.dailyLoaded?missingScheduledDays():[];
+  const gaps=state.dailyLoaded?missingDays():[];
 
   const upload=`
     <div class="section-head"><span>Import a day</span></div>
@@ -363,9 +365,9 @@ function renderDailyHours(){
       </span>
     </div>
     ${state.dailyLoading?'<div class="loading-state">Loading imported days…</div>':`
-    ${gaps.length?`<div class="dh-warn"><strong>${gaps.length} scheduled day${gaps.length===1?'':'s'} in this range have no data at all:</strong>
+    ${gaps.length?`<div class="dh-warn"><strong>${gaps.length} day${gaps.length===1?'':'s'} in this range have no data at all:</strong>
       ${gaps.map(g=>'<span class="dh-chip">'+fmtDate(g)+' · '+dayNameOf(g)+'</span>').join('')}
-      <div style="font-size:11px;margin-top:4px">Every one of those is a Mon–Thu with no import — a probable missed delivery. Fri–Sun gaps are not listed: from here they are indistinguishable from nobody having worked.</div></div>`:''}
+      <div style="font-size:11px;margin-top:4px">BBSI sends the report every day, so each of those is a probable missed delivery — weekends included. Import it by hand, or check the "payroll import" label in info@.</div></div>`:''}
     <div class="table-wrap">
       <table>
         <thead><tr>

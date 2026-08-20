@@ -169,7 +169,6 @@ const otReportStyle=`<style>
   .comp-day{border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;font-size:11px}
   .comp-day.data{background:#e8f5ec;border-color:#9fcdb0}
   .comp-day.missing{background:#fce8e8;border-color:#e0a5a5}
-  .comp-day.unknown{background:var(--surface2);border-color:var(--border);border-style:dashed}
   .comp-day.pending{background:var(--surface);border-color:var(--border);color:var(--muted)}
   .comp-name{font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
   .comp-status{margin-top:4px;color:var(--textDim);line-height:1.35}
@@ -430,22 +429,19 @@ function renderOTReport(){
       </table>
     </div>`;
 
-  // 8. Completeness. A Saturday with no rows because nobody worked and a Saturday
-  // with no rows because the email never arrived look identical in the data, so
-  // they get their own status instead of being rendered as fine.
+  // 8. Completeness. BBSI sends the report every day, so any past day with no
+  // rows is a probable missed delivery — Saturday included.
   const comp=r.completeness||{days:[]};
-  // Four states, not three. A scheduled day that has not happened yet comes back
-  // expected:false and must not read as a missed delivery — nor as the Fri–Sun
-  // "nobody worked, or no report arrived" case, which is a genuine unknown.
-  const compState=d=>d.hasData?'data'
-    :(d.isScheduledDay&&d.expected===false)?'pending'
-    :d.status==='missing'?'missing'
-    :'unknown';
-  const compClass={data:'data',missing:'missing',pending:'pending',unknown:'unknown'};
+  // Three states, and the server decides all three. There used to be a fourth,
+  // 'unknown', for an empty Fri–Sun: "nobody worked, or no report arrived". That
+  // ambiguity was about the mill's schedule rather than the vendor's, and the
+  // server can no longer produce it — an unreachable state in the UI is worse
+  // than no state, so it is gone rather than left to rot.
+  const compState=d=>d.hasData?'data':(d.status==='pending'?'pending':'missing');
+  const compClass={data:'data',missing:'missing',pending:'pending'};
   const compText={
-    missing:'no data — scheduled day, probable missed delivery',
-    pending:'not due yet — this day has not happened',
-    unknown:'no data — nobody worked, or no report arrived'
+    missing:'no data — probable missed delivery',
+    pending:'not due yet — this day has not happened'
   };
   const compBlock=`
     <div class="section-head"><span>Data completeness</span></div>
@@ -458,7 +454,7 @@ function renderOTReport(){
         </div>`;}).join('')}
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:10px">
-        ${comp.scheduledDaysWithData||0} of ${comp.scheduledDaysExpected||0} scheduled days have data${(comp.missingScheduledDays||[]).length?` · <span style="color:var(--brick);font-weight:700">missing: ${(comp.missingScheduledDays||[]).map(fmtDate).join(', ')}</span>`:''}
+        ${comp.daysWithData||0} of ${comp.daysExpected||0} days have data${(comp.missingDays||[]).length?` · <span style="color:var(--brick);font-weight:700">missing: ${(comp.missingDays||[]).map(fmtDate).join(', ')}</span>`:''}
       </div>
     </div>`;
 

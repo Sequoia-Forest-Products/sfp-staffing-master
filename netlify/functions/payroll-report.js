@@ -80,11 +80,6 @@ function shiftDays(dateStr, days) {
   return utcToDateStr(dateToUTC(dateStr) + days * DAY_MS);
 }
 
-function isoDow(dateStr) {
-  const day = new Date(dateToUTC(dateStr)).getUTCDay();
-  return day === 0 ? 7 : day;
-}
-
 // Today's calendar date in the payroll zone, regardless of where Netlify runs
 // this. Built from Intl parts so it is a literal calendar date, not an instant.
 function todayInZone(now = new Date(), timeZone = TIME_ZONE) {
@@ -308,11 +303,12 @@ exports.handler = async (event) => {
       loadGraceHours()
     ]);
 
-    // A delivery is only "expected" for a scheduled day that has already
-    // happened. Flagging tomorrow's Thursday as a missed delivery on Tuesday
-    // would cry wolf, and the report is meant to be trusted when it does say a
-    // day is missing.
-    const expectedDays = dates.filter(d => isoDow(d) <= 4 && d < today);
+    // A delivery is expected for every day that has already happened — BBSI
+    // sends the report seven days a week, so Saturday is owed one just like
+    // Tuesday. The `d < today` half stays: flagging tomorrow as a missed
+    // delivery would cry wolf, and the report is meant to be trusted when it
+    // does say a day is missing.
+    const expectedDays = dates.filter(d => d < today);
 
     const report = buildReport({
       weekStart,

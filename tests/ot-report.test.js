@@ -213,13 +213,15 @@ test('scheduled and non-scheduled split adds back up to the week', () => {
   assert.strictEqual(r.summary.weekendHeadcount, 2);
 });
 
-test('Friday counts as non-scheduled work, not as a missing scheduled day', () => {
+test('Friday counts as non-scheduled work and, having data, is not missing', () => {
   const r = report();
   const friday = dayOf(r.days, '2026-08-07');
+  // isScheduledDay is still false — the Mon-Thu split is real and the report
+  // needs it. It just says nothing about whether a report was owed.
   assert.strictEqual(friday.isScheduledDay, false);
   assert.strictEqual(friday.hasData, true);
   assert.strictEqual(friday.hours, 6);
-  assert.ok(!r.completeness.missingScheduledDays.includes('2026-08-07'));
+  assert.ok(!r.completeness.missingDays.includes('2026-08-07'));
 });
 
 // ============================================================
@@ -1209,7 +1211,7 @@ test('an employee whose rows carry no department reads as Unassigned', () => {
 // Completeness — "no data" never means "nobody worked"
 // ============================================================
 
-test('a scheduled day with no rows is missing; a weekend day with no rows is ambiguous', () => {
+test('any day with no rows is missing, weekday and weekend alike', () => {
   const r = report();
   const days = r.completeness.days;
 
@@ -1218,17 +1220,34 @@ test('a scheduled day with no rows is missing; a weekend day with no rows is amb
   assert.strictEqual(tuesday.hasData, false);
   assert.strictEqual(tuesday.status, 'missing');
 
+  // The Sunday used to come back expected:false / 'no-data-nonscheduled'. BBSI
+  // owed a report for it, so it is a missed delivery on exactly the same terms
+  // as the Tuesday.
   const sunday = dayOf(days, '2026-08-09');
-  assert.strictEqual(sunday.expected, false);
+  assert.strictEqual(sunday.expected, true);
   assert.strictEqual(sunday.hasData, false);
-  assert.strictEqual(sunday.status, 'no-data-nonscheduled');
+  assert.strictEqual(sunday.status, 'missing');
+  assert.strictEqual(sunday.isScheduledDay, false, 'still not a scheduled day');
 
-  assert.deepStrictEqual(r.completeness.missingScheduledDays, ['2026-08-04']);
-  assert.strictEqual(r.completeness.scheduledDaysExpected, 4);
-  assert.strictEqual(r.completeness.scheduledDaysWithData, 3);
+  // Mon/Wed/Thu/Fri/Sat carry rows in this fixture; Tue and Sun do not.
+  assert.deepStrictEqual(r.completeness.missingDays, ['2026-08-04', '2026-08-09']);
+  assert.strictEqual(r.completeness.daysExpected, 7);
+  assert.strictEqual(r.completeness.daysWithData, 5);
 });
 
-test('an empty Saturday is no-data-nonscheduled, never a missed delivery', () => {
+test('completeness never reports the retired no-data-nonscheduled state', () => {
+  // The state is unreachable now; this fails loudly if the weekday carve-out
+  // comes back rather than letting it return quietly.
+  for (const opts of [{}, { expectedDays: ['2026-08-03', '2026-08-04'] }]) {
+    const r = report(opts);
+    for (const d of r.completeness.days) {
+      assert.ok(['data', 'missing', 'pending'].includes(d.status),
+        `${d.date} has unexpected status ${d.status}`);
+    }
+  }
+});
+
+test('an empty Saturday is a missed delivery like any other empty day', () => {
   const r = buildReport({
     weekStart: WEEK,
     dailyRows: [dailyRow({ work_date: '2026-08-03', employee_number: '0101',
@@ -1238,21 +1257,39 @@ test('an empty Saturday is no-data-nonscheduled, never a missed delivery', () =>
     employees: EMPLOYEES
   });
 
-  assert.strictEqual(dayOf(r.completeness.days, '2026-08-08').status, 'no-data-nonscheduled');
-  assert.strictEqual(dayOf(r.completeness.days, '2026-08-08').isScheduledDay, false);
-  // Tue/Wed/Thu are all genuine missed deliveries here.
-  assert.deepStrictEqual(r.completeness.missingScheduledDays,
-    ['2026-08-04', '2026-08-05', '2026-08-06']);
-  assert.strictEqual(r.completeness.days.filter(d => d.status === 'no-data-nonscheduled').length, 3);
+  const saturday = dayOf(r.completeness.days, '2026-08-08');
+  assert.strictEqual(saturday.status, 'missing');
+  assert.strictEqual(saturday.isScheduledDay, false);
+
+  // Only Monday has data, so the other six days are all missed deliveries —
+  // Fri/Sat/Sun included, which is the whole change.
+  assert.deepStrictEqual(r.completeness.missingDays,
+    ['2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07', '2026-08-08', '2026-08-09']);
+  assert.strictEqual(r.completeness.daysExpected, 7);
+  assert.strictEqual(r.completeness.daysWithData, 1);
 });
 
-test('expectedDays can be narrowed so a day that has not happened yet is not "missing"', () => {
-  // What payroll-report.js does mid-week: only elapsed scheduled days are due.
+test('expectedDays can be narrowed so a day that has not happened yet is "pending"', () => {
+  // What payroll-report.js does mid-week: every ELAPSED day is due, whatever
+  // day of the week it is, and nothing later than today is.
   const r = report({ expectedDays: ['2026-08-03', '2026-08-04'] });
-  assert.strictEqual(r.completeness.scheduledDaysExpected, 2);
-  assert.deepStrictEqual(r.completeness.missingScheduledDays, ['2026-08-04']);
+  assert.strictEqual(r.completeness.daysExpected, 2);
+  assert.deepStrictEqual(r.completeness.missingDays, ['2026-08-04']);
+
+  // Sunday is outside the narrowed set and has no rows: 'pending', not
+  // 'missing'. This is the state that replaced 'no-data-nonscheduled', and it
+  // now means "not due yet" rather than "maybe nobody worked".
+  const sunday = dayOf(r.completeness.days, '2026-08-09');
+  assert.strictEqual(sunday.expected, false);
+  assert.strictEqual(sunday.hasData, false);
+  assert.strictEqual(sunday.status, 'pending', 'not due yet, so not a missed delivery');
+
+  // Thursday is also outside the narrowed set, but it has rows, so data wins
+  // over due-ness — a day that arrived early is not pending.
   const thursday = dayOf(r.completeness.days, '2026-08-06');
   assert.strictEqual(thursday.expected, false);
+  assert.strictEqual(thursday.hasData, true);
+  assert.strictEqual(thursday.status, 'data');
   assert.strictEqual(thursday.isScheduledDay, true, 'still a scheduled day, just not due yet');
 });
 
