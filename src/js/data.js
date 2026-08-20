@@ -30,8 +30,11 @@ async function loadData(){
       payType:r.pay_type||'', costClass:r.cost_class||'',
       // The third axis of the v2 model. Legitimately null for anyone who is not
       // manufacturing floor staff, so a blank here is a real answer, not a gap.
-      positionGroup:r.position_group||'',
-      annualSalary:r.annual_salary==null?'':r.annual_salary
+      // annual_salary is deliberately NOT mapped. /api/data does not return it
+      // — the projection in netlify/functions/data.js leaves it out until the
+      // Salaries & Wages tier can gate it. Mapping it would read '' forever,
+      // which is exactly how somebody later "fixes" it by re-adding the column.
+      positionGroup:r.position_group||''
     }));
 
     // Economics
@@ -205,8 +208,11 @@ async function syncToSheet(){
       payType:r.pay_type||'', costClass:r.cost_class||'',
       // The third axis of the v2 model. Legitimately null for anyone who is not
       // manufacturing floor staff, so a blank here is a real answer, not a gap.
-      positionGroup:r.position_group||'',
-      annualSalary:r.annual_salary==null?'':r.annual_salary
+      // annual_salary is deliberately NOT mapped. /api/data does not return it
+      // — the projection in netlify/functions/data.js leaves it out until the
+      // Salaries & Wages tier can gate it. Mapping it would read '' forever,
+      // which is exactly how somebody later "fixes" it by re-adding the column.
+      positionGroup:r.position_group||''
     }));
 
     state.dirty=false;
