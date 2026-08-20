@@ -1146,9 +1146,12 @@ async function runMissedDeliveryCheck({
         date,
         dayName: info.dayName,
         isScheduledDay: info.isScheduledDay,
-        // Only Mon-Thu is a promise. Fri/Sat/Sun with no rows usually means
-        // nobody worked, which is normal and not worth waking anyone for.
-        escalate: info.isScheduledDay
+        // EVERY day is a promise. BBSI sends the report seven days a week, so a
+        // day with no rows is a delivery that did not happen — not a quiet
+        // weekend. isScheduledDay stays on the record because the OT report
+        // still distinguishes scheduled from weekend hours, but it no longer
+        // decides whether anyone hears about a missing day.
+        escalate: true
       });
     }
   }
@@ -1225,17 +1228,11 @@ async function runMissedDeliveryCheck({
     }
     if (escalating.length) {
       if (lines.length) lines.push('');
-      lines.push(`Scheduled work day(s) with no payroll data (checked ${fromDate} .. ${checkedDate}):`);
+      lines.push(`Day(s) with no payroll data (checked ${fromDate} .. ${checkedDate}):`);
       for (const m of escalating) lines.push(`  - ${m.date} (${m.dayName})`);
       lines.push('');
       lines.push('Either the vendor email never arrived, the Gmail label did not apply, or the');
       lines.push('import failed. Check the "payroll import" label in info@, then import by hand.');
-    }
-    const nonScheduled = missing.filter(m => !m.escalate);
-    if (nonScheduled.length && (escalating.length || duePending.length)) {
-      lines.push('');
-      lines.push(`Non-scheduled day(s) with no data (normal if nobody worked): ` +
-        nonScheduled.map(m => `${m.date} ${m.dayName}`).join(', '));
     }
     if (duePending.length) {
       lines.push('');

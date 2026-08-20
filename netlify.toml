@@ -40,8 +40,9 @@
 #
 # Nobody touches these emails by hand, so nobody would notice if they stopped
 # arriving. This is the only thing that surfaces a broken pipeline. It escalates
-# only on a missing Mon-Thu scheduled day; a quiet Fri/Sat/Sun is reported but
-# not alerted, since nobody may have worked.
+# on EVERY missing day: BBSI sends the report seven days a week, so a Saturday
+# with no data is a failed delivery rather than a quiet weekend. The daily
+# schedule below already covers all seven.
 [functions."payroll-missed-check"]
   schedule = "0 19 * * *"
 

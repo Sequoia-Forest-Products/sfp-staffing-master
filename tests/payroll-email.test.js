@@ -446,17 +446,49 @@ test('a missing Monday escalates', async () => {
   assert.match(calls.alerts[0].subject, /2026-08-17/);
 });
 
-test('a missing Saturday is reported but does not alert', async () => {
-  // 2026-08-15 is a Saturday; the check runs on Sunday the 16th.
+test('a missing Saturday alerts exactly like a weekday', async () => {
+  // 2026-08-15 is a Saturday; the check runs on Sunday the 16th. BBSI sends the
+  // report seven days a week, so a missing Saturday is a failed delivery, not a
+  // quiet weekend. This used to be the one day the watchdog stayed silent on.
   const { result, calls } = await missedHarness('2026-08-16T18:00:00Z');
 
   assert.strictEqual(result.checkedDate, '2026-08-15');
   assert.strictEqual(result.missing.length, 1);
   assert.strictEqual(result.missing[0].dayName, 'Saturday');
-  assert.strictEqual(result.missing[0].escalate, false);
-  assert.strictEqual(result.notified, false);
-  assert.strictEqual(result.status, 'ok');
-  assert.strictEqual(calls.alerts.length, 0);
+  assert.strictEqual(result.missing[0].escalate, true);
+  // Still recorded as a non-scheduled day — the OT report needs that
+  // distinction. It just no longer decides whether anyone is told.
+  assert.strictEqual(result.missing[0].isScheduledDay, false);
+  assert.strictEqual(result.notified, true);
+  assert.strictEqual(result.status, 'attention');
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].subject, /2026-08-15/);
+  assert.match(calls.alerts[0].body, /2026-08-15 \(Saturday\)/);
+});
+
+test('a missing Sunday alerts too', async () => {
+  // 2026-08-16 is a Sunday; the check runs on Monday the 17th.
+  const { result, calls } = await missedHarness('2026-08-17T18:00:00Z');
+
+  assert.strictEqual(result.checkedDate, '2026-08-16');
+  assert.strictEqual(result.missing[0].dayName, 'Sunday');
+  assert.strictEqual(result.missing[0].escalate, true);
+  assert.strictEqual(result.notified, true);
+  assert.match(calls.alerts[0].body, /2026-08-16 \(Sunday\)/);
+});
+
+test('the alert no longer carries a non-scheduled-day footnote', async () => {
+  // The old body appended "Non-scheduled day(s) with no data (normal if nobody
+  // worked)". Every missing day now escalates, so nothing may be filed under
+  // normal-if-nobody-worked.
+  const { calls } = await missedHarness('2026-08-19T18:00:00Z', {}, { lookbackDays: 4 });
+
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.doesNotMatch(calls.alerts[0].body, /Non-scheduled/);
+  assert.doesNotMatch(calls.alerts[0].body, /normal if nobody worked/);
+  // and the surviving heading no longer claims to be about scheduled days only
+  assert.doesNotMatch(calls.alerts[0].body, /Scheduled work day/);
+  assert.match(calls.alerts[0].body, /Day\(s\) with no payroll data/);
 });
 
 test('a day that has rows is not missing', async () => {
@@ -491,8 +523,9 @@ test('the missed check scans the whole lookback window', async () => {
   assert.deepStrictEqual(calls.ranges[0], ['2026-08-15', '2026-08-18']);
   assert.deepStrictEqual(result.missing.map(m => m.date),
     ['2026-08-15', '2026-08-16', '2026-08-17', '2026-08-18']);
+  // All four escalate now, weekend included — the vendor owed a report on each.
   assert.deepStrictEqual(result.missing.filter(m => m.escalate).map(m => m.dayName),
-    ['Monday', 'Tuesday']);
+    ['Saturday', 'Sunday', 'Monday', 'Tuesday']);
 });
 
 test('a dry-run missed check sends nothing', async () => {
