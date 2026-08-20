@@ -44,29 +44,38 @@
 // The PRODUCTION departments, in reporting order. This is what the report
 // breaks the mill down by, and it is deliberately NOT the list of values
 // employees.department accepts — see ASSIGNABLE_DEPARTMENTS below.
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
+// Clean-up is the hourly mill clean-up crew: ordinary production labour with no
+// special handling anywhere, listed last because that is its reporting order.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED  = 'Unassigned';
 
-// The one value employees.department accepts that is NOT a production
-// department. SG&A / office / salaried staff have no home among the production
-// departments, and the back-fill screen requires a department for every active
+// NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
+// mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
+// string is the label the database CHECK constraint now uses for it. The label
+// used to be 'Non-Production'; the role has not changed, so the constant name
+// and issues.nonProductionWithHours keep their names rather than churning every
+// caller for a rename that says nothing new.
+//
+// It is the one value employees.department accepts that is NOT a production
+// department: office / salaried staff, who have no home among the production
+// departments. The back-fill screen requires a department for every active
 // employee — its "still needs a department" counter is what gates retiring the
 // legacy `dept` column, so with no correct value to pick that counter could
 // never honestly reach zero. Leaving those people blank is not a fix: blank is
-// indistinguishable from "nobody has got to this row yet". Non-Production makes
-// it an explicit, recorded decision.
+// indistinguishable from "nobody has got to this row yet". SG&A makes it an
+// explicit, recorded decision.
 //
 // The two lists differ ON PURPOSE and must not be reconciled into one:
 //   DEPARTMENTS             what the report's normal breakdown is over
 //   ASSIGNABLE_DEPARTMENTS  what a person may legally be assigned to
-// Adding Non-Production to DEPARTMENTS would put a non-production row in every
-// production breakdown. Dropping it from ASSIGNABLE_DEPARTMENTS would make the
-// back-fill screen reject a value the database and the roster both accept.
+// Adding SG&A to DEPARTMENTS would put a non-production row in every production
+// breakdown. Dropping it from ASSIGNABLE_DEPARTMENTS would make the back-fill
+// screen reject a value the database and the roster both accept.
 //
-// Non-Production staff are salaried, so the import drops their rows and this
-// bucket should normally be empty. A bucket that exists is a finding, carried
-// in issues.nonProductionWithHours — never folded away, never silently dropped.
-const NON_PRODUCTION = 'Non-Production';
+// SG&A staff are salaried, so the import drops their rows and this bucket
+// should normally be empty. A bucket that exists is a finding, carried in
+// issues.nonProductionWithHours — never folded away, never silently dropped.
+const NON_PRODUCTION = 'SG&A';
 const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const OT_TYPES    = ['Pre-Shift', 'Post-Shift', 'Weekend'];
@@ -299,10 +308,10 @@ function finishBlock(block) {
   };
 }
 
-// DEPARTMENTS first in their canonical order, then Non-Production — a real
-// assignable value, but not a production department — then anything unexpected
-// that the data actually contains, then Unassigned last so it reads as the
-// remainder. Non-Production sits between the production departments and the
+// DEPARTMENTS first in their canonical order, then NON_PRODUCTION ('SG&A') — a
+// real assignable value, but not a production department — then anything
+// unexpected that the data actually contains, then Unassigned last so it reads
+// as the remainder. SG&A sits between the production departments and the
 // unknowns because it is neither a real department nor an unknown one.
 function sortDepartments(names) {
   const rank = (name) => {
@@ -982,15 +991,15 @@ function buildReport({
   const hoursDelta         = round2(departmentHours - summary.totalHours);
   const earningsDelta      = round2(departmentEarnings - totalHourlyPayroll);
 
-  // A Non-Production bucket with anything in it is a FINDING, not a normal row.
-  // These people are salaried and dropped at import, so nothing should reach
-  // this bucket at all. Anything that does means somebody is hourly AND
+  // An SG&A bucket with anything in it is a FINDING, not a normal row. These
+  // people are salaried and dropped at import, so nothing should reach this
+  // bucket at all. Anything that does means somebody is hourly AND
   // non-production, and one of those two facts is wrong.
   //
   // The grace allowance counts as evidence on its own, with no daily_hours
   // behind it: clock grace is a policy about hourly staff, not about which
-  // department they sit in, so an hourly Non-Production employee draws it even
-  // in a week they never clocked in — and that allowance is then sitting in a
+  // department they sit in, so an hourly SG&A employee draws it even in a week
+  // they never clocked in — and that allowance is then sitting in a
   // department that should not have one. hours is 0 for such a row, and
   // graceHours says where it came from.
   //

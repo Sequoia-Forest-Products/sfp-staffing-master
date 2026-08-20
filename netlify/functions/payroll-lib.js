@@ -37,13 +37,20 @@ const EXPECTED_HEADERS = [
 
 // The PRODUCTION reporting departments, plus the bucket that null lands
 // in. The bucket is always shown: hiding unassigned hours is how a report
-// quietly stops adding up.
-const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard'];
+// quietly stops adding up. Clean-up is the hourly mill clean-up crew — an
+// ordinary production department with no special handling anywhere.
+const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED = 'Unassigned';
 
-// The one value employees.department accepts that is not a production
-// department: SG&A / office / salaried staff, who have no home among the
-// production departments. The back-fill screen
+// NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
+// mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
+// string is the label the database CHECK constraint now uses for it. The label
+// used to be 'Non-Production'; the role is unchanged, so the constant keeps its
+// name instead of churning every caller for a rename that says nothing new.
+//
+// It is the one value employees.department accepts that is not a production
+// department: office / salaried staff, who have no home among the production
+// departments. The back-fill screen
 // requires a department for every active employee, so without an explicit value
 // for these people the only option is blank — and blank is indistinguishable
 // from "nobody has got to this row yet", which is exactly what that screen's
@@ -54,13 +61,13 @@ const UNASSIGNED = 'Unassigned';
 //   DEPARTMENTS             the production breakdown this import reports over
 //   ASSIGNABLE_DEPARTMENTS  every value employees.department may legally hold
 //
-// Department is snapshotted from employees.department at import, so a
-// Non-Production employee with hours imports exactly like anybody else — not
-// rejected, not blanked, no flag. Its only effect here is the bucket's
-// position in the breakdown. Non-Production staff are salaried and their
-// all-zero rows are dropped above, so this bucket should normally be empty;
-// ot-report-lib.js is where a non-empty one is surfaced as a finding.
-const NON_PRODUCTION = 'Non-Production';
+// Department is snapshotted from employees.department at import, so an SG&A
+// employee with hours imports exactly like anybody else — not rejected, not
+// blanked, no flag, and the '&' is carried through verbatim. Its only effect
+// here is the bucket's position in the breakdown. SG&A staff are salaried and
+// their all-zero rows are dropped above, so this bucket should normally be
+// empty; ot-report-lib.js is where a non-empty one is surfaced as a finding.
+const NON_PRODUCTION = 'SG&A';
 const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -560,12 +567,12 @@ function buildImport({
 
   for (const key of Object.keys(totals)) totals[key] = round2(totals[key]);
 
-  // Production departments in their reporting order, then Non-Production
-  // (assignable, but not one of them), then anything unexpected, then Unassigned
-  // last — present even when empty rows put nothing in it, because
+  // Production departments in their reporting order, then NON_PRODUCTION
+  // ('SG&A' — assignable, but not one of them), then anything unexpected, then
+  // Unassigned last — present even when empty rows put nothing in it, because
   // "Unassigned: 0" and "no Unassigned row" mean different things. A bucket
-  // with no rows is skipped below, so Non-Production only appears when the file
-  // actually carried somebody sitting in it.
+  // with no rows is skipped below, so SG&A only appears when the file actually
+  // carried somebody sitting in it.
   const order = [
     ...DEPARTMENTS,
     NON_PRODUCTION,

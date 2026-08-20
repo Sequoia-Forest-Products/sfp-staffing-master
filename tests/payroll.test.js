@@ -402,58 +402,100 @@ test('the department snapshot comes from the roster, and gaps are visible rather
   assert.strictEqual(production.totalEarnings, 245);
 });
 
-test('Non-Production is assignable but is not one of the production departments', () => {
+test('SG&A is assignable but is not one of the production departments', () => {
   // Two lists, two questions. DEPARTMENTS is what the mill is reported over —
-  // Log Yard is an ordinary member of it. ASSIGNABLE_DEPARTMENTS is every value
+  // Clean-up is an ordinary member of it. ASSIGNABLE_DEPARTMENTS is every value
   // employees.department may hold, which is what the back-fill screen validates
-  // against, and it is the production departments plus Non-Production.
-  assert.strictEqual(NON_PRODUCTION, 'Non-Production');
+  // against, and it is the production six plus SG&A.
+  //
+  // The constant is still NON_PRODUCTION because it names the ROLE: SG&A is the
+  // non-production bucket, and 'Non-Production' was simply its previous label.
+  assert.strictEqual(NON_PRODUCTION, 'SG&A');
   assert.deepStrictEqual(DEPARTMENTS,
-    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard']);
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up']);
   assert.deepStrictEqual(ASSIGNABLE_DEPARTMENTS,
-    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Non-Production']);
+    ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up', 'SG&A']);
+  assert.strictEqual(ASSIGNABLE_DEPARTMENTS.length, 7);
+  assert.ok(!DEPARTMENTS.includes('Non-Production') && !ASSIGNABLE_DEPARTMENTS.includes('Non-Production'),
+    'Non-Production is a retired label and must not survive anywhere');
+  assert.ok(!ASSIGNABLE_DEPARTMENTS.includes('Unassigned'),
+    'Unassigned is where a missing department lands, never something to assign');
 });
 
-test('a Non-Production employee imports normally and sorts after the production departments', () => {
+test('the two libraries declare identical department lists', () => {
+  // payroll-lib snapshots the department that ot-report-lib then breaks the
+  // week down by. If the two copies drift the report is silently wrong rather
+  // than broken, so they are compared here directly — including as one joined
+  // string, so an ampersand or hyphen mangled on one side alone cannot pass.
+  const ot = require('../netlify/functions/ot-report-lib');
+  assert.deepStrictEqual(ot.DEPARTMENTS, DEPARTMENTS);
+  assert.deepStrictEqual(ot.ASSIGNABLE_DEPARTMENTS, ASSIGNABLE_DEPARTMENTS);
+  assert.strictEqual(ot.NON_PRODUCTION, NON_PRODUCTION);
+  assert.strictEqual(ASSIGNABLE_DEPARTMENTS.join('|'),
+    'Maintenance|Saw Filing|Shipping|Production|Log Yard|Clean-up|SG&A');
+});
+
+test('an SG&A employee imports normally and sorts after the production departments', () => {
   // Department is snapshotted straight from employees.department, so this row
-  // is imported exactly like anybody else's: not rejected, not blanked, no flag.
-  // Its only effect is where the bucket sits in the breakdown. Owen's 'Kiln' is
-  // a legacy value that is not assignable at all, and sorts after Non-Production
-  // despite coming first alphabetically.
+  // is imported exactly like anybody else's: not rejected, not blanked, no flag,
+  // and the ampersand carried through byte for byte. Its only effect is where
+  // the bucket sits in the breakdown. Owen's 'Kiln' is a legacy value that is
+  // not assignable at all, and sorts after SG&A despite coming first
+  // alphabetically.
   const result = importFrom([
     row('0319', 'Acosta Ruiz',     'Miguel', 'No', 24.5, 10, 0,   10, 245),    // Production
-    row('0410', 'Ledger',          'Nora',   'No', 31,   10, 1,   11, 356.5),  // Non-Production
+    row('0410', 'Ledger',          'Nora',   'No', 31,   10, 1,   11, 356.5),  // SG&A
     row('0412', 'Yardley',         'Lena',   'No', 26,   9,  0,   9,  234),    // Log Yard
+    row('0413', 'Unger',           'Cliff',  'No', 21,   8,  0,   8,  168),    // Clean-up
     row('0411', 'Kane',            'Owen',   'No', 20,   10, 0,   10, 200),    // Kiln — legacy
     row('0884', 'Salazar De Leon', 'Rosa',   'No', 22,   10, 0,   10, 220)     // roster, no department
   ], {
     employees: ROSTER.concat([
-      { id: 'e7', name: 'Nora Ledger',  employee_number: '0410', department: 'Non-Production', wage: '31.00', status: 'Active' },
-      { id: 'e8', name: 'Owen Kane',    employee_number: '0411', department: 'Kiln',           wage: '20.00', status: 'Active' },
-      { id: 'e9', name: 'Lena Yardley', employee_number: '0412', department: 'Log Yard',       wage: '26.00', status: 'Active' }
+      { id: 'e7',  name: 'Nora Ledger',  employee_number: '0410', department: 'SG&A',     wage: '31.00', status: 'Active' },
+      { id: 'e8',  name: 'Owen Kane',    employee_number: '0411', department: 'Kiln',     wage: '20.00', status: 'Active' },
+      { id: 'e9',  name: 'Lena Yardley', employee_number: '0412', department: 'Log Yard', wage: '26.00', status: 'Active' },
+      { id: 'e10', name: 'Cliff Unger',  employee_number: '0413', department: 'Clean-up', wage: '21.00', status: 'Active' }
     ])
   });
 
   const nora = result.rows.find(r => r.employee_number === '0410');
-  assert.strictEqual(nora.department, 'Non-Production');
+  // The exact string, spelled out rather than rebuilt from the constant: this is
+  // the assertion that catches an '&' escaped, entity-encoded or split on the
+  // way through.
+  assert.strictEqual(nora.department, 'SG&A');
+  assert.strictEqual(nora.department.length, 4);
+  assert.strictEqual(nora.department.indexOf('&'), 2);
   assert.deepStrictEqual(nora.flags, []);
   assert.strictEqual(nora.ot_dollars, 46.5);          // 356.50 - 10 x 31.00
   assert.deepStrictEqual(result.unmatched, []);
   assert.deepStrictEqual(result.missingDepartment,
     [{ employeeNumber: '0884', name: 'Rosa Salazar De Leon' }]);
 
-  // Log Yard is an ordinary production department and keeps its canonical
-  // position; Non-Production follows the production departments; the legacy
-  // 'Kiln' comes after both despite sorting first alphabetically.
+  // The same for Clean-up's hyphen, which must not be normalised to a space or
+  // any other dash.
+  const cliff = result.rows.find(r => r.employee_number === '0413');
+  assert.strictEqual(cliff.department, 'Clean-up');
+  assert.deepStrictEqual(cliff.flags, []);
+  assert.strictEqual(cliff.total_hours, 8);
+  assert.strictEqual(cliff.total_earnings, 168);
+
+  // Log Yard and Clean-up are ordinary production departments and keep their
+  // canonical positions; SG&A follows all of them; the legacy 'Kiln' comes after
+  // that despite sorting first alphabetically.
   assert.deepStrictEqual(result.departments.map(d => d.department),
-    ['Production', 'Log Yard', 'Non-Production', 'Kiln', 'Unassigned']);
+    ['Production', 'Log Yard', 'Clean-up', 'SG&A', 'Kiln', 'Unassigned']);
   const logYard = result.departments.find(d => d.department === 'Log Yard');
   assert.strictEqual(logYard.employees, 1);
   assert.strictEqual(logYard.totalHours, 9);
   assert.strictEqual(logYard.totalEarnings, 234);
   assert.deepStrictEqual(result.rows.find(r => r.employee_number === '0412').flags, []);
 
-  const np = result.departments.find(d => d.department === 'Non-Production');
+  const cleanup = result.departments.find(d => d.department === 'Clean-up');
+  assert.strictEqual(cleanup.employees, 1);
+  assert.strictEqual(cleanup.totalHours, 8);
+  assert.strictEqual(cleanup.totalEarnings, 168);
+
+  const np = result.departments.find(d => d.department === 'SG&A');
   assert.strictEqual(np.employees, 1);
   assert.strictEqual(np.regularHours, 10);
   assert.strictEqual(np.otHours, 1);
@@ -467,6 +509,53 @@ test('a Non-Production employee imports normally and sorts after the production 
   assert.strictEqual(sum('totalHours'), result.totals.totalHours);
   assert.strictEqual(sum('totalEarnings'), result.totals.totalEarnings);
   assert.strictEqual(sum('otDollars'), result.totals.otDollars);
+});
+
+test("an SG&A employee's ampersand survives the whole round trip, sample included", () => {
+  // The department is snapshotted onto every daily_hours row and echoed back in
+  // the preview sample. Both are compared against the literal, so an '&' turned
+  // into '&amp;', '%26' or a truncation at the ampersand fails here rather than
+  // in production.
+  const result = importFrom([
+    row('0410', 'Ledger', 'Nora', 'No', 31, 10, 1, 11, 356.5)
+  ], {
+    employees: ROSTER.concat([
+      { id: 'e7', name: 'Nora Ledger', employee_number: '0410', department: 'SG&A', wage: '31.00', status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(result.rows[0].department, 'SG&A');
+  assert.strictEqual(result.sample[0].department, 'SG&A');
+  assert.strictEqual(result.departments[0].department, 'SG&A');
+  assert.deepStrictEqual(result.rows[0].flags, []);
+
+  // Byte for byte: four characters, one of them an ampersand, no entity anywhere.
+  for (const value of [result.rows[0].department, result.sample[0].department]) {
+    assert.strictEqual(JSON.stringify(value), '"SG&A"');
+    assert.strictEqual(value.includes('&amp;'), false);
+    assert.strictEqual(value.includes('%26'), false);
+    assert.strictEqual([...value].length, 4);
+  }
+});
+
+test('an all-zero salaried SG&A row is dropped, so the bucket never appears', () => {
+  // The normal case for this department: everyone in it is salaried, the vendor
+  // file's all-zero rows are skipped, and a bucket that does not exist is the
+  // correct outcome rather than an empty row to read past.
+  const result = importFrom([
+    row('0410', 'Ledger',      'Nora',   'Yes', 0,    0,  0, 0,  0),
+    row('0319', 'Acosta Ruiz', 'Miguel', 'No',  24.5, 10, 0, 10, 245)
+  ], {
+    employees: ROSTER.concat([
+      { id: 'e7', name: 'Nora Ledger', employee_number: '0410', department: 'SG&A', wage: 'Salary', status: 'Active' }
+    ])
+  });
+
+  assert.strictEqual(result.counts.salariedSkipped, 1);
+  assert.strictEqual(result.counts.imported, 1);
+  assert.strictEqual(result.rows.find(r => r.employee_number === '0410'), undefined);
+  assert.strictEqual(result.departments.find(d => d.department === 'SG&A'), undefined);
+  assert.deepStrictEqual(result.departments.map(d => d.department), ['Production']);
 });
 
 test('the department breakdown adds up to the totals', () => {
