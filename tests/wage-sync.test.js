@@ -425,6 +425,38 @@ test('a salaried row is counted as salaried, not as a missing rate', () => {
   assert.strictEqual(result.skipped.noRate, 0);
 });
 
+test('a salaried row carrying a real pay rate produces no write of any kind', () => {
+  // The whole plan, proved empty rather than read: no update, no create, no
+  // wage_history row, no setup task, no flag and no op — for a salaried person
+  // the app already knows (0007) AND for one it has never seen (9500), which is
+  // the path that would otherwise auto-create somebody off a salaried row.
+  const result = plan([
+    fileRow('0007', 45.00, { is_salary: true, regular_hours: 10, total_hours: 10, total_earnings: 450 }),
+    fileRow('9500', 52.00, { is_salary: true, regular_hours: 8,  total_hours: 8,  total_earnings: 416 })
+  ]);
+
+  assert.deepStrictEqual(result.updates, []);
+  assert.deepStrictEqual(result.creates, []);
+  assert.deepStrictEqual(result.history, []);
+  assert.deepStrictEqual(result.setupTasks, []);
+  assert.deepStrictEqual(result.flagged, []);
+  assert.deepStrictEqual(result.ops, []);
+
+  // Counted as salaried and as nothing else.
+  assert.strictEqual(result.skipped.salaried, 2);
+  assert.strictEqual(result.skipped.noRate, 0);
+  assert.strictEqual(result.skipped.unchanged, 0);
+  assert.strictEqual(result.skipped.noEmployeeNumber, 0);
+  assert.strictEqual(result.skipped.duplicateInFile, 0);
+
+  // And the effective rate for the one in Manufacturing is still the app's
+  // salary / 2080, not the 45.00 that was sitting in the file.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ ...ROSTER.find(e => e.employee_number === '0007'), pay_rate: 45.00 }),
+    { rate: 50, source: 'salary/2080' }
+  );
+});
+
 // ============================================================
 // effectiveHourlyRate
 // ============================================================
@@ -446,15 +478,40 @@ test('a salaried Manufacturing employee converts at annual_salary / 2080', () =>
   );
 });
 
-test('a rate actually present in the file wins over salary / 2080', () => {
-  assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: 'Salary', cost_class: 'Manufacturing', annual_salary: 104000, pay_rate: 61.25 }),
-    { rate: 61.25, source: 'file' }
-  );
-  // The sample file sends salaried rows at $0, which is not a rate.
+test('a file rate on a salaried employee is ignored — salary / 2080 still wins', () => {
+  // THE regression this exists to catch. Salaried staff are skipped at import
+  // whatever their row carries, so a Pay Rate sitting on one of them is not
+  // their wage: it is a number in a column nobody maintains for them. The
+  // effective rate is the salary entered in the app, divided by 2080, and the
+  // file is not consulted on any branch.
+  for (const key of ['pay_rate', 'payRate', 'file_rate', 'fileRate']) {
+    assert.deepStrictEqual(
+      effectiveHourlyRate({
+        wage: 'Salary', cost_class: 'Manufacturing', annual_salary: 104000, [key]: 61.25
+      }),
+      { rate: 50, source: 'salary/2080' },
+      `${key} must not override salary / 2080`
+    );
+  }
+  // Including the shape the live file actually sends: salaried rows at $0.
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: 'Manufacturing', annual_salary: 104000, pay_rate: 0 }),
     { rate: 50, source: 'salary/2080' }
+  );
+});
+
+test('a salaried Manufacturing employee with no annual_salary is null, even carrying a file rate', () => {
+  // Audit query 8e's finding: the conversion cannot be computed, so this
+  // person's cost is missing from the manufacturing figures. Saying so is the
+  // point — falling back to the file rate would hide a missing salary behind a
+  // number nobody entered.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'Manufacturing', pay_rate: 61.25 }),
+    { rate: null, source: 'none' }
+  );
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'Manufacturing', annual_salary: 0, fileRate: 61.25 }),
+    { rate: null, source: 'none' }
   );
 });
 
@@ -469,6 +526,15 @@ test('a salaried employee outside Manufacturing has no effective hourly rate', (
   );
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: null, annual_salary: 90000 }),
+    { rate: null, source: 'none' }
+  );
+  // A file rate does not buy them one either — the cost class is the whole rule.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', annual_salary: 90000, pay_rate: 61.25 }),
+    { rate: null, source: 'none' }
+  );
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', pay_rate: 61.25 }),
     { rate: null, source: 'none' }
   );
 });
@@ -487,6 +553,30 @@ test('an hourly employee reports the rate the file last put in employees.wage', 
   assert.deepStrictEqual(effectiveHourlyRate({ wage: '24.50' }), { rate: 24.5, source: 'file' });
   assert.deepStrictEqual(effectiveHourlyRate({ wage: '$24.50', cost_class: 'SG&A' }),
     { rate: 24.5, source: 'file' });
+});
+
+test("an hourly employee's file rate beats the stored wage, and neither is null", () => {
+  // Unchanged by the salaried correction, kept as a regression lock: the file
+  // IS the source of truth for hourly staff, which is exactly why it is not
+  // one for salaried staff.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', pay_rate: 26.75 }),
+    { rate: 26.75, source: 'file' }
+  );
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', fileRate: 26.75 }),
+    { rate: 26.75, source: 'file' }
+  );
+  // A $0 or unparseable file rate is not a rate; the stored wage stands.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', pay_rate: 0 }),
+    { rate: 24.5, source: 'file' }
+  );
+  // Neither: null, never zero.
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: null, cost_class: 'Manufacturing', annual_salary: 104000 }),
+    { rate: null, source: 'none' }
+  );
 });
 
 // ============================================================

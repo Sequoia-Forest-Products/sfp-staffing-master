@@ -25,12 +25,15 @@
 //      skipped and counted, never written as 0. Same failure mode as (1),
 //      arriving one column further in.
 //
-//   3. SALARIED ROWS ARE OUTSIDE THIS FLOW. payroll-lib drops the all-zero
-//      salaried rows at import; anything that still reaches here marked salaried
-//      — by the file's Is Salary column or by employees.wage holding the literal
-//      string 'Salary' — is skipped. An hourly rate is never written onto a
+//   3. SALARIED ROWS ARE OUTSIDE THIS FLOW. payroll-lib drops EVERY salaried
+//      row at import — unconditionally, whatever it carries for pay rate, hours
+//      or earnings — and anything that still reaches here marked salaried, by
+//      the file's Is Salary column or by employees.wage holding the literal
+//      string 'Salary', is skipped. An hourly rate is never written onto a
 //      salaried person, because that column's 'Salary' sentinel is currently
-//      what identifies them (see SCHEMA_V2_MODEL.sql section 5).
+//      what identifies them (see SCHEMA_V2_MODEL.sql section 5). A salaried
+//      person's hourly cost is annual_salary / 2080 and nothing else; see
+//      effectiveHourlyRate below.
 //
 //   4. NOTHING MOVES SILENTLY. Every change gets a wage_history row, ordered
 //      before the employees.wage write that follows it, and a first observation
@@ -155,37 +158,53 @@ const money = rate => (rate === null || rate === undefined ? 'no rate' : rate.to
 // exported so the OT report and the Salaries & Wages page cannot drift apart on
 // the answer.
 //
-// Salaried Manufacturing staff are converted at annual_salary / 2080. That is
-// keyed on cost_class — a salaried person sitting in Manufacturing is an
-// ordinary case in this model, not an exception for a named employee — and a
-// salaried person in any other cost class has no hourly rate at all.
+// SALARIED IS DECIDED FIRST, AND THE FILE IS NEVER CONSULTED FOR THEM.
 //
-// A rate that came from the file wins when there is one: in the sample file
-// salaried rows arrive with $0 and zero hours, so salary / 2080 is the working
-// default rather than a fallback of last resort.
+// The ordering below is the rule, not an implementation detail. Salaried staff
+// are outside the BBSI flow entirely (rule 3 at the top of this file): every
+// salaried row is skipped at import regardless of what it carries — pay rate,
+// hours, earnings, any of it. So a Pay Rate sitting on a salaried row is not
+// evidence of anything. It is whatever the vendor happened to put in a column
+// that nobody in this business maintains for salaried people, and using it
+// would silently substitute a number nobody entered for the salary somebody
+// did.
 //
-// `source: 'file'` also covers an hourly person's stored employees.wage, and
-// that is not a fudge: that column holds nothing but what the BBSI file last
-// put there. The result is never written back into employees.wage — the
-// 'Salary' sentinel in that column is what identifies these people.
+// For a salaried employee the ONLY answer is annual_salary / 2080, using the
+// salary entered in the app, and only for cost class Manufacturing — a general
+// rule about how manufacturing cost is measured, keyed on the cost class rather
+// than on a named person. A salaried person in any other cost class has no
+// hourly rate at all, and neither does one whose annual_salary is missing.
+// Both say null. There is deliberately no "use the file rate if it looks
+// usable" path here: if you are about to add one back, that is the exact
+// regression this ordering exists to prevent, and tests/wage-sync.test.js pins
+// it with a salaried employee who carries a pay_rate.
+//
+// For an hourly employee a rate from the file wins, then the stored
+// employees.wage. `source: 'file'` covers both, and that is not a fudge:
+// employees.wage holds nothing but what the BBSI file last put there. The
+// result is never written back into employees.wage — the 'Salary' sentinel in
+// that column is what identifies salaried people.
 function effectiveHourlyRate(employee) {
   const emp = employee || {};
 
-  const fileRate = normalizeRate(pick(emp, 'fileRate', 'file_rate', 'payRate', 'pay_rate'));
-  if (fileRate !== null) return { rate: fileRate, source: 'file' };
-
+  // ---- salaried: the file is not read, at all, on any branch ----
   if (isSalaryWage(emp.wage)) {
     const costClass = textOf(pick(emp, 'cost_class', 'costClass'));
     if (costClass !== MANUFACTURING) return { rate: null, source: 'none' };
 
     // A null annual_salary here is audit query 8e's finding: the conversion
     // cannot be computed and that person's cost is missing from the
-    // manufacturing figures. Say null rather than invent a number.
+    // manufacturing figures. Say null rather than invent a number — and
+    // rather than reaching for the file rate, which is not their wage.
     const annual = normalizeRate(pick(emp, 'annual_salary', 'annualSalary'));
     if (annual === null) return { rate: null, source: 'none' };
 
     return { rate: round2(annual / SALARY_HOURS_PER_YEAR), source: 'salary/2080' };
   }
+
+  // ---- hourly ----
+  const fileRate = normalizeRate(pick(emp, 'fileRate', 'file_rate', 'payRate', 'pay_rate'));
+  if (fileRate !== null) return { rate: fileRate, source: 'file' };
 
   const stored = normalizeRate(emp.wage);
   if (stored !== null) return { rate: stored, source: 'file' };

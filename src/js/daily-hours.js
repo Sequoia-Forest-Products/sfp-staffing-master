@@ -256,7 +256,7 @@ function renderDailyPreview(){
 
           <div class="dh-note"><strong>${counts.salariedSkipped||0} salaried row${(counts.salariedSkipped||0)===1?'':'s'} skipped.</strong>
             Salaried staff are excluded by design, so every figure in this system — hours, earnings, OT and the percentages built on them — is hourly payroll only.
-            ${(counts.salariedWithHoursImported||0)>0?`<strong>${counts.salariedWithHoursImported} salaried row(s) carried hours and were imported anyway</strong>, flagged salaried_with_hours.`:''}</div>
+            ${(counts.salariedWithHoursSkipped||0)>0?`<strong>${counts.salariedWithHoursSkipped} of them carried hours or earnings and were skipped too</strong> &mdash; flagged salaried_with_hours in the anomalies below, because a salaried row with activity on it means the payroll file changed shape.`:''}</div>
 
           ${(p.anomalies||[]).length?`<div class="dh-flag" style="margin-top:12px"><strong>${p.anomalies.length} anomal${p.anomalies.length===1?'y':'ies'} in this file:</strong>
             <table style="width:100%;font-size:11px;margin-top:6px">

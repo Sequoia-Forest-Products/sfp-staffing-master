@@ -183,7 +183,9 @@ test('the nine-column export parses and the seven all-zero salaried rows are ski
 
   assert.strictEqual(result.counts.totalRows, 9);
   assert.strictEqual(result.counts.salariedSkipped, 7);
-  assert.strictEqual(result.counts.salariedWithHoursImported, 0);
+  assert.strictEqual(result.counts.salariedWithHoursSkipped, 0);
+  // All-zero rows carried no activity, so none of them is an anomaly either.
+  assert.deepStrictEqual(result.anomalies.filter(a => a.type === 'salaried_with_hours'), []);
   assert.strictEqual(result.counts.imported, 2);
   assert.strictEqual(result.rows.length, 2);
 
@@ -197,20 +199,74 @@ test('the nine-column export parses and the seven all-zero salaried rows are ski
   assert.strictEqual(result.sheetName, EXPECTED_SHEET);
 });
 
-test('a salaried row carrying real hours is imported and flagged instead of dropped', () => {
+test('a salaried row carrying real hours is skipped too, and reported as an anomaly', () => {
+  // Salaried staff are outside this flow whatever their row carries, so 9002 is
+  // dropped exactly like the all-zero 9001. It is still reported, because a
+  // salaried row with activity on it means the vendor's file changed shape.
   const result = importFrom([
     row('9001', 'Bell', 'Owen', 'Yes', 0,  0,  0, 0,  0),
     row('9002', 'Cross', 'Pat', 'Yes', 40, 10, 0, 10, 400)
   ]);
 
-  assert.strictEqual(result.counts.salariedSkipped, 1);
-  assert.strictEqual(result.counts.salariedWithHoursImported, 1);
-  assert.strictEqual(result.counts.imported, 1);
+  assert.strictEqual(result.counts.totalRows, 2);
+  assert.strictEqual(result.counts.salariedSkipped, 2);
+  assert.strictEqual(result.counts.salariedWithHoursSkipped, 1);
+  assert.strictEqual(result.counts.imported, 0);
+  assert.deepStrictEqual(result.rows, []);
 
-  const kept = result.rows[0];
-  assert.strictEqual(kept.employee_number, '9002');
-  assert.strictEqual(kept.is_salary, true);
-  assert.ok(kept.flags.includes('salaried_with_hours'));
+  // Not in rows under any employee number.
+  assert.strictEqual(result.rows.find(r => r.employee_number === '9002'), undefined);
+
+  // Reported, naming the row and what it carried, worded as skipped.
+  const anomaly = result.anomalies.find(a => a.type === 'salaried_with_hours');
+  assert.ok(anomaly, 'expected a salaried_with_hours anomaly');
+  assert.strictEqual(anomaly.employeeNumber, '9002');
+  assert.match(anomaly.detail, /10 hours/);
+  assert.match(anomaly.detail, /400\.00 earnings/);
+  assert.match(anomaly.detail, /[Ss]kipped/);
+  assert.strictEqual(/[Ii]mported anyway/.test(anomaly.detail), false);
+  // The all-zero row is not reported — only the one that carried something.
+  assert.strictEqual(result.anomalies.filter(a => a.type === 'salaried_with_hours').length, 1);
+
+  // THE assertion worth having: a skipped row that still moved a total is the
+  // failure this catches. 40 hours and 400 dollars are nowhere.
+  assert.deepStrictEqual(result.totals, {
+    regularHours: 0, otHours: 0, totalHours: 0,
+    totalEarnings: 0, regularDollars: 0, otDollars: 0
+  });
+  assert.deepStrictEqual(result.departments, []);
+  assert.deepStrictEqual(result.sample, []);
+  // Nor did it turn up as an unknown employee or a missing-department case.
+  assert.deepStrictEqual(result.unmatched, []);
+  assert.deepStrictEqual(result.missingDepartment, []);
+});
+
+test('a salaried row with hours contributes nothing to a department the hourly rows populate', () => {
+  // The same rule with a real hourly row alongside it, so the totals have a
+  // non-zero value to hide inside. Only Miguel's 10 hours / 245 dollars exist.
+  const result = importFrom([
+    row('9002', 'Cross',       'Pat',    'Yes', 40,   10, 2, 12, 500),
+    row('0319', 'Acosta Ruiz', 'Miguel', 'No',  24.5, 10, 0, 10, 245)
+  ]);
+
+  assert.strictEqual(result.counts.salariedSkipped, 1);
+  assert.strictEqual(result.counts.salariedWithHoursSkipped, 1);
+  assert.strictEqual(result.counts.imported, 1);
+  assert.deepStrictEqual(result.rows.map(r => r.employee_number), ['0319']);
+
+  assert.strictEqual(result.totals.totalHours, 10);
+  assert.strictEqual(result.totals.regularHours, 10);
+  assert.strictEqual(result.totals.otHours, 0);
+  assert.strictEqual(result.totals.totalEarnings, 245);
+  assert.strictEqual(result.totals.regularDollars, 245);
+  assert.strictEqual(result.totals.otDollars, 0);
+
+  assert.deepStrictEqual(result.departments.map(d => d.department), ['Production']);
+  const production = result.departments[0];
+  assert.strictEqual(production.employees, 1);
+  assert.strictEqual(production.totalHours, 10);
+  assert.strictEqual(production.totalEarnings, 245);
+
   assert.ok(result.anomalies.some(a => a.type === 'salaried_with_hours' && a.employeeNumber === '9002'));
 });
 

@@ -5,10 +5,18 @@ into it (by hand and automatically), and a weekly report on top.
 
 ---
 
+## One vendor, two names
+
+**BBSI and Central Servers are the same vendor.** BBSI is the PEO; Central Servers is their
+reporting platform, and it is what actually sends the mail — hence
+`no-reply@centralservers.com` in the filter and in `PAYROLL_SENDER`. They are not two
+systems and there is no second integration to look for. Wherever this document says "the
+payroll system", "BBSI" or "Central Servers", it means the same place.
+
 ## The short version
 
 ```
-Payroll system (no-reply@centralservers.com)
+BBSI / Central Servers (no-reply@centralservers.com)
    |  daily .xlsx, ~6:04 AM Pacific
    v
 info@sequoiafp.com  — shared inbox
@@ -249,7 +257,7 @@ If the date cannot be established with confidence, nothing is inserted: the mess
 parked in `pending_review` and Peter is emailed. A silently wrong date corrupts a week's
 totals in a way that is very hard to spot afterwards.
 
-> **Worth asking the vendor:** can Central Servers put the reporting date in the subject
+> **Worth asking BBSI:** can Central Servers put the reporting date in the subject
 > line, the body, or the file itself? Many report schedulers support a date token in the
 > report name. If so, that removes this entire class of risk and should replace the
 > inference above. Low effort to ask, high payoff.
@@ -277,9 +285,14 @@ they contribute nothing. Rows with `Is Salary = Yes` are skipped at import, and 
 skipped count is shown in the upload preview so the exclusion is visible rather than
 silent.
 
-The safety valve: a salaried row that ever arrives with **non-zero** hours or earnings is
-**not** dropped. It is imported, flagged `salaried_with_hours`, and reported — that would
-mean the payroll system's behaviour changed and this assumption no longer holds.
+A salaried row is skipped **unconditionally** — whatever the file carries for them, pay
+rate, hours or earnings. They contribute nothing to any row, total or department.
+
+But a salaried row arriving with **non-zero** hours or earnings is still *reported*: it
+produces a `salaried_with_hours` anomaly naming the employee and what was on the row.
+Being ignored and being invisible are different things. A salaried row with real hours on
+it means the payroll file changed shape, and that is worth knowing even though nothing is
+imported from it.
 
 Because salaried staff are excluded by design, every dollar figure in this system is
 **hourly payroll**, and the UI says so everywhere. Without that label the Net OT
@@ -545,7 +558,7 @@ Check whether something is applying a flat 1.5x. The residual method is the corr
 see the derivation section above.
 
 **Nothing arrived at all this morning.**
-The missed-delivery check emails on a missing Mon-Thu day. Confirm the vendor still sends
+The missed-delivery check emails on a missing Mon-Thu day. Confirm BBSI still sends
 to `info@`, that the Gmail filter still matches (vendors change subject lines), and that
 the app password has not been revoked. The Daily Hours tab's **Ingestion issues** panel
 lists every message the pipeline could not process and why.

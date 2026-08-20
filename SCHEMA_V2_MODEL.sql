@@ -115,22 +115,32 @@ end $$;
 -- fill the fields in matter. Audit query 8d finds position groups on
 -- non-manufacturing people instead, which is the same information without the
 -- coupling.
+--
+-- DEPARTMENT IS NEVER DERIVED FROM POSITION GROUP, for anyone. Some of the two
+-- lists share names (Maintenance, Saw Filing, Log Yard, Shipping) and it is
+-- tempting to treat the match as a mapping. It is not: Supervisors spans
+-- departments, so a supervisor's department is set independently of where they
+-- stand in the mill. Once one position group has to be an exception, the mapping
+-- is not a rule and reading it as one would file supervisors under a department
+-- nobody chose.
+--
+-- 'Extras' is a real position group — floor staff who move where they are
+-- needed. It is NOT the bullpen. The bullpen is the separate condition of having
+-- no classification at all, which is what audit query 8a lists.
 
 alter table employees add column if not exists position_group text;
 
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'employees_position_group_check' and conrelid = 'employees'::regclass
-  ) then
-    alter table employees add constraint employees_position_group_check
-      check (position_group in (
-        'Supervisors', 'Maintenance', 'Saw Filing', 'Log Yard', 'Sawmill Operators',
-        'Bakerville', 'Green Chain', 'Bench Players', 'Shipping'
-      ));
-  end if;
-end $$;
+-- Renamed from 'Bench Players'. The data is migrated before the constraint is
+-- rebuilt, because the new constraint would reject the old value.
+alter table employees drop constraint if exists employees_position_group_check;
+
+update employees set position_group = 'Extras' where position_group = 'Bench Players';
+
+alter table employees add constraint employees_position_group_check
+  check (position_group in (
+    'Supervisors', 'Maintenance', 'Saw Filing', 'Log Yard', 'Sawmill Operators',
+    'Bakerville', 'Green Chain', 'Extras', 'Shipping'
+  ));
 
 
 -- ----------------------------------------------------------------------------
@@ -158,13 +168,81 @@ alter table employees add column if not exists address_postal_code text;
 -- column is populated by hand in Supabase. Hourly rates never come from here —
 -- they come from the daily file (see wage_history below).
 --
--- NOTE the existing conflation, which this does not yet fix: employees.wage is
--- TEXT and holds either an hourly rate or the literal string 'Salary', so it is
--- currently both the wage and the pay-type flag. The architecture calls for pay
--- type to be its own axis. That column is not part of Phase A; until it exists,
--- 'Salary' in wage remains the marker for salaried.
+-- The wage/pay-type conflation this used to note is resolved in section 5b:
+-- pay_type is now its own column and wage holds only an hourly rate.
 
 alter table employees add column if not exists annual_salary numeric(12,2);
+
+
+-- ----------------------------------------------------------------------------
+-- 5b. pay_type — how somebody is paid, as its own fact
+-- ----------------------------------------------------------------------------
+--
+-- ############################################################################
+-- ORDER MATTERS: DEPLOY THE CODE BEFORE RUNNING THIS SECTION.
+--
+-- Until now, employees.wage held EITHER an hourly rate OR the literal string
+-- 'Salary', so one column was both the wage and the pay-type flag. That is the
+-- conflation the architecture removes, and it has already produced one real
+-- bug: fmtWage matched 'Salary' case-sensitively, so a lowercase value rendered
+-- as $NaN on the roster while the salaried test correctly excluded that person
+-- from Staffing Economics — the two disagreed about the same employee.
+--
+-- This section moves the marker out of wage and into pay_type, which means any
+-- code still deciding "is this person salaried" by reading wage will see a
+-- salaried person as HOURLY the moment it runs. That would put them into
+-- Staffing Economics and into the clock-grace headcount.
+--
+-- So the deployed code must read pay_type first and fall back to the wage
+-- marker only when the column is absent. That order is safe in both directions
+-- and is how the app is written. Run this section after that code is live.
+-- ############################################################################
+
+alter table employees add column if not exists pay_type text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'employees_pay_type_check' and conrelid = 'employees'::regclass
+  ) then
+    alter table employees add constraint employees_pay_type_check
+      check (pay_type in ('Hourly', 'Salaried'));
+  end if;
+end $$;
+
+-- Back-fill from the marker being retired. Anyone not carrying it is hourly,
+-- including somebody with a blank wage — a new hire with no rate yet is hourly
+-- without a rate, not a person of unknown pay type. Audit query 8h lists them
+-- so a genuine unknown can be corrected by hand.
+update employees
+set pay_type = case
+                 when btrim(lower(coalesce(wage, ''))) = 'salary' then 'Salaried'
+                 else 'Hourly'
+               end
+where pay_type is null;
+
+-- Now clear the sentinel, so wage means one thing: an hourly rate, or nothing.
+-- Guarded, because clearing it before every row has a pay_type would erase the
+-- only record of who was salaried.
+do $$
+declare unclassified integer;
+begin
+  select count(*) into unclassified from employees where pay_type is null;
+  if unclassified > 0 then
+    raise exception 'Refusing to clear the wage sentinel: % row(s) still have no pay_type.', unclassified;
+  end if;
+
+  update employees
+  set wage = null
+  where pay_type = 'Salaried'
+    and btrim(lower(coalesce(wage, ''))) = 'salary';
+
+  raise notice 'pay_type back-filled and the wage sentinel cleared. wage is now a rate or null.';
+end $$;
+
+-- Salaried compensation lives in annual_salary (section 5), never in wage.
+-- Hourly rates come from the daily file and nowhere else.
 
 
 -- ----------------------------------------------------------------------------
@@ -390,6 +468,21 @@ from employees;
 --   and cost_class = 'Manufacturing'
 --   and btrim(lower(coalesce(wage, ''))) = 'salary'
 -- order by annual_salary nulls first, name;
+
+-- 8h. Pay type worth a second look: hourly people with no rate at all, and
+--     salaried people with no salary. The first is normal for a brand-new hire
+--     and wrong for anybody else; the second means their cost cannot be
+--     computed.
+-- select name, pay_type, wage, annual_salary, cost_class, department
+-- from employees
+-- where status = 'Active'
+--   and ((pay_type = 'Hourly'   and (wage is null or btrim(wage) = ''))
+--     or (pay_type = 'Salaried' and annual_salary is null))
+-- order by pay_type, name;
+
+-- 8i. Anybody still carrying the retired position group name. Should be zero;
+--     the migration renames them.
+-- select name, position_group from employees where position_group = 'Bench Players';
 
 -- 8f. Wage changes the sync flagged as large. Each is either a real raise or a
 --     bad vendor file, and they are indistinguishable without looking.

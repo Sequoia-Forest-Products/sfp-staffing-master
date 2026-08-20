@@ -226,9 +226,15 @@ async function commit(body) {
   });
 
   if (!result.rows.length) {
+    // Name the salaried-with-activity count too. Every salaried row is skipped
+    // whatever it carries, so a file of nothing but salaried rows that DO carry
+    // hours produces zero importable rows — and without saying so, "0 rows"
+    // reads like a parsing failure rather than the rule working.
+    const withHours = result.counts.salariedWithHoursSkipped || 0;
     throw new BadRequest(
       `${body.fileName || 'That file'} produced no importable rows ` +
-      `(${result.counts.totalRows} row(s) read, ${result.counts.salariedSkipped} salaried).`
+      `(${result.counts.totalRows} row(s) read, ${result.counts.salariedSkipped} salaried` +
+      `${withHours ? `, ${withHours} of them carrying hours or earnings` : ''}).`
     );
   }
 

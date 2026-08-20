@@ -383,7 +383,7 @@ function buildImport({
 
   let totalRows = 0;
   let salariedSkipped = 0;
-  let salariedWithHoursImported = 0;
+  let salariedWithHoursSkipped = 0;
 
   const cell = (record, canonical) => {
     const header = mapping[canonical];
@@ -449,17 +449,35 @@ function buildImport({
       numbers.regularHours !== 0 || numbers.otHours !== 0 ||
       numbers.totalHours !== 0 || numbers.totalEarnings !== 0;
 
-    // Salaried people appear on the file every day with a row of zeroes; they
-    // are not hourly payroll and are dropped. A salaried row carrying actual
-    // hours means the payroll system's behaviour changed, so it is imported
-    // and flagged rather than discarded along with the rest.
-    if (isSalary && !hasActivity) {
-      salariedSkipped++;
-      continue;
-    }
+    // Salaried people are outside this flow entirely. EVERY salaried row is
+    // dropped, unconditionally, whatever it carries — pay rate, hours,
+    // earnings, any of it — so that every figure this system reports is hourly
+    // payroll only. A salaried person's cost is annual_salary / 2080 (see
+    // wage-sync.effectiveHourlyRate) and never a number out of this file.
+    //
+    // Skipped is not silent, though. They normally arrive as a row of zeroes;
+    // one carrying actual hours or earnings means the vendor's file changed
+    // shape, and that is worth knowing even though the row is still dropped.
+    // So it is counted separately and reported as an anomaly naming what it
+    // carried, rather than imported and flagged as it once was.
     if (isSalary) {
-      salariedWithHoursImported++;
-      flags.push('salaried_with_hours');
+      salariedSkipped++;
+      if (hasActivity) {
+        salariedWithHoursSkipped++;
+        const salariedEmployee = byNumber.get(employeeNumber) || null;
+        anomalies.push({
+          employeeNumber,
+          name: displayName(salariedEmployee, { lastName, firstName }),
+          type: 'salaried_with_hours',
+          detail: `Emp # ${employeeNumber} is marked Is Salary = Yes but reported ` +
+                  `${numbers.totalHours} hours / ${numbers.totalEarnings.toFixed(2)} earnings ` +
+                  `at a pay rate of ${numbers.payRate.toFixed(2)}. Skipped like every salaried ` +
+                  `row — not imported, and contributing nothing to any total or department. ` +
+                  `Reported because a salaried row carrying activity means the payroll ` +
+                  `system's behaviour changed.`
+        });
+      }
+      continue;
     }
 
     // total_earnings is the payroll system's blended figure and is stored
@@ -497,16 +515,6 @@ function buildImport({
       }
     }
 
-    if (isSalary) {
-      anomalies.push({
-        employeeNumber,
-        name: displayName(employee, { lastName, firstName }),
-        type: 'salaried_with_hours',
-        detail: `Emp # ${employeeNumber} is marked Is Salary = Yes but reported ` +
-                `${numbers.totalHours} hours / ${numbers.totalEarnings.toFixed(2)} earnings. Imported anyway.`
-      });
-    }
-
     // Column names are the daily_hours columns, so this object POSTs as-is.
     // is_scheduled_day is a generated column — never send it.
     rows.push({
@@ -514,6 +522,8 @@ function buildImport({
       employee_number: employeeNumber,
       last_name: lastName,
       first_name: firstName,
+      // Always false: every salaried row was skipped above. Kept because it is
+      // a real daily_hours column and historic rows carry true.
       is_salary: isSalary,
       pay_rate: numbers.payRate,
       regular_hours: numbers.regularHours,
@@ -617,7 +627,7 @@ function buildImport({
       totalRows,
       imported: rows.length,
       salariedSkipped,
-      salariedWithHoursImported
+      salariedWithHoursSkipped
     },
     totals,
     departments,
