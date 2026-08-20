@@ -12,6 +12,19 @@
 -- the constraint permits the new values, and the constraint cannot exclude the
 -- retired values while rows still hold them. SCHEMA_V2_MODEL.sql breaks the
 -- deadlock by allowing both sets at once; this file closes it again.
+--
+-- ############################################################################
+-- DO NOT RUN THIS UNTIL THE FRONTEND BRANCH IS DEPLOYED.
+--
+-- Having zero rows on a retired value is necessary but not sufficient. The
+-- currently deployed app still offers 'Non-Production' in its department
+-- dropdown (origin/main's NON_PRODUCTION_DEPARTMENT). Tighten the constraint
+-- while that build is live and picking that option becomes a check violation —
+-- a save that fails from a UI giving no hint anything is wrong.
+--
+-- Order: deploy the branch, confirm the dropdown offers the twelve, then run
+-- this.
+-- ############################################################################
 -- ============================================================================
 
 do $$
