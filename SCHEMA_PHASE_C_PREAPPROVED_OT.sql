@@ -294,28 +294,54 @@ select
   (select coalesce(sum(hours), 0) from overtime)
     - (select coalesce(sum(hours), 0) from preapproved_ot) as difference_should_be_12_00;
 
--- 5c. NOTHING DROPPED SILENTLY. Every `overtime` row that did not make
---     it, with the reason. Expected exactly 3 rows: Brian x2 (inactive)
---     and Rey x1 (duplicate). A row here with reason 'no match' is a
---     failure — stop and report it rather than proceeding.
-with alias as (select * from (values ('Tim Green', 'Timothy Green')) as t(from_name, to_name))
-select o.name, o.ot_type, o.hours, o.description,
-       case
-         when e.id is null        then 'no match'
-         when e.status <> 'Active' then 'employee inactive'
-         else 'duplicate of a migrated row'
-       end as reason
-from overtime o
-left join alias a on a.from_name = o.name
-left join employees e on e.name = coalesce(a.to_name, o.name)
-where not exists (
-  select 1 from preapproved_ot p
-  where p.employee_id = e.id
-    and p.ot_type = o.ot_type
-    and p.hours = o.hours
-    and coalesce(p.description, '') = coalesce(o.description, '')
+-- 5c. NOTHING DROPPED SILENTLY. Every (employee, category) pair in
+--     `overtime` with a count of how many rows it had there and how many
+--     it has here, so a shortfall is visible as a NUMBER rather than
+--     inferred from a row's absence.
+--
+--     Written this way after the obvious version got it wrong. Matching
+--     each old row against the new table on its VALUES cannot see a
+--     value-identical duplicate: the surviving row matches both copies,
+--     so neither is reported and the check silently passes whether the
+--     de-duplication happened or not. Counting per pair does see it.
+--
+--     EXPECTED, exactly 3 rows:
+--       Brian McDonald  Post-Shift  1 -> 0   employee inactive
+--       Brian McDonald  Weekend     1 -> 0   employee inactive
+--       Rey Aispuro     Weekend     2 -> 1   duplicate removed, one kept
+--
+--     Anything else is a finding. In particular a row reading 'no match'
+--     means somebody's allowance was dropped without being accounted
+--     for — stop and report it rather than proceeding.
+with alias as (select * from (values ('Tim Green', 'Timothy Green')) as t(from_name, to_name)),
+resolved as (
+  select coalesce(a.to_name, o.name) as resolved_name, o.ot_type,
+         e.id as employee_id, e.status
+  from overtime o
+  left join alias a on a.from_name = o.name
+  left join employees e on e.name = coalesce(a.to_name, o.name)
+),
+old_counts as (
+  select resolved_name, ot_type, employee_id, min(status) as status, count(*) as in_overtime
+  from resolved group by 1, 2, 3
+),
+new_counts as (
+  select employee_id, ot_type, count(*) as in_preapproved
+  from preapproved_ot group by 1, 2
 )
-order by o.name, o.ot_type;
+select o.resolved_name, o.ot_type, o.in_overtime,
+       coalesce(n.in_preapproved, 0) as in_preapproved,
+       case
+         when o.employee_id is null                              then 'no match — INVESTIGATE'
+         when o.status <> 'Active'                               then 'employee inactive'
+         when o.in_overtime > coalesce(n.in_preapproved, 0)      then 'duplicate removed, one kept'
+         else 'unexplained shortfall — INVESTIGATE'
+       end as reason
+from old_counts o
+left join new_counts n
+  on n.employee_id = o.employee_id and n.ot_type = o.ot_type
+where o.in_overtime <> coalesce(n.in_preapproved, 0)
+order by o.resolved_name, o.ot_type;
 
 -- 5d. Per-person, old vs new. Every active employee should match exactly;
 --     Brian McDonald should be the only name with old > 0 and new null.
