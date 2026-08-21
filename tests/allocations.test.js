@@ -463,11 +463,50 @@ const JEFF_ROW = {
   status: 'Active', payType: 'Salaried'
 };
 
-test('the card seeds an unallocated person with their primary at 100%', () => {
+// The card has ONE Edit button now, so the allocation editor only renders in
+// edit mode. profileEditing() requires an open card AND an editing record whose
+// id matches — that pairing is what stops the roster's own Edit modal, which
+// renders neither section, from putting them into edit mode for another record.
+function enterEdit(ctx, row = JEFF_ROW) {
+  ctx.state.employees = [row];
+  ctx.state.profile = { idx: 0 };
+  ctx.state.editing = { ...row, _idx: 0, _isNew: false };
+  return ctx;
+}
+
+test('read mode states there is no allocation rather than showing an editor', () => {
+  // Three save mechanics on one card was the complaint. In read mode this
+  // section has no inputs and nothing to press.
   const ctx = sandbox();
   ctx.state.employees = [JEFF_ROW];
+  ctx.state.profile = { idx: 0 };
   const html = ctx.profileAllocation(JEFF_ROW);
-  assert.match(html, /No allocation: 100% of this person's cost goes to their primary/);
+  assert.match(html, /No allocation — 100% of this person's cost goes to Sales &amp; Marketing/);
+  assert.ok(!html.includes('<input'), 'read mode must not render inputs');
+  assert.ok(!html.includes('Save'), 'read mode must not offer a save');
+});
+
+test('read mode shows a stored split without an editor', () => {
+  const ctx = sandbox();
+  ctx.state.employees = [JEFF_ROW];
+  ctx.state.profile = { idx: 0 };
+  ctx.state.allocations = [{
+    employeeId: JEFF, name: 'Jeff Cook', primaryDepartment: 'Sales & Marketing',
+    onRoster: true, status: 'Active', total: 100, sumsTo100: true, includesPrimary: true,
+    rows: [{ department: 'Corporate', percent: 50 }, { department: 'Sales & Marketing', percent: 50 }]
+  }];
+  const html = ctx.profileAllocation(JEFF_ROW);
+  assert.match(html, /Corporate/);
+  assert.match(html, /50\.00%/);
+  assert.match(html, /· primary/, 'the primary department is marked, since the remainder lands there');
+  assert.match(html, /HOURS are not split/);
+  assert.ok(!html.includes('<input'));
+});
+
+test('edit mode seeds an unallocated person with their primary at 100%', () => {
+  const ctx = enterEdit(sandbox());
+  const html = ctx.profileAllocation(JEFF_ROW);
+  assert.match(html, /One department at 100% means no allocation/);
   assert.match(html, /100\.00%/);
   // It is the state they are actually in, and one edit from a real split.
   const draft = ctx.allocDraft(JEFF, 'Sales & Marketing');
@@ -476,23 +515,46 @@ test('the card seeds an unallocated person with their primary at 100%', () => {
 });
 
 test('the card says hours are not split, because that is the surprising part', () => {
-  const ctx = sandbox();
-  ctx.state.employees = [JEFF_ROW];
+  const ctx = enterEdit(sandbox());
   const html = ctx.profileAllocation(JEFF_ROW);
   assert.match(html, /hours are not split/);
   assert.match(html, /remainder on Sales &amp; Marketing/);
 });
 
-test('a total that is not 100% disables Save and says what would be lost', () => {
-  const ctx = sandbox();
-  ctx.state.employees = [JEFF_ROW];
+test('a total that is not 100% says what would be lost, and blocks the card\'s Save', () => {
+  const ctx = enterEdit(sandbox());
   ctx.state.allocDrafts = { [JEFF]: [
     { department: 'Corporate', percent: 50 }, { department: 'HR', percent: 40 }
   ]};
   const html = ctx.profileAllocation(JEFF_ROW);
   assert.match(html, /90\.00% — must be 100%/);
   assert.match(html, /10\.00% of this person's cost would land nowhere/);
-  assert.match(html, /<button class="btn btn-primary btn-sm" disabled/);
+
+  // The section no longer has its own Save button — the CARD's Save is gated,
+  // via allocDraftValid, so one button owns the decision.
+  assert.ok(!html.includes('btn-primary'), 'the section must not carry its own save');
+  assert.strictEqual(ctx.allocDraftValid(JEFF), false);
+  assert.match(ctx.renderProfile(), /must add up to 100% before this can be saved/);
+  assert.match(ctx.renderProfile(), /<button class="btn btn-primary" disabled/);
+});
+
+test('a valid draft lets the card save, and an untouched one is always valid', () => {
+  const ctx = enterEdit(sandbox());
+  ctx.state.allocDrafts = { [JEFF]: [
+    { department: 'Corporate', percent: 50 }, { department: 'Sales & Marketing', percent: 50 }
+  ]};
+  assert.strictEqual(ctx.allocDraftValid(JEFF), true);
+  assert.ok(!ctx.renderProfile().includes('btn btn-primary" disabled'));
+
+  // No draft at all means nothing was edited, which cannot be invalid.
+  ctx.state.allocDrafts = {};
+  assert.strictEqual(ctx.allocDraftValid(JEFF), true);
+
+  // A row with no department chosen is not committable either.
+  ctx.state.allocDrafts = { [JEFF]: [
+    { department: '', percent: 50 }, { department: 'HR', percent: 50 }
+  ]};
+  assert.strictEqual(ctx.allocDraftValid(JEFF), false);
 });
 
 test('split evenly sums to exactly 100 and puts the odd hundredth first', () => {
@@ -530,8 +592,7 @@ test('a draft is per employee, so one half-finished edit does not leak into anot
 });
 
 test('the department dropdown offers the twelve values grouped by cost class', () => {
-  const ctx = sandbox();
-  ctx.state.employees = [JEFF_ROW];
+  const ctx = enterEdit(sandbox());
   const html = ctx.profileAllocation(JEFF_ROW);
   for (const cc of ['Manufacturing', 'Mill Overhead', 'SG&A']) {
     assert.ok(html.includes(`<optgroup label="${cc.replace('&', '&amp;')}">`), `missing group ${cc}`);

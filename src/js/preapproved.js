@@ -88,6 +88,80 @@ async function deletePreApproved(employeeId, otType, label){
   }
 }
 
+// The draft the profile card edits: one entry per category, always all three,
+// seeded from whatever is stored. Blank hours means "no allowance" and is what a
+// removal looks like — see preApprovedCommit.
+function preApprovedDraft(employeeId){
+  const mine=preApprovedFor(employeeId);
+  const draft={};
+  for(const type of PREAPPROVED_TYPES){
+    const row=mine[type]||null;
+    draft[type]={
+      hours: row ? String(row.hours) : '',
+      description: row ? (row.description||'') : '',
+      existed: !!row
+    };
+  }
+  return draft;
+}
+
+// Commits one employee's whole draft, and RETURNS A RESULT rather than toasting.
+// The profile card's single Save composes this with two other writes and has to
+// be able to say which part failed, so nothing here talks to the user.
+//
+// STILL ONE ROW PER CALL. The endpoint's shape is unchanged — upsert one,
+// delete one — because that is what made Rey Aispuro's duplicated allowance
+// impossible. What changed is only that the calls are batched behind one button
+// instead of three.
+//
+// Blank hours removes the row. Zero does NOT: zero is a real setting that
+// switches an allowance off while keeping the record and its description, and
+// the API accepts it for exactly that reason.
+async function preApprovedCommit(employeeId, draft){
+  const failures=[];
+  let wrote=0, removed=0;
+
+  for(const type of PREAPPROVED_TYPES){
+    const d=(draft||{})[type];
+    if(!d) continue;
+    const raw=String(d.hours==null?'':d.hours).trim();
+    const stored=preApprovedFor(employeeId)[type]||null;
+
+    try{
+      if(raw===''){
+        // Nothing to do unless there is a row to remove.
+        if(stored){
+          const qs='employeeId='+encodeURIComponent(employeeId)+'&otType='+encodeURIComponent(type);
+          const res=await fetch('/api/preapproved-ot?'+qs,{method:'DELETE'});
+          const json=await res.json().catch(()=>null);
+          if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('status '+res.status));
+          removed++;
+        }
+        continue;
+      }
+
+      // Unchanged rows are not rewritten. Saving a profile should not touch an
+      // allowance nobody edited — updated_at is the audit trail for who changed
+      // what and when.
+      if(stored
+         && Number(stored.hours)===Number(raw)
+         && String(stored.description||'')===String(d.description||'')) continue;
+
+      const res=await fetch('/api/preapproved-ot',{
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({employeeId, otType:type, hours:raw, description:d.description||''})
+      });
+      const json=await res.json().catch(()=>null);
+      if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('status '+res.status));
+      wrote++;
+    }catch(err){
+      failures.push(type+': '+err.message);
+    }
+  }
+
+  return {ok:failures.length===0, wrote, removed, failures};
+}
+
 // Rows for one employee, by category. Used by the profile card and here.
 function preApprovedFor(employeeId){
   const out = {};

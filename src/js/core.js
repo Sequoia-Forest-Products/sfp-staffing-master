@@ -339,6 +339,147 @@ function fmtBirthday(value){
   return MONTH_NAMES[p.month-1]+' '+p.day;
 }
 
+// ---------------------------------------------------------------------------
+// TIME OF DAY — break_1 and break_2
+// ---------------------------------------------------------------------------
+//
+// The column holds a break time and nothing else, but it has been written by
+// several things over the years and holds several shapes:
+//
+//   '1899-12-30T20:45:00.000Z'   a spreadsheet time-only serialisation. The
+//                                1899-12-30 epoch is Excel/Sheets' zero date;
+//                                the DATE PART IS MEANINGLESS and only the
+//                                clock time matters.
+//   '8:45 PM'                    what the roster's own Add form writes.
+//   '20:45'                      what <input type="time"> produces.
+//
+// This was rendering the raw stored string on the profile card, so somebody's
+// afternoon break read as '1899-12-30T20:45:00.000Z'. Same class of bug as the
+// birthday column: a stored value shown without formatting.
+//
+// PARSED, NOT CAST. `new Date('1899-12-30T20:45:00.000Z')` then reading local
+// hours would shift the time by the viewer's UTC offset — 20:45Z becomes 12:45
+// in California — and the stored value was never an instant in the first place.
+// So the digits are pulled out with a regex and used as written. That is also
+// why nothing here touches a timezone: there is no instant to convert.
+
+// The time part of any shape above, as {hour, minute} on a 24-hour clock, or
+// null when the value cannot be read as a time at all.
+function parseTimeParts(value){
+  const raw=String(value==null?'':value).trim();
+  if(raw==='') return null;
+
+  // ISO-ish: take the time immediately after the 'T' and ignore the date and
+  // any zone marker. The zone is ignored deliberately — see the note above.
+  let m=/^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/.exec(raw);
+  if(!m) m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*$/.exec(raw);
+  if(m){
+    const h=+m[1], min=+m[2];
+    if(h>=0&&h<=23&&min>=0&&min<=59) return {hour:h,minute:min};
+    return null;
+  }
+
+  // 12-hour with a meridiem. 12 AM is hour 0 and 12 PM is hour 12 — the one
+  // pair of cases that a naive (h % 12) + offset gets wrong in both directions.
+  m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp])\.?[Mm]\.?\s*$/.exec(raw);
+  if(m){
+    let h=+m[1];
+    const min=+m[2];
+    const pm=m[3].toLowerCase()==='p';
+    if(h<1||h>12||min<0||min>59) return null;
+    if(h===12) h=0;
+    return {hour:pm?h+12:h,minute:min};
+  }
+
+  // A bare number is a spreadsheet serial: the fraction of a day. 0.53125 is
+  // 12:45. Accepted because the column may hold them, but only below 1 — a
+  // value of 45000 is a full date serial, which is not a break time and is
+  // more likely a column mix-up worth seeing as "unreadable".
+  m=/^(\d?\.\d+|0)$/.exec(raw);
+  if(m){
+    const frac=parseFloat(m[1]);
+    if(!(frac>=0&&frac<1)) return null;
+    const total=Math.round(frac*24*60);
+    // 0.9999 rounds to 1440, which is midnight the next day rather than an
+    // invalid time. Wrap rather than reject.
+    const mins=total%1440;
+    return {hour:Math.floor(mins/60),minute:mins%60};
+  }
+
+  return null;
+}
+
+// '8:45 PM'. Null — not a dash, not the raw value — when it cannot be read, so
+// the caller decides how to show a value it does not understand.
+function fmtTime(value){
+  const p=parseTimeParts(value);
+  if(!p) return null;
+  const pm=p.hour>=12;
+  let h=p.hour%12;
+  if(h===0) h=12;
+  return h+':'+String(p.minute).padStart(2,'0')+' '+(pm?'PM':'AM');
+}
+
+// 'HH:MM' for <input type="time">, or '' when the value cannot be represented.
+//
+// The empty string is the dangerous case and the caller must handle it. A time
+// input given '' renders blank, and the next save writes that blank back over
+// a real value as though it were a deliberate clearing. That is exactly the
+// trap the birthday date picker hit, which is why profileEditBody switches to a
+// text field and a warning instead of showing an empty picker.
+function timeInputValue(value){
+  const p=parseTimeParts(value);
+  if(!p) return '';
+  return String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
+}
+
+// WHAT GETS STORED GOING FORWARD: 'HH:MM', 24-hour.
+//
+// Chosen over the other two shapes already in the column because it is what
+// <input type="time"> emits (so the edit path needs no conversion), it sorts
+// correctly as text, it is unambiguous without a meridiem, and it carries no
+// fake 1899 date to be misread as an instant later. Existing values are NOT
+// migrated — nothing parses this column except the display layer, so a
+// migration would be risk without a reader to benefit. fmtTime reads all three
+// shapes, so old and new rows render identically.
+function timeStorageValue(value){
+  const p=parseTimeParts(value);
+  if(!p) return null;
+  return String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
+}
+
+// What a WRITE puts in break_1 / break_2. Three outcomes, and each one is a
+// deliberate choice about somebody's record:
+//
+//   readable      -> normalized to 'HH:MM'
+//   absent        -> null. NOT a default. `break_1: e.break1 || '7:00 AM'` used
+//                    to sit in two writers, one of which re-writes every row on
+//                    the roster, so a single Sync gave a fabricated 7:00 AM
+//                    break to everybody who had none on file. A person with no
+//                    break time recorded is a fact, not a gap to fill in.
+//   unreadable    -> kept exactly as it was found. Normalizing it is impossible
+//                    and nulling it would destroy the only copy — which is the
+//                    same mistake as inventing one, pointed the other way. The
+//                    edit surface shows it as text with a warning so a human can
+//                    correct it; until then it is preserved.
+function breakStorageValue(value){
+  const normalized=timeStorageValue(value);
+  if(normalized!==null) return normalized;
+  const raw=String(value==null?'':value).trim();
+  return raw===''?null:raw;
+}
+
+// The schedule-day values present on the roster. Drives the suggestion list on
+// the profile card, NOT a validation list — a value not in here is kept as typed,
+// because a select that silently drops an unrecognised value would rewrite
+// somebody's schedule the first time their profile was saved.
+//
+// PROVISIONAL: awaiting the audit of employees.days. openAdd() has defaulted new
+// hires to 'MON-THU' since before Phase A, so that value is certain; the rest of
+// the list is a guess at the shapes a hand-edited text column collects and must
+// be replaced with what the query actually returns.
+const SCHEDULE_DAYS=['MON-THU','MON-FRI','FRI-SUN','MON-SUN'];
+
 const MONTH_NAMES=['January','February','March','April','May','June','July',
   'August','September','October','November','December'];
 
