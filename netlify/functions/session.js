@@ -26,8 +26,12 @@ const SCRIPT_MODULES = [
   'bootstrap.js'
 ];
 
-const APP_HTML     = path.join(__dirname, '../../app.html');
+const APP_HTML     = path.join(__dirname, '../../public/app.html');
 const MODULE_DIR   = path.join(__dirname, '../../src/js');
+// src/js is deliberately NOT under public/. The modules reach a browser only
+// assembled by this function, behind the session check; keeping them outside the
+// publish directory is what makes that true by construction rather than by a
+// redirect rule that has to be remembered.
 const SCRIPT_START = '/* APP_MODULES_START';
 const SCRIPT_END   = '/* APP_MODULES_END */';
 

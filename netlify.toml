@@ -1,6 +1,28 @@
+# publish points at public/, NOT at the repo root, and that is the whole
+# security posture of this file.
+#
+# It used to be publish = ".", which meant the default for every file in the
+# repo was "served to the public internet, with no session check". Four things
+# were found open that way in turn — src/js/*.js, the eleven .sql files,
+# app.html.backup, and the whole tests/ tree — each time after the fact, and
+# each fixed by adding another 404 redirect. A probe of the live site found 48
+# of 69 tracked files being served, including every netlify/functions/*.js:
+# /netlify/functions/db.js returned its real source to anyone who asked.
+#
+# One of those redirects never even worked. `from = "/*.sql"` sat here looking
+# like protection while all eleven schema files were served, because Netlify's
+# `*` is a trailing splat — "the rest of the path" — not an extension glob.
+#
+# With publish = "public", src/, tests/, netlify/, the .sql files, the docs and
+# package.json are simply not in the deploy. Twenty redirect rules became
+# unnecessary and were deleted. Adding a file to this repo now makes it private
+# by default; making something public means deliberately putting it in public/.
+#
+# tests/public-exposure.test.js pins that: it fails if publish stops pointing
+# at a subdirectory, or if anything unexpected appears in public/.
 [build]
   functions = "netlify/functions"
-  publish = "."
+  publish = "public"
 
 [functions]
   node_bundler = "esbuild"
@@ -10,7 +32,7 @@
 # requires, so nothing can infer them — they have to be listed here or they are
 # not in the function bundle at all.
 [functions."session"]
-  included_files = ["app.html", "src/js/*.js"]
+  included_files = ["public/app.html", "src/js/*.js"]
 
 # Birthday notifications — Mon-Thu. No Friday run: Thursday's 3-day look-ahead
 # already covers Fri/Sat/Sun, so a Friday run would double-announce.
@@ -56,41 +78,22 @@
   to = "/.netlify/functions/:splat"
   status = 200
 
-# publish = "." serves the whole repo tree, so the script modules would otherwise
-# be fetchable one by one at /src/js/core.js and friends. They are only ever meant
-# to reach a browser assembled by the session function, behind the session check,
-# exactly as the inline script was. force = true because the files really do exist
-# in the publish directory, and a rule without it would be shadowed by them.
-[[redirects]]
-  from = "/src/*"
-  to = "/index.html"
-  status = 404
-  force = true
-
-# Same reasoning for the test tree. publish = "." was serving all of tests/ —
-# the suites, the workbook generators, and tests/fixtures/, which holds a real
-# vendor payroll export with its values replaced. Nothing under tests/ is meant
-# to be fetchable by a browser at all.
-[[redirects]]
-  from = "/tests/*"
-  to = "/index.html"
-  status = 404
-  force = true
-
-# force = true on both, and it is load-bearing rather than tidying.
+# force = true on both /app.html rules, and it is load-bearing rather than
+# tidying.
 #
 # Netlify does not apply a redirect whose `from` matches a file that exists in
-# the publish directory unless it is forced, and app.html sits at the publish
-# root because publish = ".". Without force, /app.html was served as a STATIC
-# file and never reached the session function at all — which is invisible while
-# the script is inline, because core.js reads `window.__SFP_USER__ || {}` and
-# simply renders no user name. It is not invisible now: the script lives in
-# src/js and only the session function assembles it, so a static hit would serve
-# a page with no application on it.
+# the publish directory unless it is forced, and app.html IS in the publish
+# directory — it has to be, because these rules address it by URL. Without
+# force, /app.html was served as a STATIC file and never reached the session
+# function at all. That was invisible while the script was inline, because
+# core.js reads `window.__SFP_USER__ || {}` and simply renders no user name. It
+# is not invisible now: the modules live in src/js and only the session
+# function assembles them, so a static hit would serve a page with no
+# application on it.
 #
-# It also means the page itself was never actually behind the session check.
-# The API always was, so no data was exposed, but the gate this rule exists to
-# enforce was not being enforced.
+# It also meant the page was never actually behind the session check. The API
+# always was, so no data was exposed, but the gate these rules exist to enforce
+# was not being enforced.
 [[redirects]]
   from = "/app.html"
   to = "/.netlify/functions/session"
@@ -102,145 +105,6 @@
   from = "/app.html"
   to = "/index.html"
   status = 302
-  force = true
-
-# Stale full copy of the pre-split app, publicly fetchable at /app.html.backup
-# and outside the session check. Git holds the history, so the file has no job
-# to do; 404 it now and delete it when convenient.
-[[redirects]]
-  from = "/app.html.backup"
-  to = "/index.html"
-  status = 404
-  force = true
-
-# The server source. publish = "." was serving every function as a static file:
-# /netlify/functions/db.js returned the real 1,940 bytes, Supabase header
-# construction and all, to anyone who asked. No env var is IN these files, but
-# the auth flow, the session check, the PostgREST calls and the payroll
-# pipeline were all readable without a session.
-#
-# This does NOT touch how functions are invoked. They run at
-# /.netlify/functions/* — a different path, with the leading dot — which is
-# where the /api/* rewrite above points. Only the static copies are blocked.
-[[redirects]]
-  from = "/netlify/*"
-  to = "/index.html"
-  status = 404
-  force = true
-
-# ---------------------------------------------------------------------------
-# Root-level development artefacts.
-#
-# READ THIS BEFORE ADDING A RULE HERE. The rule this replaces was
-#
-#   from = "/*.sql"
-#
-# and it never matched anything. Netlify's `*` is a TRAILING SPLAT — "the rest
-# of the path" — not an extension glob, so that pattern silently matched no
-# request and all eleven .sql files were served for as long as it was in place.
-# It read like protection and was not, which is worse than no rule at all.
-#
-# Only two `from` shapes are known to work here: an exact path, and a prefix
-# ending in /* (as /src/*, /tests/* and /netlify/* above). Every rule below is
-# an exact path for that reason. tests/public-exposure.test.js enforces both
-# halves of this: that no rule uses an unsupported shape, and that every file
-# in the publish tree is either explicitly public or covered.
-# ---------------------------------------------------------------------------
-
-[[redirects]]
-  from = "/package.json"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/package-lock.json"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/README.md"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/PAYROLL_INGESTION.md"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/OT_REPORT_SETUP.md"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_BIRTHDAY.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_CHANGES.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_DAILY_HOURS.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_DEPARTMENT_VALUES.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_DROP_DEPT.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_SMS_OPTOUT.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_V2_CLEANUP_CORRECTIONS.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_V2_HOTFIX_SENTINEL.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_V2_MODEL.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_V2_ROSTER_CLEANUP.sql"
-  to = "/index.html"
-  status = 404
-  force = true
-
-[[redirects]]
-  from = "/SCHEMA_V2_TIGHTEN_DEPARTMENTS.sql"
-  to = "/index.html"
-  status = 404
   force = true
 
 [[headers]]

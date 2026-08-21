@@ -22,7 +22,7 @@ The OT Report feature provides a weekly comparison of:
 
 ## What Was Built
 
-### 1. Frontend (app.html)
+### 1. Frontend (public/app.html + src/js/ot-report.js)
 - **New "OT Report" tab** with summary cards and detail table
 - **File upload control** accepting xlsx files (or CSV exported from Excel)
 - **File parser** that extracts: Employee Number, Date, Regular Hours, OT Hours, Supervisor Comment
