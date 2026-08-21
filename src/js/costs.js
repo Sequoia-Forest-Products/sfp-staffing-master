@@ -148,6 +148,17 @@ function costSuppressionNote(report){
     so the visible rows deliberately do not add up to the total. The total itself is never suppressed.</div>`;
 }
 
+// When the cost class itself is too small, the total is an individual figure and
+// there is nothing else on the page to fall back to. Say so plainly rather than
+// rendering a row of dashes.
+function costTotalsNote(report){
+  if(!report||!report.totalsSuppressed) return '';
+  return `<div class="cost-note cost-warn"><strong>No cost figures for this class.</strong>
+    ${esc((report.totals&&report.totals.suppressedReason)||'')} — so headcount and hours are shown and every
+    dollar figure is withheld. This resolves itself when the class has ${report.minBucketHeadcount} or more people,
+    or in Phase D when this page can be gated to the people entitled to see it.</div>`;
+}
+
 function costRateGapNote(report){
   const gaps=(report&&report.rateGaps)||[];
   if(!gaps.length) return '';
@@ -300,11 +311,27 @@ function costSection(costClass, classes, opts){
     </div>`;
 
   const r=view.report;
-  return costTruncationNote(view)
+
+  // TOTALS ONLY on Overhead, by decision, not by omission. SG&A is seven people
+  // across five departments — Corporate 1, Procurement 1, Accounting 2,
+  // Sales & Marketing 3 — so a department breakdown would withhold almost every
+  // row it drew, and a table of dashes is worse than no table. The breakdown
+  // comes back in Phase D behind permissions, where it can show real figures.
+  //
+  // The bullpen is dropped here for a different reason: a null position group is
+  // NORMAL for non-mill staff, so on Overhead it would list the entire class as
+  // if something were wrong. On Manufacturing it means an unclassified new hire,
+  // which is the thing worth seeing.
+  const head = costTruncationNote(view)
     + costAllocationNote(view)
     + costStatCards(r, opts)
+    + costTotalsNote(r)
+    + costRateGapNote(r);
+
+  if(opts&&opts.totalsOnly) return head;
+
+  return head
     + costSuppressionNote(r)
-    + costRateGapNote(r)
     + costTable('By department', r.byDepartment, r, {...opts, keyLabel:'Department'})
     + costTable('By position group', r.byPositionGroup, r, {...opts, keyLabel:'Position group'})
     + costBullpenBlock(r);
@@ -329,12 +356,15 @@ function renderOverhead(){
   const view=costView(COST_CLASS_MILL_OVERHEAD);
   return costStyle
     + costControls(view, classes, {showMbf:false})
-    + `<div class="cost-note"><strong>Two cost classes, side by side.</strong>
+    + `<div class="cost-note"><strong>Two cost classes, totals only.</strong>
         Mill Overhead is the salaried staff whose cost belongs to the mill but not to a board foot;
-        SG&A is everything corporate, broken out by department. Neither carries a cost per MBF —
-        they are not production cost, which is the point of separating them.</div>`
+        SG&A is everything corporate. Neither carries a cost per MBF — they are not production cost,
+        which is the point of separating them.
+        There is no department breakdown here on purpose: SG&A is seven people across five departments,
+        so nearly every row would have to withhold its cost anyway. The breakdown returns in Phase D,
+        behind permissions, where it can show real numbers instead of dashes.</div>`
     + OVERHEAD_CLASSES.map(c=>
         `<div class="cost-section-title" style="font-size:15px;border-bottom:2px solid var(--rust);padding-bottom:4px">${esc(c)}</div>`
-        + costSection(c, classes, {showMbf:false})
+        + costSection(c, classes, {showMbf:false, totalsOnly:true})
       ).join('');
 }

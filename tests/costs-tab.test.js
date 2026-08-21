@@ -323,6 +323,69 @@ test('Overhead renders both sections and no cost per MBF', async () => {
   assert.match(html, /not production cost/);
 });
 
+test('Overhead is totals only — no department or position-group breakdown', async () => {
+  // SG&A is seven people across five departments, so a breakdown would withhold
+  // nearly every row it drew. A table of dashes is worse than no table; the
+  // breakdown returns in Phase D behind permissions.
+  const ctx = sandbox();
+  ctx.switchTab('overhead', null);
+  await new Promise(r => setImmediate(r));
+  const html = ctx.renderOverhead();
+  assert.ok(!html.includes('By department'), 'Overhead must not draw a department table');
+  assert.ok(!html.includes('By position group'), 'Overhead must not draw a position-group table');
+  assert.ok(!html.includes('Bullpen'), 'a null position group is normal for non-mill staff');
+  // The totals still render, and the omission is stated rather than silent.
+  assert.match(html, /totals only/);
+  assert.match(html, /returns in Phase D/);
+});
+
+test('Manufacturing keeps both breakdowns and the bullpen', async () => {
+  // The same section renderer serves both tabs, so this is the guard that
+  // totalsOnly did not leak across.
+  const ctx = sandbox({
+    costBody: {
+      ok: true,
+      report: reportFixture({
+        bullpen: [{ name: 'Unclassified', department: 'Production', position: 'Utility', employeeNumber: '0999' }]
+      }),
+      availableWeeks: [], week: { start: '2026-08-17', end: '2026-08-23' },
+      truncated: false, dataWindow: {}, allocations: { available: true, count: 0, note: null }
+    }
+  });
+  const html = await renderedCosts(ctx);
+  assert.match(html, /By department/);
+  assert.match(html, /By position group/);
+  assert.match(html, /Bullpen/);
+});
+
+test('a cost class too small for a total says so instead of showing dashes', async () => {
+  const ctx = sandbox({
+    costBody: {
+      ok: true,
+      report: reportFixture({
+        headcount: 2,
+        byDepartment: [], byPositionGroup: [], bullpen: [], rateGaps: [],
+        totalsSuppressed: true,
+        hasSuppressedBuckets: true,
+        totals: {
+          hours: 80, cost: null, burdenedCost: null, costPerHour: null,
+          burdenedCostPerHour: null, costPerThousand: null, peopleWithoutRate: 0,
+          suppressed: true,
+          suppressedReason: 'only 2 people in this cost class, so a total here would be an individual figure'
+        }
+      }),
+      availableWeeks: [], week: { start: '2026-08-17', end: '2026-08-23' },
+      truncated: false, dataWindow: {}, allocations: { available: true, count: 0, note: null }
+    }
+  });
+  const html = await renderedCosts(ctx);
+  assert.match(html, /No cost figures for this class/);
+  assert.match(html, /only 2 people in this cost class/);
+  // Headcount and hours survive, so the page can say how much is withheld.
+  assert.match(html, /80\.00/);
+});
+
+
 test('SG&A survives being put in an HTML attribute', async () => {
   const ctx = sandbox();
   ctx.switchTab('overhead', null);

@@ -28,7 +28,9 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
   department and position group, with burdened cost and cost per MBF. Replaced Staffing Economics.
   Aggregates only: no individual's pay rate is sent to the browser, and a grouping too small to
   average withholds its money rather than publishing somebody's rate as a bucket average.
-- **Overhead tab** — the same report for `Mill Overhead` and `SG&A`, broken out by department
+- **Overhead tab** — the same report for `Mill Overhead` and `SG&A`, **totals only**. No department
+  breakdown: SG&A is 7 people across 5 departments, so nearly every row would have to withhold its
+  cost. See *Deferred to Phase D*.
 - **Daily Hours tab** — manual `.xlsx` payroll upload with preview-before-commit, imported-day
   history, department re-stamping, and the email pipeline's issue queue
 - **Reports tab** — three sub-views: **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend),
@@ -79,8 +81,14 @@ sfp-staffing-master/
         ├── auth.js             # Google OAuth flow
         ├── session.js          # Session validation, assembles public/app.html
         ├── logout.js           # Clears session cookie
+        ├── session-lib.js      # THE session verifier and signer — was eleven copies
         ├── data.js             # Supabase CRUD API
         ├── db.js               # Supabase REST helper
+        ├── cost-lib.js         # Cost aggregation by cost class (pure), with
+        │                       # small-bucket suppression
+        ├── cost-report.js      # /api/cost-report — Manufacturing Costs + Overhead
+        ├── week-index-lib.js   # The week picker and bounded window scan, shared
+        │                       # by /api/payroll-report and /api/cost-report
         ├── documents.js        # Google Drive folder management
         ├── birthday-lib.js     # Birthday notification logic (shared)
         ├── birthday-notifications.js  # Scheduled birthday notifications
@@ -464,6 +472,41 @@ Google OAuth restricted to `sequoiafp.com`. Non-domain users can be added via `A
 2. Share **SFP Staffing DB** Google Sheet with them (keeps birthday script working)
 
 ---
+
+## Deferred to Phase D
+
+Recorded here rather than in a comment nobody will find, because each one is a decision that was
+taken deliberately and each one has a visible consequence today.
+
+**Permissions, and the Salaries & Wages page.** Everything below waits on this. Today every
+signed-in `sequoiafp.com` account has full access, so "who may see a compensation figure" has no
+answer to encode.
+
+**Staffing Economics comes back, gated.** With `economics.max_wage` and the wage-vs-max variance
+column, which have no replacement now. The table and its rows are intact; `economics` was removed
+from `/api/data`'s allowlist because nothing read it and `PUT` there is delete-and-replace.
+
+**The SG&A department breakdown.** The Overhead tab is totals only. SG&A is 7 active people across
+5 departments — Corporate 1, Procurement 1, Accounting 2, Sales & Marketing 3 — so at any
+defensible suppression threshold nearly every row would withhold its cost. A table of dashes is
+worse than no table. Behind permissions it can show real figures.
+
+**A salaried person is costed into every week you can pick.** `employees` has no start or end date,
+and a salaried person's cost is `annual_salary / 2080 x standard hours`, which does not consult the
+payroll file. So selecting a week before somebody was hired, or a week in the future, shows their
+cost. This is a consequence of the roster having no employment dates, not of the arithmetic — the
+fix is a `hire_date` (and eventually a termination date), not a change to the cost basis.
+`tests/cost-report-api.test.js` pins the current behaviour explicitly as pinned-not-endorsed.
+
+**`employees.wage` still holds the literal string `'Salary'` for all 10 salaried people.** The v2
+model retired that sentinel and it was never cleared. Nothing breaks: `isSalaried()` falls back to
+it and `effectiveHourlyRate()` decides salaried *before* reading any rate. But `parseFloat(wage)`
+on a salaried person is `NaN`, so no new code may read `wage` for them.
+
+**One `verifySession`, and it compares with `!==`.** The eleven copies are consolidated into
+`netlify/functions/session-lib.js`. The signature comparison was deliberately left as `!==` rather
+than `timingSafeEqual` so that the consolidation preserved behaviour exactly; switching it is a
+one-line change that belongs in its own commit.
 
 ## Key IDs
 

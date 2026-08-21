@@ -127,10 +127,24 @@ test('a salaried person with no annual_salary is a named gap, not a free employe
   const r = buildCostReport({ employees: [noSalary], costClass: 'Manufacturing' });
 
   assert.strictEqual(r.headcount, 1, 'still counted in headcount');
-  assert.strictEqual(r.totals.cost, 0, 'contributes no cost, because none can be computed');
   assert.strictEqual(r.totals.peopleWithoutRate, 1);
   assert.strictEqual(r.rateGaps[0].name, 'No Salary');
   assert.match(r.rateGaps[0].reason, /no annual_salary/);
+
+  // A one-person cost class suppresses its own total, so the cost here reads
+  // null rather than 0. What matters for THIS test is the gap, not the total:
+  // asserted below at a headcount where the total is published.
+  assert.strictEqual(r.totals.cost, null);
+  const wide = buildCostReport({
+    employees: [noSalary,
+      hourly({ name: 'A', wage: 20, employee_number: '7001' }),
+      hourly({ name: 'B', wage: 20, employee_number: '7002' })],
+    dailyRows: [day('7001', 10), day('7002', 10)],
+    costClass: 'Manufacturing'
+  });
+  assert.strictEqual(wide.totals.cost, 400,
+    'the person with no salary contributes no cost — not a zero rate, no cost at all');
+  assert.strictEqual(wide.totals.peopleWithoutRate, 1);
 });
 
 test('an hourly person with no rate anywhere is a named gap', () => {
@@ -222,18 +236,73 @@ test('the threshold is a parameter, so it can be lowered deliberately', () => {
   assert.strictEqual(r.byPositionGroup[0].cost, 2019.2);
 });
 
-test('the TOTALS are never suppressed, and are the honest whole', () => {
-  // Suppression is per bucket. The total over 57 people discloses nobody, and
-  // withholding it would make the tab useless.
+test('the total survives suppressed buckets inside a class big enough to have one', () => {
+  // This is the load-bearing case. Suppression is per bucket, so a class with
+  // enough people publishes its total even when every bucket inside it is
+  // withheld — the total is what tells a reader the withheld buckets are missing
+  // from a known whole. Withholding it too would leave nothing to reconcile.
+  const employees = [
+    EDUARDO,
+    hourly({ name: 'A', wage: 30, position_group: 'Green Chain', department: 'Production', employee_number: '5001' }),
+    hourly({ name: 'B', wage: 30, position_group: 'Log Yard', department: 'Log Yard', employee_number: '5002' })
+  ];
+  const r = buildCostReport({
+    employees,
+    dailyRows: [day('5001', 10), day('5002', 10)],
+    costClass: 'Manufacturing'
+  });
+  assert.strictEqual(r.headcount, 3);
+  assert.strictEqual(r.totalsSuppressed, false);
+  assert.strictEqual(r.totals.cost, round2(2019.2 + 300 + 300));
+  assert.ok(r.byDepartment.every(b => b.suppressed), 'every bucket suppressed here');
+  assert.strictEqual(r.hasSuppressedBuckets, true,
+    'so the reader can tell why the buckets do not sum to the total');
+});
+
+test('a cost class too small to have a bucket is too small to have a total', () => {
+  // The hole this closes: suppression was per bucket, and a total is not a
+  // bucket, so a two-person cost class published a two-person average as a
+  // "total" and passed every check. Mill Overhead is three people — deactivate
+  // one and this is live. It got sharper when the Overhead tab became
+  // totals-only, because then the total is the whole page.
   const r = buildCostReport({
     employees: [EDUARDO, hourly({ name: 'Solo', wage: 30, employee_number: '5001' })],
     dailyRows: [day('5001', 10)],
     costClass: 'Manufacturing'
   });
-  assert.strictEqual(r.totals.cost, round2(2019.2 + 300));
-  assert.ok(r.byDepartment.every(b => b.suppressed), 'every bucket suppressed here');
-  assert.strictEqual(r.hasSuppressedBuckets, true,
-    'so the reader can tell why the buckets do not sum to the total');
+  assert.strictEqual(r.headcount, 2);
+  assert.strictEqual(r.totalsSuppressed, true);
+  assert.strictEqual(r.totals.suppressed, true);
+  assert.match(r.totals.suppressedReason, /only 2 people in this cost class/);
+
+  // Every money figure withheld...
+  for (const key of ['cost', 'burdenedCost', 'costPerHour', 'burdenedCostPerHour', 'costPerThousand']) {
+    assert.strictEqual(r.totals[key], null, `totals.${key} must be withheld`);
+  }
+  // ...and everything that is not compensation kept, so the page can still say
+  // how much is being withheld and from how many people.
+  assert.strictEqual(r.totals.hours, 50);
+  assert.strictEqual(r.totals.peopleWithoutRate, 0);
+
+  // The individual figures must not be reachable by arithmetic either.
+  const wire = JSON.stringify(r);
+  for (const forbidden of ['2019.2', '50.48', '300']) {
+    assert.ok(!wire.includes(forbidden), `a two-person class leaked ${forbidden}`);
+  }
+});
+
+test('a large class total is published, and that is the whole point of the threshold', () => {
+  const employees = Array.from({ length: 8 }, (_, i) =>
+    hourly({ name: `P${i}`, wage: 25, position_group: 'Green Chain',
+             department: 'Production', employee_number: `52${i}0` }));
+  const r = buildCostReport({
+    employees,
+    dailyRows: employees.map((_, i) => day(`52${i}0`, 10)),
+    costClass: 'Manufacturing'
+  });
+  assert.strictEqual(r.totalsSuppressed, false);
+  assert.strictEqual(r.totals.cost, 2000);
+  assert.strictEqual(r.hasSuppressedBuckets, false);
 });
 
 test('suppressed buckets sort last rather than at an arbitrary null position', () => {

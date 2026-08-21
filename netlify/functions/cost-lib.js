@@ -318,6 +318,26 @@ function buildCostReport({
   const departments = finish(byDepartment);
   const positionGroups = finish(byPositionGroup);
 
+  // The class TOTAL is suppressed only when the class itself is too small — not
+  // because a bucket inside it was.
+  //
+  // On Manufacturing (57 people) this never fires, and it must not: the total is
+  // what tells a reader the withheld buckets are missing from a known whole, and
+  // withholding it as well would leave nothing to reconcile against.
+  //
+  // But a small cost class reported as a total IS an average of a handful of
+  // people. Mill Overhead is three; deactivate one and a two-person average
+  // would publish as a "total" and pass every per-bucket check, because
+  // suppression was per bucket and a total is not a bucket. That is the same
+  // shape of hole as the one-member position group, one level up — and it got
+  // sharper the moment the Overhead tab became totals-only, since then the total
+  // is the entire page.
+  const totalsSuppressed = members.length > 0 && members.length < minBucketHeadcount;
+  const totalsReason = totalsSuppressed
+    ? `only ${members.length} ${members.length === 1 ? 'person' : 'people'} in this cost class, ` +
+      `so a total here would be an individual figure`
+    : null;
+
   return {
     costClass,
     burden: num(burden),
@@ -334,14 +354,20 @@ function buildCostReport({
     // True when at least one bucket withheld its money, so a reader can tell
     // why the visible buckets do not sum to the total.
     hasSuppressedBuckets: departments.concat(positionGroups).some(b => b.suppressed),
+    totalsSuppressed,
     totals: {
       hours: totalHours,
-      cost: totalCost,
-      burdenedCost: totalBurdened,
-      costPerHour: totalHours > 0 ? round2(totalCost / totalHours) : null,
-      burdenedCostPerHour: totalHours > 0 ? round2(totalBurdened / totalHours) : null,
-      costPerThousand: costPerThousand(totalBurdened, totalHours, mbfPerHour),
-      peopleWithoutRate: rateGaps.length
+      // Headcount and hours survive suppression, the same way they do in a
+      // bucket: they are not compensation, and a page that shows neither cannot
+      // even say how much is being withheld.
+      cost: totalsSuppressed ? null : totalCost,
+      burdenedCost: totalsSuppressed ? null : totalBurdened,
+      costPerHour: (totalsSuppressed || totalHours <= 0) ? null : round2(totalCost / totalHours),
+      burdenedCostPerHour: (totalsSuppressed || totalHours <= 0) ? null : round2(totalBurdened / totalHours),
+      costPerThousand: totalsSuppressed ? null : costPerThousand(totalBurdened, totalHours, mbfPerHour),
+      peopleWithoutRate: rateGaps.length,
+      suppressed: totalsSuppressed,
+      suppressedReason: totalsReason
     }
   };
 }

@@ -10,7 +10,16 @@ const { verifySession, getCookies } = require('./session-lib');
 // The read was not the worst of it. PUT maps to db.replaceAll, which DELETEs
 // every row in the table before inserting, so `PUT /api/data?table=daily_hours`
 // with an empty rows array would have emptied the table.
-const ALLOWED_TABLES = new Set(['employees', 'economics', 'overtime', 'points']);
+//
+// `economics` came OFF this list in Phase C. It backed the Staffing Economics
+// tab, which was replaced by Manufacturing Costs; nothing in the app reads it
+// now. Leaving it allowlisted meant a signed-in caller could still PUT it, and
+// PUT is delete-and-replace — a live write path to the only record of a per
+// position rate ceiling, with no screen that would show it had been emptied.
+// The table and its rows are untouched in the database; they are simply no
+// longer reachable through this endpoint. Phase D can add it back, read-only,
+// when the page that needs it is gated.
+const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 
 // An explicit projection, not a denylist. A column added to `employees` later
 // is excluded until somebody deliberately lists it here, which is the right
@@ -139,7 +148,6 @@ exports.handler = async (event) => {
     if (method === 'GET' && table) {
       let orderBy = '';
       if (table === 'employees') orderBy = '?order=name.asc';
-      if (table === 'economics') orderBy = '?order=num.asc';
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
       const rows = table === 'employees'
