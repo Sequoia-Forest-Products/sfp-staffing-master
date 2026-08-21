@@ -55,25 +55,71 @@ function retiredOption(v,list){
   return `<option value="${esc(s)}" selected>${esc(s)} — retired, please reassign</option>`;
 }
 
-function renderEmployees(){
+// ONE row template, used by the full render and by the search re-render.
+//
+// There were two copies, and they had already drifted twice: this one used
+// fmtWage(e) while renderEmployeeList printed e.wage raw, so the same person's
+// wage read differently depending on whether you had typed in the search box.
+// Both also interpolated name, days, phone and status UNESCAPED — employee names
+// are user-controlled, which makes that an XSS surface on the roster.
+//
+// esc() on every interpolated value. fmtWage() produces its own markup-free
+// string from a parsed number, so it is safe as-is, and it is the one formatter
+// both renderers now go through.
+function employeeRow(e){
+  const idx=state.employees.indexOf(e);
+  return `<tr>
+      <!-- The name opens the read-only profile. It is a button rather than an
+           anchor so there is no href to middle-click into a dead route. -->
+      <td style="font-weight:600">
+        <button class="emp-name-btn" onclick="openProfile(${idx})" title="Open profile">${esc(e.name)}</button>
+      </td>
+      <td>${fmtWage(e)}</td>
+      <td${hasDepartment(e.department)?'':' style="color:var(--muted)"'}>${hasDepartment(e.department)?esc(e.department):'—'}</td>
+      <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
+      <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${esc(e.status||'—')}</span></td>
+      <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
+      <td style="color:var(--muted);font-size:11px">${esc(e.days||'—')}</td>
+      <td style="color:var(--muted);font-size:11px">${esc(e.phone||'—')}</td>
+      <td>${smsCell(e)}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="openEdit(${idx})">Edit</button></td>
+    </tr>`;
+}
+
+// The four stat cards, computed once. The search re-render used to recompute them
+// inline and disagreed on two: it counted English as "active minus Spanish",
+// which files anybody with no language recorded under English, and counted
+// Inactive by status rather than as "everyone who is not Active". Same numbers
+// from the same place now.
+function rosterStats(){
   const active=state.employees.filter(e=>e.status==='Active');
-  const en=active.filter(e=>e.language==='English').length;
-  const es=active.filter(e=>e.language==='Spanish').length;
+  return {
+    active:active.length,
+    total:state.employees.length,
+    english:active.filter(e=>e.language==='English').length,
+    spanish:active.filter(e=>e.language==='Spanish').length,
+    // Staffed MANUFACTURING departments, out of the six.
+    depts:MANUFACTURING_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length,
+    offMfg:active.filter(e=>hasDepartment(e.department)&&MANUFACTURING_DEPARTMENTS.indexOf(e.department)<0).length,
+    noDept:active.filter(e=>!hasDepartment(e.department)).length,
+    inactive:state.employees.length-active.length
+  };
+}
+
+function renderEmployees(){
   // Staffed MANUFACTURING departments, out of the six — not out of all twelve
   // assignable values. A card reading "8 of 12" while two production departments sit
   // empty would be misleading if office departments were silently making up the
   // difference, so everything outside manufacturing is counted and labelled on its own.
-  const deptCount=MANUFACTURING_DEPARTMENTS.filter(d=>state.employees.some(e=>e.department===d)).length;
-  const offMfg=active.filter(e=>hasDepartment(e.department)&&MANUFACTURING_DEPARTMENTS.indexOf(e.department)<0).length;
-  // Any department is an assignment, so an assigned person is not in this number.
-  const noDept=active.filter(e=>!hasDepartment(e.department)).length;
+  const st=rosterStats();
   const filtered=getFiltered();
   return `
+    ${profileStyle}
     <div class="stat-row">
-      <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${active.length}</div><div class="stat-sub">of ${state.employees.length} total</div></div>
-      <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${en}</div><div class="stat-sub">${es} Spanish</div></div>
-      <div class="stat-card"><div class="stat-label">Departments staffed</div><div class="stat-value">${deptCount}</div><div class="stat-sub">of ${MANUFACTURING_DEPARTMENTS.length} production · ${offMfg} active outside manufacturing · ${noDept} active unassigned</div></div>
-      <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${state.employees.length-active.length}</div><div class="stat-sub">on roster</div></div>
+      <div class="stat-card"><div class="stat-label">Active headcount</div><div class="stat-value">${st.active}</div><div class="stat-sub">of ${st.total} total</div></div>
+      <div class="stat-card"><div class="stat-label">English speakers</div><div class="stat-value">${st.english}</div><div class="stat-sub">${st.spanish} Spanish</div></div>
+      <div class="stat-card"><div class="stat-label">Departments staffed</div><div class="stat-value">${st.depts}</div><div class="stat-sub">of ${MANUFACTURING_DEPARTMENTS.length} production · ${st.offMfg} active outside manufacturing · ${st.noDept} active unassigned</div></div>
+      <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">${st.inactive}</div><div class="stat-sub">on roster</div></div>
     </div>
     <div class="section-head">
       <span>Employee roster</span>
@@ -117,24 +163,13 @@ function renderEmployees(){
              audited. Its values go through esc() — 'SG&A' has an ampersand. Kept out of
              the row template so the comment is not repeated once per employee. -->
         <tbody>
-          ${filtered.length?filtered.map(e=>`
-            <tr>
-              <td style="font-weight:600">${e.name}</td>
-              <td>${fmtWage(e)}</td>
-              <td${hasDepartment(e.department)?'':' style="color:var(--muted)"'}>${hasDepartment(e.department)?esc(e.department):'—'}</td>
-              <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
-              <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status||'—'}</span></td>
-              <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
-              <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
-              <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
-              <td>${smsCell(e)}</td>
-              <td><button class="btn btn-outline btn-sm" onclick="openEdit(${state.employees.indexOf(e)})">Edit</button></td>
-            </tr>`).join(''):
+          ${filtered.length?filtered.map(employeeRow).join(''):
             '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
         </tbody>
       </table>
     </div>
-    ${state.editing!==null?renderModal():''}
+    ${state.editing!==null&&state.profile===null?renderModal():''}
+    ${state.profile!==null?renderProfile():''}
   `;
 }
 
@@ -194,21 +229,18 @@ function sortEmployees(col) {
 function renderEmployeeList() {
   const filtered = getFiltered();
 
-  // Update stat cards
-  const active = state.employees.filter(e => e.status === 'Active');
-  const spanish = active.filter(e => e.language === 'Spanish').length;
-  // The same count the full render puts in this card: staffed MANUFACTURING
-  // departments out of six. Counting distinct department values instead would now
-  // print numbers up to twelve under a label that says "of 6 production".
-  const depts = MANUFACTURING_DEPARTMENTS.filter(d => state.employees.some(e => e.department === d)).length;
-  const inactive = state.employees.filter(e => e.status === 'Inactive').length;
-
+  // The same four numbers the full render shows, from the same function. Two of
+  // them used to be computed differently here: English was "active minus
+  // Spanish", which counts anybody with no language recorded as an English
+  // speaker, and Inactive was counted by status rather than as everyone who is
+  // not Active. Typing in the search box changed the cards.
+  const st = rosterStats();
   const statEls = document.querySelectorAll('.stat-value');
   if (statEls.length >= 4) {
-    statEls[0].textContent = active.length;
-    statEls[1].textContent = active.length - spanish;
-    statEls[2].textContent = depts;
-    statEls[3].textContent = inactive;
+    statEls[0].textContent = st.active;
+    statEls[1].textContent = st.english;
+    statEls[2].textContent = st.depts;
+    statEls[3].textContent = st.inactive;
   }
 
   // Update table body only
@@ -220,21 +252,7 @@ function renderEmployeeList() {
     return;
   }
 
-  tbody.innerHTML = filtered.map(e => {
-    const idx = state.employees.indexOf(e);
-    return `<tr>
-      <td style="font-weight:600">${e.name}</td>
-      <td>${e.wage||'—'}</td>
-      <td style="color:${hasDepartment(e.department)?'var(--text)':'var(--muted)'}">${hasDepartment(e.department)?esc(e.department):'—'}</td>
-      <td style="color:${e.costClass?'var(--text)':'var(--muted)'}">${e.costClass?esc(e.costClass):'—'}</td>
-      <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${e.status}</span></td>
-      <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
-      <td style="color:var(--muted);font-size:11px">${e.days||'—'}</td>
-      <td style="color:var(--muted);font-size:11px">${e.phone||'—'}</td>
-      <td>${smsCell(e)}</td>
-      <td><button class="btn btn-outline btn-sm" onclick="openEdit(${idx})">Edit</button></td>
-    </tr>`;
-  }).join('');
+  tbody.innerHTML = filtered.map(employeeRow).join('');
 }
 
 // Opting out sets a flag and never touches the phone number, so opting back in
@@ -304,7 +322,352 @@ function smsCell(e) {
   return '<div style="font-size:10px;color:#2a7a47;font-weight:700">SMS OK</div>';
 }
 
+// ---------------------------------------------------------------------------
+// The employee profile card.
+//
+// The roster used to go straight from a row to the edit modal, so the only way to
+// look somebody up was to open the form that could overwrite them. The card is
+// read-only until asked otherwise: Edit swaps the same card into inputs, Save
+// writes through the existing saveEdit(), Cancel discards.
+//
+// COMPENSATION IS NOT ON THIS CARD. Neither annual_salary nor wage appears, in
+// either mode. There is no permissions system yet, so every signed-in
+// sequoiafp.com account can open every profile; annual_salary is not even in the
+// payload (see the projection in netlify/functions/data.js) and wage, although it
+// is in the payload and on the roster, is not extended onto a new surface. That
+// waits for the Salaries & Wages tier.
+//
+// state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
+// state.editing is what saveEdit() reads, and it clears it on success, which
+// drops the card back to read-only with no extra plumbing.
+function openProfile(idx){
+  state.profile={idx:idx};
+  state.editing=null;
+  render();
+  if(needsDriveLookup(state.employees[idx])) setTimeout(()=>loadDriveLink(state.employees[idx].name),50);
+}
+
+function closeProfile(){
+  state.profile=null;
+  state.editing=null;
+  render();
+}
+
+function startProfileEdit(){
+  if(state.profile===null) return;
+  state.editing={...state.employees[state.profile.idx],_idx:state.profile.idx,_isNew:false};
+  render();
+  if(needsDriveLookup(state.employees[state.profile.idx])) setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+}
+
+function cancelProfileEdit(){
+  state.editing=null;
+  render();
+  if(state.profile!==null&&needsDriveLookup(state.employees[state.profile.idx])){
+    setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  }
+}
+
+// The position vocabulary, read from the roster at render time rather than
+// hardcoded, because the vocabulary is still settling and a hardcoded list would
+// be wrong the first time somebody is hired into a new title. Filtered to the
+// position group in play, since "Sawmill Operators" and "Accounting" do not share
+// job titles — but with every other value still reachable, because `position`
+// applies to everyone and the filter is a convenience, not a rule.
+function positionsForGroup(group){
+  const g=String(group==null?'':group).trim();
+  const inGroup=new Set(), others=new Set();
+  for(const e of state.employees){
+    const pos=String(e.position==null?'':e.position).trim();
+    if(!pos) continue;
+    (String(e.positionGroup==null?'':e.positionGroup).trim()===g?inGroup:others).add(pos);
+  }
+  const sort=set=>[...set].sort((a,b)=>a.localeCompare(b));
+  return {inGroup:sort(inGroup),others:sort(others)};
+}
+
+// A datalist rather than a select: the column is free text on purpose, so the
+// existing values are offered as suggestions and anything new can still be typed.
+// A select would make a new title impossible to enter without a code change.
+function positionField(e){
+  const {inGroup,others}=positionsForGroup(e.positionGroup);
+  const opt=v=>`<option value="${esc(v)}"></option>`;
+  return `
+    <div class="form-group"><label class="form-label">Position</label>
+      <input type="text" list="positionSuggestions" value="${esc(e.position||'')}"
+        placeholder="Job title — type or pick"
+        oninput="state.editing.position=this.value">
+      <datalist id="positionSuggestions">
+        ${inGroup.map(opt).join('')}
+        ${others.map(opt).join('')}
+      </datalist>
+    </div>`;
+}
+
+// Read-only field. Renders an em dash rather than an empty cell so a blank reads
+// as "nothing recorded" instead of as a rendering fault.
+function pf(label,value,opts){
+  const o=opts||{};
+  const blank=value==null||String(value).trim()==='';
+  const body=blank
+    ? `<span style="color:var(--muted)">${esc(o.empty||'—')}</span>`
+    : (o.html?value:esc(value));
+  return `<div class="pf"><div class="pf-label">${esc(label)}</div><div class="pf-value">${body}</div></div>`;
+}
+
+function profileGroup(title,fields){
+  return `
+    <div class="pf-group">
+      <div class="pf-group-title">${esc(title)}</div>
+      <div class="pf-grid">${fields.join('')}</div>
+    </div>`;
+}
+
+function renderProfile(){
+  const idx=state.profile.idx;
+  const person=state.employees[idx];
+  if(!person){ return ''; }
+  const editing=state.editing!==null;
+  const e=editing?state.editing:person;
+
+  const body=editing?profileEditBody(e):profileReadBody(e);
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)closeProfile()">
+      <div class="modal">
+        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
+          <span>${esc(person.name||'Employee')}${editing?' — editing':''}</span>
+          <button class="close-btn" onclick="closeProfile()">×</button>
+        </div>
+        <div class="modal-body">${body}</div>
+        <div class="modal-footer">
+          ${editing
+            ? `<button class="btn btn-outline" onclick="cancelProfileEdit()">Cancel</button>
+               <button class="btn btn-primary" onclick="saveEdit()">Save</button>`
+            : `<button class="btn btn-outline" onclick="closeProfile()">Close</button>
+               <button class="btn btn-primary" onclick="startProfileEdit()">Edit</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+// The Drive folder.
+//
+// drive_folder_id is the stored fact and is authoritative: where it is set, the
+// link is built from it and rendered immediately, with no network call. That is
+// also why the card does NOT call loadDriveLink() in that case — loadDriveLink
+// looks the folder up by NAME through /api/documents and overwrites
+// #driveLinkArea with whatever it gets back, so on a person who already has an
+// id it would replace a correct link with a second opinion, including replacing
+// it with "No folder found" if the lookup disagreed.
+//
+// Where there is no id, the lookup is the only way to find or create one, so it
+// runs — and its own wording covers the answer.
+//
+// A new hire with no folder yet is a real state, so it says so plainly. A dash
+// would read as a rendering fault.
+function needsDriveLookup(e){
+  return !(e && e.driveFolderId);
+}
+
+function driveLinkBlock(e){
+  if(e.driveFolderId){
+    const url='https://drive.google.com/drive/folders/'+encodeURIComponent(e.driveFolderId);
+    return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">Open HR file in Drive</a>`;
+  }
+  return '<span style="color:var(--muted)">No folder yet — one is created for a new employee automatically, or on the first upload in Drive.</span>';
+}
+
+function profileReadBody(e){
+  const bday=fmtBirthday(e.birthday);
+  const addr=[e.addressStreet,e.addressCity,e.addressState,e.addressPostalCode]
+    .map(v=>String(v==null?'':v).trim()).filter(Boolean);
+
+  return `
+    ${profileGroup('Identity',[
+      pf('Name',e.name),
+      pf('Employee #',e.empNum),
+      pf('Status',`<span class="badge ${e.status==='Active'?'active':'inactive'}">${esc(e.status||'—')}</span>`,{html:true}),
+      pf('Language',e.language)
+    ])}
+    ${profileGroup('Classification',[
+      pf('Department',hasDepartment(e.department)?e.department:'',{empty:'not set'}),
+      pf('Cost class',e.costClass,{empty:'not set'}),
+      pf('Position group',e.positionGroup,{empty:'none — not mill floor staff'}),
+      pf('Position',e.position,{empty:'not set'}),
+      pf('Pay type',payTypeOf(e))
+    ])}
+    ${profileGroup('Contact',[
+      pf('Phone',e.phone),
+      pf('Email',e.email),
+      pf('SMS',e.smsOptedOut?'Opted out':'Receiving texts')
+    ])}
+    ${profileGroup('Personal',[
+      // Month and day only, because that is all the birthday notifier reads. A
+      // value it cannot parse is called out rather than shown as blank: the
+      // person would silently stop being announced and nothing else reports it.
+      bday
+        ? pf('Birthday',bday)
+        : pf('Birthday',
+            String(e.birthday||'').trim()
+              ? `<span style="color:#b8860b;font-weight:700">Unreadable — ${esc(String(e.birthday))}</span>`
+              : '',
+            {html:true,empty:'not set'})
+    ])}
+    ${profileGroup('Address',[
+      pf('Street',e.addressStreet),
+      pf('City',e.addressCity),
+      pf('State',e.addressState),
+      pf('Postal code',e.addressPostalCode),
+      pf('Full',addr.length?addr.join(', '):'',{empty:'no address on file'})
+    ])}
+    ${profileGroup('Files',[
+      pf('HR file',`<span id="driveLinkArea">${driveLinkBlock(e)}</span>`,{html:true})
+    ])}
+    ${profileGroup('Schedule',[
+      pf('Days',e.days),
+      pf('Break 1',e.break1),
+      pf('Break 2',e.break2)
+    ])}`;
+}
+// The birthday input, shared by both edit surfaces so they cannot disagree about
+// what happens to a value the picker cannot show. See profileEditBody for why
+// blanking is not an option.
+function birthdayField(e){
+  const iso=birthdayInputValue(e.birthday);
+  const raw=String(e.birthday==null?'':e.birthday).trim();
+  if(raw!==''&&iso===''){
+    return `<div class="form-group full"><label class="form-label">Birthday</label>
+      <input type="text" value="${esc(raw)}" oninput="state.editing.birthday=this.value">
+      <div style="font-size:11px;color:#b8860b;margin-top:4px;line-height:1.5">Not a date the picker can show, so it is left as text rather than blanked — the notifier still reads it, month and day are all it needs. Retype it as a full date to get a picker.</div>
+    </div>`;
+  }
+  return `<div class="form-group"><label class="form-label">Birthday</label>
+    <input type="date" value="${esc(iso)}" oninput="state.editing.birthday=this.value"></div>`;
+}
+
+// The same card, editable. Deliberately NOT a second field list: every group
+// below matches profileReadBody() group for group, so a field cannot be readable
+// and not editable, or the other way round.
+//
+// No wage input and no annual_salary input, in either mode. Hourly rates come
+// from the daily payroll file and salary is Phase D; the roster's own Edit modal
+// still has the wage field for the cases that need it.
+function profileEditBody(e){
+  const bdayInput=birthdayInputValue(e.birthday);
+  const bdayRaw=String(e.birthday==null?'':e.birthday).trim();
+  // A stored value the date input cannot represent must NOT be shown as an empty
+  // picker: saving would write the blank over a real birthday, on a system that is
+  // live and announcing to 66 people. It gets a text field and a warning instead,
+  // and the notifier keeps reading it either way — it only needs month and day.
+  const bdayUnreadable=bdayRaw!==''&&bdayInput==='';
+
+  return `
+    <div class="form-grid">
+      <div class="form-group full"><label class="form-label">Full name</label>
+        <input type="text" value="${esc(e.name||'')}" oninput="state.editing.name=this.value"></div>
+      <div class="form-group"><label class="form-label">Employee # (payroll)</label>
+        <input type="text" value="${esc(e.empNum||'')}" placeholder="0319"
+          oninput="state.editing.empNum=this.value"
+          onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select onchange="state.editing.status=this.value">
+          <option value="Active" ${e.status==='Active'?'selected':''}>Active</option>
+          <option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option>
+        </select></div>
+      <div class="form-group"><label class="form-label">Language</label>
+        <select onchange="state.editing.language=this.value">
+          <option value="English" ${e.language==='English'?'selected':''}>English</option>
+          <option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option>
+        </select></div>
+
+      <div class="form-group"><label class="form-label">Department</label>
+        <select onchange="state.editing.department=this.value">
+          <option value=""${hasDepartment(e.department)?'':' selected'}>— not set —</option>
+          ${retiredOption(e.department,PAYROLL_DEPARTMENTS)}
+          ${departmentOptions(e.department)}
+        </select></div>
+      <div class="form-group"><label class="form-label">Cost class</label>
+        <select onchange="state.editing.costClass=this.value">
+          <option value=""${e.costClass?'':' selected'}>— not set —</option>
+          ${retiredOption(e.costClass,COST_CLASSES)}
+          ${taxonomyOptions(COST_CLASSES,e.costClass)}
+        </select></div>
+      <!-- Changing the position group re-renders, so the position suggestions
+           follow it. It does NOT clear the position: the stored title is a fact
+           about the person and a group change is not a reason to discard it. -->
+      <div class="form-group"><label class="form-label">Position group</label>
+        <select onchange="state.editing.positionGroup=this.value;render()">
+          <option value=""${e.positionGroup?'':' selected'}>— none —</option>
+          ${retiredOption(e.positionGroup,POSITION_GROUPS)}
+          ${taxonomyOptions(POSITION_GROUPS,e.positionGroup)}
+        </select></div>
+      ${positionField(e)}
+      <div class="form-group"><label class="form-label">Pay type</label>
+        <select onchange="setPayType(this.value)">
+          ${PAY_TYPES.map(t=>`<option value="${esc(t)}" ${payTypeOf(e)===t?'selected':''}>${esc(t)}</option>`).join('')}
+        </select></div>
+      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Compensation is not editable here. Hourly rates come from the daily payroll file, and salary is entered on the Salaries &amp; Wages page, which does not exist yet. <b>Position group</b> is mill-floor only and is correctly “— none —” for office staff; <b>Position</b> applies to everyone.</div></div>
+
+      <div class="form-group"><label class="form-label">Phone</label>
+        <input type="text" value="${esc(e.phone||'')}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
+      <div class="form-group full"><label class="form-label">Email</label>
+        <input type="text" value="${esc(e.email||'')}" oninput="state.editing.email=this.value"></div>
+
+      ${bdayUnreadable?`
+      <div class="form-group full"><label class="form-label">Birthday</label>
+        <input type="text" value="${esc(bdayRaw)}" oninput="state.editing.birthday=this.value">
+        <div style="font-size:11px;color:#b8860b;margin-top:4px;line-height:1.5">This value is not a date the picker can show, so it is left as text rather than blanked. The birthday notifier still reads it — it only needs the month and day. Retype it as a full date to switch this field to a picker.</div>
+      </div>`:`
+      <div class="form-group"><label class="form-label">Birthday</label>
+        <input type="date" value="${esc(bdayInput)}" oninput="state.editing.birthday=this.value">
+      </div>`}
+
+      <div class="form-group"><label class="form-label">Schedule days</label>
+        <input type="text" value="${esc(e.days||'')}" oninput="state.editing.days=this.value"></div>
+
+      <div class="form-group full"><label class="form-label">Street</label>
+        <input type="text" value="${esc(e.addressStreet||'')}" oninput="state.editing.addressStreet=this.value"></div>
+      <div class="form-group"><label class="form-label">City</label>
+        <input type="text" value="${esc(e.addressCity||'')}" oninput="state.editing.addressCity=this.value"></div>
+      <div class="form-group"><label class="form-label">State</label>
+        <input type="text" value="${esc(e.addressState||'')}" oninput="state.editing.addressState=this.value"></div>
+      <div class="form-group"><label class="form-label">Postal code</label>
+        <input type="text" value="${esc(e.addressPostalCode||'')}" oninput="state.editing.addressPostalCode=this.value"></div>
+
+      <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--text)">SMS opt-out</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">Check to stop all text messages to this employee. Their phone number is untouched either way.</div>
+          </div>
+          <input type="checkbox" ${e.smsOptedOut?'checked':''} onchange="toggleSmsOptOut(this)" style="width:18px;height:18px;cursor:pointer;accent-color:#c0392b">
+        </label>
+        <div id="smsOptOutStatus" style="font-size:11px;margin-top:8px;color:${e.smsOptedOut?'#c0392b':(normalizePhone(e.phone)?'var(--muted)':'#b8860b')}">${smsStatusText(e)}</div>
+      </div>
+
+      <div class="form-group full">
+        <label class="form-label">HR file</label>
+        <div id="driveLinkArea" style="font-size:12px">${driveLinkBlock(e)}</div>
+      </div>
+    </div>`;
+}
+
+const profileStyle=`<style>
+  .emp-name-btn{background:none;border:none;padding:0;font:inherit;font-weight:600;color:var(--rust);cursor:pointer;text-align:left}
+  .emp-name-btn:hover{text-decoration:underline}
+  .pf-group{margin-bottom:18px}
+  .pf-group-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+  .pf-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 18px}
+  .pf-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:2px}
+  .pf-value{font-size:13px;color:var(--text);line-height:1.4;word-break:break-word}
+</style>`;
+
 function openEdit(idx){
+  // The roster's own Edit modal. Kept alongside the profile card because it is
+  // the only surface with the hourly wage field, and Add uses it too. The card's
+  // Edit deliberately has no compensation field.
+  state.profile=null;
   state.editing={...state.employees[idx],_idx:idx,_isNew:false};
   render();
   // Load Drive folder link after render
@@ -315,7 +678,7 @@ function openEdit(idx){
 // department, no department implied by a position group. Each is a decision about a
 // real person, and a default that follows from another field is the coupling the v2
 // model exists to remove.
-function openAdd(){state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',status:'Active',days:'MON-THU',clockIn:'4:55 AM',clockOut:'3:35 PM',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.profile=null;state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',days:'MON-THU',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',addressStreet:'',addressCity:'',addressState:'',addressPostalCode:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 
@@ -344,7 +707,8 @@ async function saveEdit(){
 
     const row={
       name:e.name, wage:wage, pay_type:payType, status:e.status,
-      days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
+      // clock_in / clock_out are no longer written; see the note in the form.
+      days:e.days,
       break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
       birthday:e.birthday, phone:e.phone, language:e.language,
       email:e.email, sms_opted_out:e.smsOptedOut===true,
@@ -354,7 +718,12 @@ async function saveEdit(){
       // neither derived from the other. Blank means "not decided" and is stored as
       // NULL, not as ''. Both are in OPTIONAL_EMPLOYEE_COLUMNS (data.js), so a
       // database without the columns still saves the rest of the row.
-      cost_class:e.costClass||null, position_group:e.positionGroup||null
+      cost_class:e.costClass||null, position_group:e.positionGroup||null,
+      // Phase B. position applies to everyone; position_group does not. Blank is
+      // stored as NULL rather than '', the same as the other nullable fields.
+      position:e.position||null,
+      address_street:e.addressStreet||null, address_city:e.addressCity||null,
+      address_state:e.addressState||null, address_postal_code:e.addressPostalCode||null
     };
 
     if(e.id){
@@ -423,18 +792,24 @@ function renderModal(){
             ${retiredOption(e.costClass,COST_CLASSES)}
             ${taxonomyOptions(COST_CLASSES,e.costClass)}
           </select></div>
-          <div class="form-group"><label class="form-label">Position group</label><select onchange="state.editing.positionGroup=this.value">
+          <div class="form-group"><label class="form-label">Position group</label><select onchange="state.editing.positionGroup=this.value;render()">
             <option value=""${e.positionGroup?'':' selected'}>— none —</option>
             ${retiredOption(e.positionGroup,POSITION_GROUPS)}
             ${taxonomyOptions(POSITION_GROUPS,e.positionGroup)}
           </select></div>
+          ${positionField(e)}
           <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. None of these three is ever filled in automatically — each is set here, one employee at a time. <b>Department</b> is the accounting line; the list is grouped by cost class only so twelve values stay readable. <b>Cost class</b> is a separate fact and must be chosen on its own: a salaried person can sit in Manufacturing and an hourly person in ${esc('SG&A')}. <b>Position group</b> describes where in the mill somebody stands; it is for manufacturing floor staff and is correctly left as “— none —” for everyone else.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
-          <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${e.days}" oninput="state.editing.days=this.value"></div>
-          <div class="form-group"><label class="form-label">Clock in</label><input type="text" value="${e.clockIn}" oninput="state.editing.clockIn=this.value"></div>
-          <div class="form-group"><label class="form-label">Clock out</label><input type="text" value="${e.clockOut}" oninput="state.editing.clockOut=this.value"></div>
-          <div class="form-group"><label class="form-label">Birthday</label><input type="text" value="${e.birthday}" oninput="state.editing.birthday=this.value"></div>
+          <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${esc(e.days||'')}" oninput="state.editing.days=this.value"></div>
+          <!-- Clock in and clock out are gone from this form. Audited across the
+               frontend, every Netlify function and both report libraries: nothing
+               read them. The Pre-Shift / Post-Shift OT categories are a stored
+               label on the overtime table chosen by a human, not a comparison
+               against a shift boundary, so removing these does not affect the OT
+               report. The COLUMNS are still there and still projected — the
+               stored values stay readable, the way dept was kept. -->
+          ${birthdayField(e)}
           <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
           <div class="form-group full"><label class="form-label">Email</label><input type="text" value="${e.email}" oninput="state.editing.email=this.value"></div>
           <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
@@ -523,7 +898,7 @@ function loadDriveLink(employeeName) {
     .then(data => {
       const link = data.folderLink || null;
       if (link) {
-        el.innerHTML = `<a href="${link}" target="_blank" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">
+        el.innerHTML = `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Open HR File in Drive
         </a>`;

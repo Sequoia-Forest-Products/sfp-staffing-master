@@ -430,3 +430,56 @@ test('one bad address does not abort the run', async () => {
   assert.strictEqual(result.sent, 3);
   assert.strictEqual(result.failed, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Migration equivalence — the acceptance criterion, as code
+// ---------------------------------------------------------------------------
+//
+// SCHEMA_PHASE_B_BIRTHDAY.sql rewrites the stored JS date strings to YYYY-MM-DD.
+// The notifier reads MONTH AND DAY ONLY, so the migration is safe exactly when
+// the month and day survive it. This asserts that for both formats of the same
+// birthday, over cases chosen to break it:
+//
+//   * a PST date and a PDT date, since the offset differs by an hour
+//   * a date whose Pacific midnight is the previous day in UTC-11, which is what
+//     a timestamptz cast would get wrong
+//   * the first and last day of a month, where an off-by-one hour shows up as an
+//     off-by-one MONTH
+//   * Feb 29, which only exists in a leap year
+test('the migrated ISO value parses to the same month and day as the JS date string', () => {
+  const pairs = [
+    ['Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)', '1990-11-12'],
+    ['Sat Aug 11 1979 00:00:00 GMT-0700 (Pacific Daylight Time)', '1979-08-11'],
+    ['Tue Jan 01 1985 00:00:00 GMT-0800 (Pacific Standard Time)', '1985-01-01'],
+    ['Thu Jan 31 1974 00:00:00 GMT-0800 (Pacific Standard Time)', '1974-01-31'],
+    ['Wed Dec 31 1969 00:00:00 GMT-0800 (Pacific Standard Time)', '1969-12-31'],
+    ['Sat Mar 01 1980 00:00:00 GMT-0800 (Pacific Standard Time)', '1980-03-01'],
+    ['Sun Feb 29 1976 00:00:00 GMT-0800 (Pacific Standard Time)', '1976-02-29']
+  ];
+
+  for (const [oldValue, newValue] of pairs) {
+    const before = parseBirthday(oldValue);
+    const after  = parseBirthday(newValue);
+    assert.ok(before, `the stored format must parse: ${oldValue}`);
+    assert.ok(after, `the migrated format must parse: ${newValue}`);
+    assert.deepStrictEqual(after, before,
+      `migrating ${JSON.stringify(oldValue)} to ${newValue} changed the month/day`);
+  }
+});
+
+test('a value with no year still parses, so the migration can leave it alone', () => {
+  // SCHEMA_PHASE_B_BIRTHDAY.sql section 1c deliberately does not touch these:
+  // there is no year to build a date from and inventing one would write a false
+  // fact into an HR record. They must keep working untouched.
+  assert.deepStrictEqual(parseBirthday('3/15'), { month: 3, day: 15 });
+  assert.deepStrictEqual(parseBirthday('12/25'), { month: 12, day: 25 });
+  assert.deepStrictEqual(parseBirthday('12/25/90'), { month: 12, day: 25 });
+});
+
+test('the parser accepts both formats at once, which is what makes a mid-deploy state safe', () => {
+  // The function may run against a half-migrated table while the deploy rolls.
+  const migrated   = parseBirthday('1990-11-12');
+  const unmigrated = parseBirthday('Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard Time)');
+  assert.deepStrictEqual(migrated, unmigrated);
+  assert.deepStrictEqual(migrated, { month: 11, day: 12 });
+});
