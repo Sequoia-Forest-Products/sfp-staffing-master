@@ -1,4 +1,35 @@
 -- =====================================================================
+-- APPLIED 2026-08-21 to zwghbbyzrycpnesuuzgi (sfp-staffing), including the
+-- optional §3 normalisation of the four text rows per column. The column
+-- now holds exactly ONE shape.
+--
+--   before                        after    reads as    rows
+--   1899-12-30T15:00:00.000Z  ->  07:00     7:00 AM      68   break_1
+--   1899-12-31T00:30:00.000Z  ->  16:30     4:30 PM       2   break_1
+--   '7:00 AM'                 ->  07:00     7:00 AM       4   break_1
+--   1899-12-30T20:45:00.000Z  ->  12:45    12:45 PM      64   break_2
+--   1899-12-30T21:30:00.000Z  ->  13:30     1:30 PM       3   break_2
+--   1899-12-31T04:45:00.000Z  ->  20:45     8:45 PM       2   break_2
+--   1899-12-30T21:00:00.000Z  ->  13:00     1:00 PM       1   break_2
+--   '12:45 PM'                ->  12:45    12:45 PM       4   break_2
+--
+-- Final census: break_1 = 07:00 x72, 16:30 x2. break_2 = 12:45 x68,
+-- 13:30 x3, 20:45 x2, 13:00 x1. Both sum to 74, no ISO rows left, nothing
+-- unrecognised.
+--
+-- §4 returned NO ROWS on all four checks: every migrated value is exactly
+-- 480 minutes behind its own backup; no break time was lost; no
+-- already-local text row was shifted a second time; nothing was left in the
+-- old shape.
+--
+-- Check A is the one that carried the weight. The census in §4a looks right
+-- but cannot show that each INDIVIDUAL row moved correctly — a wrong offset
+-- applied uniformly would produce a census that also looks internally
+-- consistent. Only the per-row comparison against the backup rules that out,
+-- and it is the reason §1 exists.
+--
+-- Backups retained in break_1_pre_hhmm / break_2_pre_hhmm. See §6.
+-- =====================================================================
 -- SFP Staffing — normalise break_1 / break_2 to local 24-hour HH:MM
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 --
