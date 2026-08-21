@@ -73,7 +73,21 @@ select
 -- =====================================================================
 -- §0b  DATABASE-SIDE DEPENDENCIES — the only thing that can break.
 --
--- Anything here has to be dealt with before §1. Expected: NO ROWS.
+-- FOUND, 2026-08-21, and it is benign: ONE trigger, economics_updated_at,
+-- BEFORE UPDATE, executing update_updated_at(). That function's whole body is
+-- `new.updated_at = now(); return new;` — no mention of `position` — so a
+-- column rename does not disturb it, and ALTER TABLE is DDL and would not fire
+-- a BEFORE UPDATE trigger regardless. No functions, no policies, no views.
+--
+-- NOTE ON A GAP IN THE FUNCTION BRANCH BELOW. It filters on
+-- `prosrc ilike '%economics%'`, which finds a function that names this table
+-- but MISSES a generic one that names a column without naming the table —
+-- update_updated_at is exactly that shape and did not appear here. The trigger
+-- branch is what surfaced it, and its body then had to be read directly. If
+-- this table ever gains a second trigger, read that function too rather than
+-- trusting the function branch alone.
+--
+-- Anything under function, policy or trigger has to be understood before §1.
 --
 -- Views, indexes, constraints and defaults are deliberately NOT listed:
 -- Postgres tracks those by object id and rewrites them itself during the
