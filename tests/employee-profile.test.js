@@ -179,6 +179,24 @@ test('a missing drive folder says so plainly rather than showing a dash', () => 
   assert.match(html, /No folder yet/, 'a new hire with no folder is a real state');
 });
 
+test('the stored folder id is authoritative — no lookup when it is set', () => {
+  // loadDriveLink() asks /api/documents BY NAME and overwrites #driveLinkArea
+  // with the answer. On somebody who already has an id that would replace a
+  // correct link with a second opinion, including replacing it with
+  // "No folder found" if the lookup disagreed.
+  const ctx = sandbox();
+  assert.strictEqual(ctx.needsDriveLookup(person()), false, 'a stored id needs no lookup');
+  assert.strictEqual(ctx.needsDriveLookup(person({ driveFolderId: '' })), true,
+    'no id is the only case where the lookup can help');
+  assert.strictEqual(ctx.needsDriveLookup(undefined), true);
+});
+
+test('a folder id containing markup cannot break out of the href', () => {
+  const ctx = sandbox();
+  const html = openCard(ctx, [person({ driveFolderId: '"><script>alert(1)</script>' })]);
+  assert.ok(!html.includes('<script>'), 'unescaped folder id in the href');
+});
+
 // ---------------------------------------------------------------------------
 // Birthdays — the live system
 // ---------------------------------------------------------------------------

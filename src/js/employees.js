@@ -344,7 +344,7 @@ function openProfile(idx){
   state.profile={idx:idx};
   state.editing=null;
   render();
-  setTimeout(()=>loadDriveLink(state.employees[idx].name),50);
+  if(needsDriveLookup(state.employees[idx])) setTimeout(()=>loadDriveLink(state.employees[idx].name),50);
 }
 
 function closeProfile(){
@@ -357,13 +357,15 @@ function startProfileEdit(){
   if(state.profile===null) return;
   state.editing={...state.employees[state.profile.idx],_idx:state.profile.idx,_isNew:false};
   render();
-  setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  if(needsDriveLookup(state.employees[state.profile.idx])) setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
 }
 
 function cancelProfileEdit(){
   state.editing=null;
   render();
-  if(state.profile!==null) setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  if(state.profile!==null&&needsDriveLookup(state.employees[state.profile.idx])){
+    setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  }
 }
 
 // The position vocabulary, read from the roster at render time rather than
@@ -449,16 +451,31 @@ function renderProfile(){
     </div>`;
 }
 
-// The Drive folder. A working link where the folder exists, and a plain statement
-// where it does not — a new hire before anyone has made one is a real state, and
-// "—" would read as a bug. loadDriveLink() fills #driveLinkArea after render; this
-// is what it replaces and what stands if the lookup never answers.
+// The Drive folder.
+//
+// drive_folder_id is the stored fact and is authoritative: where it is set, the
+// link is built from it and rendered immediately, with no network call. That is
+// also why the card does NOT call loadDriveLink() in that case — loadDriveLink
+// looks the folder up by NAME through /api/documents and overwrites
+// #driveLinkArea with whatever it gets back, so on a person who already has an
+// id it would replace a correct link with a second opinion, including replacing
+// it with "No folder found" if the lookup disagreed.
+//
+// Where there is no id, the lookup is the only way to find or create one, so it
+// runs — and its own wording covers the answer.
+//
+// A new hire with no folder yet is a real state, so it says so plainly. A dash
+// would read as a rendering fault.
+function needsDriveLookup(e){
+  return !(e && e.driveFolderId);
+}
+
 function driveLinkBlock(e){
   if(e.driveFolderId){
     const url='https://drive.google.com/drive/folders/'+encodeURIComponent(e.driveFolderId);
-    return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open HR file in Google Drive</a>`;
+    return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">Open HR file in Drive</a>`;
   }
-  return '<span style="color:var(--muted)">No folder yet — one is created automatically for a new employee, or open the Edit form to trigger it.</span>';
+  return '<span style="color:var(--muted)">No folder yet — one is created for a new employee automatically, or on the first upload in Drive.</span>';
 }
 
 function profileReadBody(e){
@@ -881,7 +898,7 @@ function loadDriveLink(employeeName) {
     .then(data => {
       const link = data.folderLink || null;
       if (link) {
-        el.innerHTML = `<a href="${link}" target="_blank" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">
+        el.innerHTML = `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Open HR File in Drive
         </a>`;
