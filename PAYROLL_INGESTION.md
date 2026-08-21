@@ -502,6 +502,50 @@ alert nobody can close is how people learn to ignore the one that matters.
 A run that hit the message cap reports itself as incomplete and alerts on that alone, even
 when every message it did read was fine. A bounded pass must never look like a complete one.
 
+### The three scheduled functions have no auth check, and that is deliberate
+
+`birthday-notifications`, `payroll-email-ingest` and `payroll-missed-check` are all
+`exports.handler = async () => {` — they ignore the request entirely. There is no session
+check and no trigger secret on any of them. **This rests on an assumption: that Netlify
+does not expose scheduled functions over HTTP.**
+
+Recording it because it is an assumption rather than something enforced in the code, and
+because the obvious fix does not work. The guard used by `birthday-test` and
+`payroll-email-test` reads a header and a cookie — neither of which Netlify's scheduler
+sends. Copying that pattern into these three would reject the scheduler and silently kill
+all three crons, which for `payroll-missed-check` means the watchdog stops watching and
+nothing says so. The only signal distinguishing a scheduled invocation is `next_run` in the
+body, and anything that can reach the endpoint over HTTP can send `next_run` too. A guard
+built on it would stop a casual request and not a deliberate one, at the cost of a real
+risk of killing the schedule.
+
+If you need to verify the assumption rather than trust it, do it while `PAYROLL_DRY_RUN` is
+`true`: in dry-run mode `runMissedDeliveryCheck` skips both the send and every write, so
+invoking `payroll-missed-check` is a pure read. **Do not probe it with dry run off** — it
+sends a real alert and stamps `notified_at` on pending rows.
+
+The manual triggers, `birthday-test` and `payroll-email-test`, DO check: either a valid
+`sfp_session` cookie or the matching trigger secret, compared with `timingSafeEqual`.
+
+### Run time, and the headroom it does not have
+
+The ingest is IMAP-bound, not database-bound: the 54-row write is a single bulk upsert, so
+the cost is the IMAP connection plus one download per message in the lookback window.
+Observed dry runs took 18, 33 and 37 seconds with a single message in the window, and the
+synchronous `/api/payroll-email-test` endpoint returns 502 in a browser when it exceeds its
+wall — the function still completes and logs correctly, so read the function log rather
+than the HTTP response.
+
+The part that grows: `readPayrollMessages` downloads the workbook part for **every**
+descriptor it matched, and the `processed_emails` ledger is consulted afterwards, in the
+processing loop. So an already-imported message is re-downloaded on every run — it is only
+the parse and the write that get skipped. With a seven-day window and daily delivery that
+settles at seven downloads an hour, forever, rather than one.
+
+Moving the ledger lookup ahead of the download loop would make steady state one download
+instead of seven. Until then, treat the hourly run as having little headroom, and expect a
+backlog — several unprocessed days at once — to be the case that exceeds the wall.
+
 ---
 
 ## Files

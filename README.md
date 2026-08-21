@@ -10,7 +10,7 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Single-page HTML/JS app (`app.html`) |
+| Frontend | Single-page HTML/JS app (`public/app.html` + `src/js/*.js`, assembled per request) |
 | Hosting | Netlify |
 | Backend | Netlify Functions (Node.js) |
 | Database | Supabase (PostgreSQL) |
@@ -41,10 +41,18 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ```
 sfp-staffing-master/
-├── app.html                    # Main protected dashboard
-├── index.html                  # Login page
-├── icons/
-│   └── staffing-and-hr.svg     # Favicon (SVG, referenced by both pages)
+├── public/                     # THE PUBLISH DIRECTORY — everything in here is
+│   │                           # world-readable with no session check, and
+│   │                           # nothing outside it is served at all.
+│   ├── app.html                # Main protected dashboard (served only by
+│   │                           # session.js, via a forced redirect)
+│   ├── index.html              # Login page
+│   └── icons/
+│       └── staffing-and-hr.svg # Favicon (SVG, referenced by both pages)
+├── src/js/                     # App modules — assembled into app.html at
+│                               # request time by session.js. Deliberately
+│                               # OUTSIDE public/ so they cannot be fetched
+│                               # one by one.
 ├── netlify.toml                # Config, redirects, scheduled functions
 ├── package.json
 ├── .env.example                # Environment variable template
@@ -65,7 +73,7 @@ sfp-staffing-master/
 └── netlify/
     └── functions/
         ├── auth.js             # Google OAuth flow
-        ├── session.js          # Session validation, serves app.html
+        ├── session.js          # Session validation, assembles public/app.html
         ├── logout.js           # Clears session cookie
         ├── data.js             # Supabase CRUD API
         ├── db.js               # Supabase REST helper
