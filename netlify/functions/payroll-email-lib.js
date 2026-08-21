@@ -352,7 +352,14 @@ async function streamToBuffer(stream) {
 // caller alerts on them — see runPayrollIngest(). They ride on the array so an
 // injected fetchMessages can keep returning a plain array.
 async function fetchLabeledMessages({
-  label, sinceDate, host, user, password, log = console.log
+  label, sinceDate, host, user, password, alreadyProcessed,
+  // The ImapFlow class itself, so a test can substitute a fake client and assert
+  // what this function does and does not ask the server for. Nothing in
+  // production passes it. It exists because the one thing worth pinning about
+  // the ledger pre-check — that download() is never called for a message
+  // already imported — is invisible from outside without it.
+  imapFlow,
+  log = console.log
 } = {}) {
   const conf = config();
   const mailbox = label || conf.label;
@@ -366,7 +373,7 @@ async function fetchLabeledMessages({
 
   // Lazy, exactly like nodemailer in birthday-lib.js: dry runs and tests never
   // need the library present.
-  const { ImapFlow } = require('imapflow');
+  const ImapFlow = imapFlow || require('imapflow').ImapFlow;
 
   const client = new ImapFlow({
     host: imapHost,
@@ -450,8 +457,33 @@ async function fetchLabeledMessages({
         log(`IMAP: ${matched} message(s) matched — examining only the newest ${descriptors.length}`);
       }
 
+      // Ask the ledger which of these we have already imported, BEFORE
+      // downloading anything. Listing is one FETCH for the whole window;
+      // downloading is a round trip per message, and the window holds a week of
+      // mail that is almost entirely already imported. Downloading it all and
+      // then discovering that in the classify phase meant the cost grew with
+      // the SIZE OF THE WINDOW instead of with the number of new messages —
+      // seven downloads an hour, for ever, to import one file.
+      //
+      // Fails OPEN. If the ledger cannot be reached we download everything, the
+      // way this ran before: a slow run that imports correctly beats a fast one
+      // that skips a message it only assumed was already handled.
+      let skipDownload = new Set();
+      if (typeof alreadyProcessed === 'function') {
+        const ids = descriptors.map(x => x.messageId).filter(Boolean);
+        if (ids.length) {
+          try {
+            skipDownload = new Set(await alreadyProcessed(ids));
+          } catch (err) {
+            log(`IMAP: ledger pre-check failed (${err.message}) — downloading every attachment`);
+            skipDownload = new Set();
+          }
+        }
+      }
+
       for (const d of descriptors) {
         const attachments = [];
+        const known = !!d.messageId && skipDownload.has(d.messageId);
         for (const part of d.parts) {
           const looksLikeWorkbook =
             baseName(part.filename).toLowerCase() === ATTACHMENT_NAME.toLowerCase() ||
@@ -459,6 +491,20 @@ async function fetchLabeledMessages({
 
           if (!looksLikeWorkbook) {
             attachments.push({ filename: part.filename, contentType: part.contentType, content: null });
+            continue;
+          }
+
+          // Already imported: name the part, fetch none of it. downloadSkipped
+          // distinguishes "we chose not to read this" from "the message carried
+          // no bytes", which is a real error and must not be reported as one
+          // here.
+          if (known) {
+            attachments.push({
+              filename: part.filename,
+              contentType: part.contentType,
+              content: null,
+              downloadSkipped: true
+            });
             continue;
           }
 
@@ -490,6 +536,35 @@ async function fetchLabeledMessages({
   messages.truncated = truncated;
   messages.totalAvailable = totalAvailable;
   return messages;
+}
+
+// Which of these message IDs the ledger already knows about.
+//
+// Deliberately N cheap point lookups through the existing getProcessedEmail
+// rather than one message_id=in.(...) query. A batch filter would be one round
+// trip instead of eight, but it needs message IDs — which carry <, > and @ —
+// quoted and escaped correctly inside a PostgREST list, and this change goes
+// straight to a live pipeline where I cannot test that query against the real
+// database first. An untested filter that silently matches nothing, or matches
+// too much, is exactly the class of mistake `from = "/*.sql"` was. The point
+// lookup is already proven in the classify phase.
+//
+// Bounded concurrency because the descriptor list is capped at MAX_MESSAGES,
+// not at a week: 200 sequential reads would be slower than the downloads this
+// exists to avoid, and 200 at once is rude to Supabase.
+const LEDGER_PROBE_CONCURRENCY = 8;
+
+async function knownMessageIds(getProcessedEmail, messageIds) {
+  const ids = [...new Set((messageIds || []).filter(Boolean))];
+  const known = [];
+
+  for (let i = 0; i < ids.length; i += LEDGER_PROBE_CONCURRENCY) {
+    const chunk = ids.slice(i, i + LEDGER_PROBE_CONCURRENCY);
+    const rows = await Promise.all(chunk.map(id => getProcessedEmail(id)));
+    chunk.forEach((id, n) => { if (rows[n]) known.push(id); });
+  }
+
+  return known;
 }
 
 // fetchMessages may hand back a plain array (what the tests inject), an array
@@ -737,7 +812,14 @@ async function runPayrollIngest({
   const today = todayInZone(now, tz);
   const sinceDate = addDays(today, -lookback);
 
-  const messages = await getMessages({ label: conf.label, sinceDate, lookbackDays: lookback, timeZone: tz });
+  // Handed to the fetcher so it can skip downloading what is already imported.
+  // A throw here is caught inside the fetcher, which then downloads everything —
+  // see the fail-open note there.
+  const alreadyProcessed = ids => knownMessageIds(d.getProcessedEmail, ids);
+
+  const messages = await getMessages({
+    label: conf.label, sinceDate, lookbackDays: lookback, timeZone: tz, alreadyProcessed
+  });
   const { list, truncated, totalAvailable } = unpackMessages(messages);
 
   // Oldest first, so that when two deliveries collide the earlier one is the one
@@ -792,6 +874,28 @@ async function runPayrollIngest({
       item.alert = true;
       continue;
     }
+    // The ledger said this was already imported when the mailbox was read, so
+    // its bytes were never fetched — and now the ledger says otherwise. The only
+    // way that happens is a processed_emails row disappearing between the two
+    // reads, which is not something the pipeline does to itself.
+    //
+    // It self-heals: the next hourly run lists the message, the pre-check finds
+    // nothing, and it downloads and imports normally. Reported anyway, and
+    // BEFORE the empty-attachment check, because "carried no bytes" would be a
+    // lie about the vendor's file and would send somebody looking at the wrong
+    // thing entirely.
+    if (attachment.downloadSkipped) {
+      item.status = 'error';
+      addFlag(item, 'download_skipped');
+      item.error =
+        'the ledger reported this message as already imported when the mailbox was read, so its ' +
+        'attachment was not downloaded — but it is not in the ledger now. Nothing was parsed. ' +
+        'The next run will import it normally; if this repeats, something is deleting ' +
+        'processed_emails rows.';
+      item.alert = true;
+      continue;
+    }
+
     if (!hasContent(attachment)) {
       item.status = 'error';
       addFlag(item, 'empty_attachment');
@@ -1345,6 +1449,7 @@ module.exports = {
   normalizeMessageId,
   // io
   fetchLabeledMessages,
+  knownMessageIds,
   sendAlert,
   // runners
   runPayrollIngest,
