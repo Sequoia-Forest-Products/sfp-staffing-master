@@ -942,27 +942,52 @@ function stubRosterFetch(t, reply) {
   return calls;
 }
 
-test('the roster read asks for pay_type, cost_class and annual_salary', async (t) => {
+test('the roster read asks for pay_type, cost_class, annual_salary, position_group and position', async (t) => {
   const calls = stubRosterFetch(t, () => [{ id: 'e1', name: 'Ana Smith', pay_type: 'Hourly' }]);
 
   const rows = await payrollDb.fetchEmployees();
 
   assert.strictEqual(calls.length, 1, 'one request when the columns are there');
   for (const column of ['id', 'name', 'employee_number', 'department', 'wage', 'status',
-                        'pay_type', 'cost_class', 'annual_salary']) {
+                        'pay_type', 'cost_class', 'annual_salary',
+                        // Read for the cost report: it groups by position group and
+                        // names a person's position when it lists somebody with none.
+                        'position_group', 'position']) {
     assert.ok(calls[0].url.includes(column), `the projection must name ${column}`);
   }
   assert.match(calls[0].url, /order=name\.asc/);
   assert.deepStrictEqual(rows, [{ id: 'e1', name: 'Ana Smith', pay_type: 'Hourly' }]);
 });
 
+const missingColumnError = (column) =>
+  new Error('{"code":"42703","details":null,"hint":null,' +
+            `"message":"column employees.${column} does not exist"}`);
+
+test('a missing `position` costs the cost report and nothing else', async (t) => {
+  // This is why the fallback is a ladder rather than a single retry. `position`
+  // arrived in Phase B; a database without it must not lose pay_type, cost_class
+  // and annual_salary on the way down, because the payroll import reads those to
+  // decide who is salaried. The old binary fallback did exactly that.
+  const rows = [{ id: 'e1', name: 'Ana Smith', pay_type: 'Salaried', annual_salary: 105000 }];
+  const calls = stubRosterFetch(t, (call, n) => n === 1 ? missingColumnError('position') : rows);
+
+  const got = await payrollDb.fetchEmployees();
+
+  assert.strictEqual(calls.length, 2, 'one step down, not all the way');
+  assert.ok(!calls[1].url.includes('position&') && !calls[1].url.endsWith('position'),
+    'the retry drops `position`');
+  for (const kept of ['pay_type', 'cost_class', 'annual_salary', 'position_group']) {
+    assert.ok(calls[1].url.includes(kept), `the retry must keep ${kept}`);
+  }
+  assert.deepStrictEqual(got, rows);
+});
+
 test('a column that does not exist falls back to the pre-migration projection', async (t) => {
   const legacyRows = [{ id: 'e1', name: 'Ana Smith', wage: 'Salary', status: 'Active' }];
   const calls = stubRosterFetch(t, (call, n) => {
-    if (n === 1) {
-      return new Error('{"code":"42703","details":null,"hint":null,' +
-                       '"message":"column employees.pay_type does not exist"}');
-    }
+    // pay_type is on both of the upper rungs, so a database without it walks
+    // both of them before landing on pre-v2.
+    if (n <= 2) return missingColumnError('pay_type');
     return legacyRows;
   });
 
@@ -971,15 +996,34 @@ test('a column that does not exist falls back to the pre-migration projection', 
   // who is salaried.
   const rows = await payrollDb.fetchEmployees();
 
-  assert.strictEqual(calls.length, 2, 'one retry, not a loop');
+  assert.strictEqual(calls.length, 3, 'down the ladder once, not a loop');
   assert.ok(calls[0].url.includes('pay_type'));
-  assert.ok(!calls[1].url.includes('pay_type'), 'the retry drops the new columns');
-  assert.ok(!calls[1].url.includes('cost_class'));
-  assert.ok(!calls[1].url.includes('annual_salary'));
-  assert.ok(calls[1].url.includes('wage'), 'everything that did exist is still read');
+  assert.ok(!calls[2].url.includes('pay_type'), 'the last rung drops the new columns');
+  assert.ok(!calls[2].url.includes('cost_class'));
+  assert.ok(!calls[2].url.includes('annual_salary'));
+  assert.ok(!calls[2].url.includes('position_group'));
+  assert.ok(calls[2].url.includes('wage'), 'everything that did exist is still read');
   assert.deepStrictEqual(rows, legacyRows);
   assert.strictEqual(isSalaried(rows[0]), true,
     'on the pre-migration projection the wage marker is all there is, and it still works');
+});
+
+test('each rung drops only what the rung above it added', async (t) => {
+  // Pinned as a property rather than three string literals: a future column added
+  // to the top rung and forgotten on the one below would widen a fallback rather
+  // than narrow it, and nothing else would notice.
+  const cols = (s) => s.split(',');
+  const full = cols(payrollDb.EMPLOYEE_COLUMNS);
+  const mid = cols(payrollDb.EMPLOYEE_COLUMNS_PRE_PHASE_B);
+  const base = cols(payrollDb.EMPLOYEE_COLUMNS_PRE_V2);
+
+  for (const [wider, narrower, label] of [[full, mid, 'full -> pre-Phase-B'],
+                                          [mid, base, 'pre-Phase-B -> pre-v2']]) {
+    assert.ok(narrower.length < wider.length, `${label} must be narrower`);
+    for (const c of narrower) {
+      assert.ok(wider.includes(c), `${label}: ${c} is not in the rung above`);
+    }
+  }
 });
 
 test('a failure that is not a missing column is not downgraded into a narrower read', async (t) => {

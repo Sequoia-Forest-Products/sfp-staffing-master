@@ -14,58 +14,19 @@ const db = require('./db');
 const payrollDb = require('./payroll-db');
 const { weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS } = require('./ot-report-lib');
 const { verifySession, getCookies } = require('./session-lib');
+const {
+  fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
+} = require('./week-index-lib');
 
 // The payroll vendor sends at ~6:04 AM Pacific, so Pacific is the clock that
 // decides what "today" means here. birthday-lib.js deliberately uses
 // America/Boise for the mill's own clock — these are two different questions.
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
 
-// availableWeeks is derived in JS from a bounded window rather than by scanning
-// the whole table. ~57 weeks of history is plenty for a week picker.
-const WINDOW_DAYS = 400;
-
-// Page size for the window scan, and the ceiling on how many pages it will walk
-// before it gives up and says so. 40 pages covers 200,000 rows outright, and
-// still covers 40,000 against a project that caps responses at 1,000 rows.
-const WEEK_INDEX_PAGE_SIZE = 5000;
-const WEEK_INDEX_MAX_PAGES = 40;
-
-const DAY_MS = 86400000;
-
-// ---- calendar helpers -------------------------------------------------
-// Same rule as ot-report-lib.js: split the string and use Date.UTC, never
-// `new Date('2026-08-19')`, which is UTC midnight and reads back as Aug 18 in
-// any negative-offset zone — including the one this report is scored in.
-
-function pad2(n) { return String(n).padStart(2, '0'); }
-
-function dateToUTC(value) {
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(value == null ? '' : value).trim());
-  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null;
-}
-
-function utcToDateStr(ms) {
-  const d = new Date(ms);
-  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
-}
-
-function dateOnly(value) {
-  const ms = dateToUTC(value);
-  return ms === null ? null : utcToDateStr(ms);
-}
-
-function shiftDays(dateStr, days) {
-  return utcToDateStr(dateToUTC(dateStr) + days * DAY_MS);
-}
-
-// Today's calendar date in the payroll zone, regardless of where Netlify runs
-// this. Built from Intl parts so it is a literal calendar date, not an instant.
-function todayInZone(now = new Date(), timeZone = TIME_ZONE) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone, year: 'numeric', month: '2-digit', day: '2-digit'
-  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
+// The bounded window, the paging and the week summary all live in
+// week-index-lib.js now — the cost report needs exactly the same week picker,
+// and two endpoints deriving "the weeks you can ask about" separately is how
+// they end up offering different weeks.
 
 // ---- the timeclock grace allowance ------------------------------------
 //
@@ -117,101 +78,6 @@ async function loadGraceHours() {
   }
 }
 
-function round2(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return 0;
-  const r = (Math.round(Math.abs(v) * 100 + Number.EPSILON) / 100) * Math.sign(v);
-  return r === 0 ? 0 : r;
-}
-
-function num(value) {
-  if (value === null || value === undefined || value === '') return 0;
-  const n = typeof value === 'number' ? value : Number(String(value).replace(/[$,\s]/g, ''));
-  return Number.isFinite(n) ? n : 0;
-}
-
-// ---- the week index ---------------------------------------------------
-//
-// The window scan asks payroll-db for a narrow, ordered, counted page —
-// fetchDailyHoursIndex is where the projection, `order=work_date.desc` and
-// `Prefer: count=exact` live, and why each of the three matters. What is left
-// here is the only part that is this function's business: how many pages it is
-// willing to walk, and what it is willing to call complete.
-//
-// Completeness is only ever claimed, never assumed: the flag goes straight out
-// to the client so the UI can say the list may be incomplete.
-
-// Pages the window until it can show it is complete: either the exact count says
-// so, or an empty page proves the offset ran past the end. Anything else — the
-// page ceiling, or a count that insists there is more than paging can reach —
-// comes back as truncated rather than as a shorter answer that looks whole.
-async function fetchWeekIndex(fromDate, toDate) {
-  const rows = [];
-  let total = null;
-  let complete = false;
-
-  for (let page = 0; page < WEEK_INDEX_MAX_PAGES; page++) {
-    // The offset is the number of rows already held, never page * pageSize: a
-    // server-side row cap hands back fewer rows than were asked for, and
-    // stepping by the requested size would skip everything the cap withheld.
-    const result = await payrollDb.fetchDailyHoursIndex(fromDate, toDate, {
-      offset: rows.length,
-      limit: WEEK_INDEX_PAGE_SIZE
-    });
-    if (result.total !== null) total = result.total;
-
-    if (!result.rows.length) {
-      // Nothing left to read. When the count disagrees with that, believe the
-      // count and report the shortfall — the rows we are missing are exactly
-      // the ones a silent cap would have taken.
-      complete = (total === null || rows.length >= total);
-      break;
-    }
-
-    rows.push(...result.rows);
-    if (total !== null && rows.length >= total) { complete = true; break; }
-  }
-
-  return { rows, total, truncated: !complete };
-}
-
-// Every week in the window that has at least one daily_hours row, newest first —
-// which is also why picking availableWeeks[0] gives "the most recent week with
-// data". Weeks with no rows are simply absent; the picker should not offer them.
-function summarizeWeeks(rows) {
-  const weeks = new Map();
-
-  for (const row of rows) {
-    const date = dateOnly(row.work_date);
-    if (!date) continue;
-    const weekStart = weekStartFor(date);
-    const week = weeks.get(weekStart) || {
-      weekStart,
-      weekEnd: weekDates(weekStart)[6],
-      dates: new Set(),
-      rows: 0,
-      totalHours: 0,
-      totalEarnings: 0
-    };
-    week.dates.add(date);
-    week.rows += 1;
-    week.totalHours += num(row.total_hours);
-    week.totalEarnings += num(row.total_earnings);
-    weeks.set(weekStart, week);
-  }
-
-  return [...weeks.values()]
-    .sort((a, b) => (a.weekStart < b.weekStart ? 1 : a.weekStart > b.weekStart ? -1 : 0))
-    .map(w => ({
-      weekStart: w.weekStart,
-      weekEnd: w.weekEnd,
-      days: w.dates.size,
-      rows: w.rows,
-      totalHours: round2(w.totalHours),
-      totalEarnings: round2(w.totalEarnings)
-    }));
-}
-
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
@@ -225,7 +91,7 @@ exports.handler = async (event) => {
 
   try {
     const params  = event.queryStringParameters || {};
-    const today   = todayInZone();
+    const today   = todayInZone(new Date(), TIME_ZONE);
 
     // Validate ?week= before touching the database, so a typo costs nothing.
     const requested = String(params.week || '').trim();
@@ -247,7 +113,7 @@ exports.handler = async (event) => {
     const windowTo   = weekDates(today)[6];
 
     const weekIndex      = await fetchWeekIndex(windowFrom, windowTo);
-    const availableWeeks = summarizeWeeks(weekIndex.rows);
+    const availableWeeks = summarizeWeeks(weekIndex.rows, { weekStartFor, weekDates });
 
     // No ?week=: the most recent week that actually has data, and failing that
     // the current week (which then reports honestly as having nothing in it).
