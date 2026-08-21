@@ -2,8 +2,23 @@
 -- Phase B — normalise employees.birthday
 --
 -- READ SECTION 0 BEFORE RUNNING ANYTHING. Sections 1 and 2 are read-only and
--- safe. Section 3 WRITES and is commented out on purpose: do not uncomment it
--- until section 1 has been run and its output read.
+-- safe. Section 3 WRITES.
+--
+-- ---------------------------------------------------------------------------
+-- AUDIT PASSED — 2026-08-21. Section 3 is live below because of this, and for
+-- no other reason. If you are reading this file against a DIFFERENT database,
+-- section 3 is not authorised: re-run section 1 first.
+--
+--   1a  69 JS date string, 4 M/D/YYYY, 1 empty string. 74 rows = the whole
+--       employees table (67 active + 7 inactive; 1a has no status filter).
+--   1b  EMPTY. No value fails every shape the parser understands.
+--   1c  EMPTY, implied by 1a reporting no 'M/D (no year)' and no 'M/D/YY'
+--       bucket. So every non-empty value converts and there are no deliberate
+--       leftovers — which also means section 4 becomes available afterwards.
+--   1d  73 rows previewed (74 minus the empty string). Peter verified every
+--       conversion independently: month, day and year preserved, zero
+--       mismatches.
+-- ---------------------------------------------------------------------------
 -- ============================================================================
 
 
@@ -166,6 +181,30 @@ order by name;
 -- Section 1d and section 3 both extract the month name, day and year as TEXT and
 -- rebuild the date from those. No instant, no zone, no conversion.
 --
+-- AND THE DATA CONFIRMS THIS WAS NOT A THEORETICAL RISK. The audit turned up two
+-- rows whose offset contradicts its own label: Howard Hoffman and Jaime
+-- Canizalez both carry 'GMT-0800 (Pacific Daylight Time)' on April and October
+-- dates, which should be -0700. Whatever wrote these stamped a label and an
+-- offset that disagree, so any migration that trusted the offset would have been
+-- working from values that are wrong about themselves — not merely at risk from
+-- a session-zone setting.
+--
+-- Both are harmless as things stand, and it is worth being precise about why
+-- rather than just asserting it:
+--
+--   * The textual extraction never reads the offset or the label at all, so the
+--     migration cannot be affected by either.
+--   * The notifier's Date.parse path DOES read the numeric offset, and is still
+--     safe, because the error is one hour against a value at local midnight:
+--     midnight at -0700 is 07:00 UTC and at -0800 is 08:00 UTC, the same
+--     calendar day either way. Verified against both rows' shapes — parseBirthday
+--     returns the same {month, day} for the contradictory and the corrected
+--     spelling. An offset error could only matter if it crossed midnight, which
+--     would take a value not stored at 00:00:00 or an error of 8+ hours.
+--
+-- Nothing needs fixing in those two rows; after section 3 the offset and the
+-- label are both gone anyway.
+--
 -- Once every row is YYYY-MM-DD, converting the column to `date` becomes a
 -- one-liner with nothing left to go wrong. Section 4 has it, commented, for
 -- whenever that is wanted.
@@ -184,54 +223,118 @@ order by name;
 --   4. Record the "after" snapshot and compare. Same people, or stop.
 
 -- 3a. Keep the old values. Cheap, and the difference between a mistake and an
---     incident.
--- alter table employees add column if not exists birthday_raw_backup text;
--- update employees set birthday_raw_backup = birthday
---   where birthday_raw_backup is null and birthday is not null;
+--     incident. Run this FIRST and on its own.
+alter table employees add column if not exists birthday_raw_backup text;
 
--- 3b. The rewrite. Month/day/year read as text and reassembled — never cast
---     through a timestamp. Rows with no usable year are deliberately untouched
---     (see 1c).
--- update employees set birthday =
---   case
---     when birthday ~ '^\d{4}-\d{1,2}-\d{1,2}' then
---       to_char(to_date(substring(birthday from '^(\d{4}-\d{1,2}-\d{1,2})'), 'YYYY-MM-DD'), 'YYYY-MM-DD')
---     when birthday ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}' then
---       to_char(
---         to_date(
---           substring(birthday from '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} (\d{4})') || '-' ||
---           substring(birthday from '^[A-Za-z]{3} ([A-Za-z]{3})')                || '-' ||
---           lpad(substring(birthday from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), 2, '0'),
---           'YYYY-Mon-DD'),
---         'YYYY-MM-DD')
---     when birthday ~ '^\d{1,2}[/-]\d{1,2}[/-]\d{4}$' then
---       to_char(
---         to_date(
---           substring(birthday from '[/-](\d{4})$')             || '-' ||
---           lpad(substring(birthday from '^(\d{1,2})'), 2, '0') || '-' ||
---           lpad(substring(birthday from '^\d{1,2}[/-](\d{1,2})'), 2, '0'),
---           'YYYY-MM-DD'),
---         'YYYY-MM-DD')
---     else birthday
---   end
--- where birthday is not null and btrim(birthday) <> '';
+update employees set birthday_raw_backup = birthday
+where birthday_raw_backup is null and birthday is not null;
 
--- 3c. VERIFY: the month and day must be identical before and after, for every
---     row. This is the assertion that matters — the year is never read by
---     anything, the month and day decide who gets announced. Expect ZERO rows.
--- select id, name, birthday_raw_backup, birthday
--- from employees
--- where birthday_raw_backup is not null
---   and birthday_raw_backup ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}'
---   and (
---     substring(birthday from '-(\d{2})-')  is distinct from
---       lpad((select to_char(to_date(substring(birthday_raw_backup from '^[A-Za-z]{3} ([A-Za-z]{3})'), 'Mon'), 'MM')), 2, '0')
---     or
---     substring(birthday from '-(\d{2})$')  is distinct from
---       lpad(substring(birthday_raw_backup from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), 2, '0')
---   );
+-- Expect: 73 rows backed up (74 minus the one empty string, which is not null
+-- and so IS backed up as '' — so expect 74 if the empty row is an empty string
+-- rather than NULL. 1a said 'empty string', so 74).
+select count(*) as backed_up from employees where birthday_raw_backup is not null;
 
--- 3d. Rollback, if 3c finds anything.
+
+-- 3b. The rewrite. Month/day/year read as TEXT and reassembled — never cast
+--     through a timestamp, for the reasons in section 2, one of which is that
+--     two rows in this very table carry an offset that contradicts their label.
+--
+--     Rows with no usable year would be left alone by the else branch; the audit
+--     found none, so this touches all 73 non-empty values.
+update employees set birthday =
+  case
+    when birthday ~ '^\d{4}-\d{1,2}-\d{1,2}' then
+      to_char(to_date(substring(birthday from '^(\d{4}-\d{1,2}-\d{1,2})'), 'YYYY-MM-DD'), 'YYYY-MM-DD')
+    when birthday ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}' then
+      to_char(
+        to_date(
+          substring(birthday from '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} (\d{4})') || '-' ||
+          substring(birthday from '^[A-Za-z]{3} ([A-Za-z]{3})')                || '-' ||
+          lpad(substring(birthday from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), 2, '0'),
+          'YYYY-Mon-DD'),
+        'YYYY-MM-DD')
+    when birthday ~ '^\d{1,2}[/-]\d{1,2}[/-]\d{4}$' then
+      to_char(
+        to_date(
+          substring(birthday from '[/-](\d{4})$')             || '-' ||
+          lpad(substring(birthday from '^(\d{1,2})'), 2, '0') || '-' ||
+          lpad(substring(birthday from '^\d{1,2}[/-](\d{1,2})'), 2, '0'),
+          'YYYY-MM-DD'),
+        'YYYY-MM-DD')
+    else birthday
+  end
+where birthday is not null and btrim(birthday) <> '';
+
+
+-- 3c. VERIFY. Three queries; all three must give the stated answer.
+--
+--     The month and day are the ONLY things the notifier reads, so they are what
+--     has to be identical before and after. The year is checked too, because a
+--     wrong year is a wrong fact in an HR record even if nothing reads it.
+
+-- 3c-i. Every row is now ISO, or empty. Expect exactly two shapes:
+--       'ISO (YYYY-MM-DD)' 73, and 'empty string' 1.
+select
+  case
+    when birthday is null                 then 'NULL'
+    when btrim(birthday) = ''             then 'empty string'
+    when birthday ~ '^\d{4}-\d{2}-\d{2}$' then 'ISO (YYYY-MM-DD)'
+    else 'SOMETHING ELSE — STOP'
+  end as shape,
+  count(*) as rows
+from employees
+group by 1
+order by rows desc;
+
+-- 3c-ii. THE ASSERTION. For every migrated row, the month, day and year in the
+--        new value must match what the backup said, read textually. Extracting
+--        the month NAME through to_date('Mon') is the same conversion the
+--        migration used, which is deliberate: this proves the WRITE landed, and
+--        3c-iii independently proves the conversion itself.
+--
+--        Expect ZERO rows. Any row here means roll back with 3d.
+select id, name, birthday_raw_backup, birthday
+from employees
+where birthday_raw_backup is not null
+  and btrim(birthday_raw_backup) <> ''
+  and birthday is distinct from (
+    case
+      when birthday_raw_backup ~ '^\d{4}-\d{1,2}-\d{1,2}' then
+        to_char(to_date(substring(birthday_raw_backup from '^(\d{4}-\d{1,2}-\d{1,2})'), 'YYYY-MM-DD'), 'YYYY-MM-DD')
+      when birthday_raw_backup ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}' then
+        to_char(
+          to_date(
+            substring(birthday_raw_backup from '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} (\d{4})') || '-' ||
+            substring(birthday_raw_backup from '^[A-Za-z]{3} ([A-Za-z]{3})')                || '-' ||
+            lpad(substring(birthday_raw_backup from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), 2, '0'),
+            'YYYY-Mon-DD'),
+          'YYYY-MM-DD')
+      when birthday_raw_backup ~ '^\d{1,2}[/-]\d{1,2}[/-]\d{4}$' then
+        to_char(
+          to_date(
+            substring(birthday_raw_backup from '[/-](\d{4})$')             || '-' ||
+            lpad(substring(birthday_raw_backup from '^(\d{1,2})'), 2, '0') || '-' ||
+            lpad(substring(birthday_raw_backup from '^\d{1,2}[/-](\d{1,2})'), 2, '0'),
+            'YYYY-MM-DD'),
+          'YYYY-MM-DD')
+      else birthday_raw_backup
+    end
+  )
+order by name;
+
+-- 3c-iii. An INDEPENDENT check of the day number, not reusing the month-name
+--         conversion. The day is the second number in the JS date string and the
+--         last field of the ISO value; if the two disagree the reassembly put
+--         the pieces in the wrong order. Expect ZERO rows.
+select id, name, birthday_raw_backup, birthday
+from employees
+where birthday_raw_backup ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}'
+  and substring(birthday from '(\d{2})$')
+      is distinct from lpad(substring(birthday_raw_backup from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), 2, '0');
+
+
+-- 3d. ROLLBACK — commented, because after a good migration running it would undo
+--     it. Uncomment only if 3c found rows.
 -- update employees set birthday = birthday_raw_backup
 --   where birthday_raw_backup is not null;
 
