@@ -503,6 +503,11 @@ test('schedule days is editable, with the roster values suggested but not enforc
   assert.match(html, /state\.editing\.days=this\.value/);
   assert.match(html, /<datalist id="sched-days">/);
   assert.match(html, /<option value="MON-THU">/);
+  // Audited: MON-THU 71, FRI-MON 1, MON-SUN 1, blank 1. 'MON-FRI' was a guess
+  // and does not exist on the roster; 'FRI-MON' does and was missed.
+  assert.match(html, /<option value="FRI-MON">/);
+  assert.match(html, /<option value="MON-SUN">/);
+  assert.ok(!html.includes('MON-FRI'), 'a value that is not on the roster must not be suggested');
   // A select would silently drop this value and rewrite the person's schedule on
   // the first save. It is kept as typed and flagged instead.
   assert.match(html, /value="WHENEVER NEEDED"/);

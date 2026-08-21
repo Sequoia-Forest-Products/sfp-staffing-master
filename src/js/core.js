@@ -474,11 +474,18 @@ function breakStorageValue(value){
 // because a select that silently drops an unrecognised value would rewrite
 // somebody's schedule the first time their profile was saved.
 //
-// PROVISIONAL: awaiting the audit of employees.days. openAdd() has defaulted new
-// hires to 'MON-THU' since before Phase A, so that value is certain; the rest of
-// the list is a guess at the shapes a hand-edited text column collects and must
-// be replaced with what the query actually returns.
-const SCHEDULE_DAYS=['MON-THU','MON-FRI','FRI-SUN','MON-SUN'];
+// AUDITED 2026-08-21 against the live roster, 74 rows:
+//   MON-THU   71
+//   FRI-MON    1
+//   MON-SUN    1
+//   (blank)    1
+//
+// Three distinct values, two of them held by one person each. That is why this
+// is a datalist on a text input and not a select: a select offering only these
+// three would silently drop the next one-off somebody types, and 'FRI-MON' shows
+// that one-offs are real here. The provisional list guessed 'MON-FRI', which
+// does not exist, and missed 'FRI-MON', which does.
+const SCHEDULE_DAYS=['MON-THU','FRI-MON','MON-SUN'];
 
 const MONTH_NAMES=['January','February','March','April','May','June','July',
   'August','September','October','November','December'];
