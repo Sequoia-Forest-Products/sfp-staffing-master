@@ -1,4 +1,17 @@
 -- =====================================================================
+-- APPLIED 2026-08-21 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- Verified: 5 rows, both employees summing to exactly 100.0000 —
+-- Jeff Cook 50/50 Corporate + Sales & Marketing, Axeri Ramirez
+-- 33.34 Accounting / 33.33 Corporate / 33.33 HR.
+--
+-- §6c ran and FAILED as intended: a 90% allocation was rejected with
+-- errcode 23514 from check_allocation_total(). The rollback was then
+-- confirmed by re-reading §6a — set_employee_allocations deletes before
+-- it inserts, and the deferred trigger raises at commit, so Jeff's 50/50
+-- came back intact rather than half-applied. A constraint that has only
+-- ever been seen to pass has not been tested.
+-- =====================================================================
 -- SFP Staffing — Phase C Task 5: cost allocations
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 -- Confirm the project name in the top-left before running anything.
@@ -157,10 +170,18 @@ begin
       from employee_allocations where employee_id = target;
 
     if rows_n > 0 and total <> 100 then
+      -- NO '%%%' HERE. RAISE scans the format string left to right: '%%'
+      -- is a literal percent sign and '%' is a placeholder, so '%%%' is
+      -- read as literal-then-placeholder and prints '%90.0000' rather
+      -- than '90.0000%'. That order cannot be expressed with three
+      -- percent characters, so the word is spelled out instead. Observed
+      -- against the live database 2026-08-21; the trailing '100%%' was
+      -- always correct, which is why only half the sentence looked wrong.
       raise exception
-        'Allocation for employee % sums to %%%, not 100%%. A partial allocation '
-        'silently loses that share of their cost. Delete every row for this '
-        'employee to return them to 100%% of their primary department.',
+        'Allocation for employee % sums to % percent, not 100. A partial '
+        'allocation silently loses that share of their cost. Delete every row '
+        'for this employee to return them to 100 percent of their primary '
+        'department.',
         target, total
         using errcode = 'check_violation';
     end if;
