@@ -1,4 +1,20 @@
 -- =====================================================================
+-- APPLIED 2026-08-21 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- Verified: 27 rows, 17 people, hours 71.50 -> 59.50, difference 12.00,
+-- 0 duplicate (employee, category) pairs, 27 of 27 descriptions kept.
+-- §5c returned exactly the three expected rows: Brian McDonald x2 at
+-- 1 -> 0 (inactive) and Rey Aispuro's Weekend at 2 -> 1 (duplicate).
+--
+-- §5c was not a formality. TEN different three-row drop-sets are
+-- consistent with all of (27 rows, 17 people, 12.00 difference, 0
+-- duplicate pairs) — for instance Abel's Post-Shift 1h plus Rey's
+-- Weekend 6h plus Will Gonzalez's Weekend 5h also sums to 12.00 and
+-- leaves 17 people. The counts are necessary and nowhere near
+-- sufficient; §5c is what identifies WHICH rows went.
+--
+-- `overtime` is intact, by design. See §6.
+-- =====================================================================
 -- SFP Staffing — Phase C Task 4: pre-approved OT, keyed on employees.id
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 -- Confirm the project name in the top-left before running anything.
