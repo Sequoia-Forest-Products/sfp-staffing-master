@@ -81,12 +81,18 @@ select
 -- because that is a string until the function is called.
 -- =====================================================================
 
-select 'function or procedure' as kind, p.proname as name,
-       pg_get_functiondef(p.oid) as definition
+-- p.prosrc, NOT pg_get_functiondef(p.oid). pg_get_functiondef raises
+-- '"array_agg" is an aggregate function' on aggregates, and Postgres does not
+-- promise to apply the nspname filter before evaluating a function in the same
+-- WHERE clause — so the first version of this errored out instead of
+-- returning. prosrc is a plain catalog column that cannot raise, and it holds
+-- exactly what matters here: the function BODY as text, which is the one thing
+-- a rename cannot follow.
+select 'function or procedure' as kind, p.proname as name, p.prosrc as definition
 from pg_proc p
 join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public'
-  and pg_get_functiondef(p.oid) ilike '%economics%'
+  and p.prosrc ilike '%economics%'
 union all
 select 'row level security policy', pol.polname,
        pg_get_expr(pol.polqual, pol.polrelid)
@@ -152,7 +158,7 @@ order by seat;
 -- 2c. Nothing in the database still refers to the old name. Expected: NO ROWS.
 select 'function' as kind, p.proname as name
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-where n.nspname='public' and pg_get_functiondef(p.oid) ilike '%economics%position%'
+where n.nspname='public' and p.prosrc ilike '%economics%position%'
 union all
 select 'view', c.relname
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
