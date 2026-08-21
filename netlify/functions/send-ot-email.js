@@ -1,35 +1,14 @@
-const { createHmac } = require('crypto');
 const db = require('./db');
+const { verifySession, getCookies } = require('./session-lib');
 
 const GMAIL_USER = process.env.GMAIL_USER;
 const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD;
-const SESSION_SECRET = process.env.SESSION_SECRET;
 
 // This endpoint sends mail *from* the company Gmail account, so an unauthenticated
 // caller here is an open relay wearing Sequoia's return address. Session check first,
 // then a recipient allowlist the server owns — the client only ever proposes.
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sequoiafp.com').toLowerCase();
 const MAX_RECIPIENTS = 25;
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

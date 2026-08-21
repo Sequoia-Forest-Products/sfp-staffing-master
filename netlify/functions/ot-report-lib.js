@@ -372,11 +372,19 @@ function displayName(row) {
 function buildReport({
   weekStart,
   dailyRows = [],
+  // The standing allowance. Phase C keys these on employees.id
+  // (`preapproved_ot`); before that migration they arrive keyed on `name`
+  // (`overtime`). Both shapes are accepted by the SAME loop below — an id when
+  // the row has one, a name when it does not — so there is no second code path
+  // to drift, and the report keeps working whichever order the deploy and the
+  // migration happen in.
+  preApprovedRows = null,
   overtimeRows = [],
   employees = [],
   expectedDays = null,
   graceHoursPerEmployee = null
 } = {}) {
+  const standingRows = preApprovedRows === null ? (overtimeRows || []) : (preApprovedRows || []);
   const dates    = weekDates(weekStart);
   const dateSet  = new Set(dates);
   const monday   = dates[0];
@@ -386,16 +394,21 @@ function buildReport({
   const gracePerEmployee = configuredGrace === null ? DEFAULT_GRACE_HOURS : configuredGrace;
 
   // ---- roster indexes -------------------------------------------------
-  // employee_number matches daily_hours; the comparison name matches the
-  // overtime table, which has no id and no employee number at all. Duplicate
-  // names keep the first roster entry — nothing else can disambiguate them.
+  // employee_number matches daily_hours; employees.id matches preapproved_ot;
+  // the comparison name matches the legacy `overtime` table, which has neither
+  // an id nor an employee number. Duplicate names keep the first roster entry —
+  // nothing else can disambiguate them, which is the entire reason the standing
+  // allowance stopped being keyed on one.
   const byNumber = new Map();
   const byName   = new Map();
+  const byId     = new Map();
   for (const emp of employees || []) {
     const number = normalizeEmpNumber(emp.employee_number);
     if (number && !byNumber.has(number)) byNumber.set(number, emp);
     const name = nameKey(emp.name);
     if (name && !byName.has(name)) byName.set(name, emp);
+    const id = cleanText(emp.id);
+    if (id) byId.set(id, emp);
   }
 
   // The identity one person is accumulated under, asked of the ROSTER ENTRY
@@ -551,24 +564,73 @@ function buildReport({
   const preByDepartment    = new Map();
   const unmatchedNames     = [];
   const rateMissing        = [];
+  const inactiveSkipped    = [];
   const seenUnmatched      = new Set();
   const seenRateMissing    = new Set();
+  const seenInactive       = new Set();
   let preApprovedHours     = 0;
   let preApprovedDollars   = 0;
 
   for (const type of OT_TYPES) preByType[type] = { hours: 0, dollars: 0 };
 
-  for (const raw of overtimeRows || []) {
-    const name = String(raw.name || '').trim();
-    if (!name) continue; // a blank row in the OT tab attributes to nobody
+  for (const raw of standingRows) {
+    // An id row and a name row are resolved here and nowhere else, so the two
+    // input shapes share every line below this point.
+    const employeeId = cleanText(raw.employee_id != null ? raw.employee_id : raw.employeeId);
+    const rosterEmp  = employeeId
+      ? (byId.get(employeeId) || null)
+      : (byName.get(nameKey(String(raw.name || '').trim())) || null);
+
+    // The name to report this row under. The roster's spelling wins when there
+    // is a roster entry: 'Tim Green' in the old table is Timothy Green on the
+    // roster, and showing two spellings of one person is how somebody concludes
+    // there are two people.
+    const name = rosterEmp
+      ? (String(rosterEmp.name || '').trim() || String(raw.name || '').trim())
+      : String(raw.name || '').trim();
+
+    // A row that names nobody at all attributes to nobody. With an id-keyed
+    // table this means an id that is not on the roster AND no name to fall back
+    // on — a row whose employee was deleted. It is reported, not dropped.
+    if (!name && !rosterEmp) {
+      if (employeeId && !seenUnmatched.has(`id:${employeeId}`)) {
+        seenUnmatched.add(`id:${employeeId}`);
+        unmatchedNames.push(`(deleted employee ${employeeId})`);
+      }
+      continue;
+    }
+
+    // AN INACTIVE EMPLOYEE'S ALLOWANCE DOES NOT COUNT, and is not silent.
+    //
+    // A standing allowance is an entitlement to work overtime. Somebody who has
+    // left cannot exercise it, so counting it inflates pre-approved OT and
+    // therefore understates Net OT — every week, invisibly. This is exactly what
+    // Brian McDonald's 6 hours were doing: he matched the roster by name, so
+    // nothing flagged him, and the loop had no status filter.
+    //
+    // The Phase C migration drops his rows, but the filter belongs HERE as well:
+    // the next person to go inactive keeps their row until somebody deletes it,
+    // and the report must not start over-crediting them in the meantime.
+    if (rosterEmp && !isActiveEmployee(rosterEmp)) {
+      const label = name || `(employee ${employeeId})`;
+      if (!seenInactive.has(label)) {
+        seenInactive.add(label);
+        inactiveSkipped.push({
+          name: label,
+          department: departmentBucket(rosterEmp.department),
+          hours: 0
+        });
+      }
+      const entry = inactiveSkipped.find(x => x.name === label);
+      entry.hours = round2(entry.hours + num(raw.hours));
+      continue;
+    }
 
     const hours     = num(raw.hours);
-    const rosterEmp = byName.get(nameKey(name)) || null;
     const number    = rosterEmp ? normalizeEmpNumber(rosterEmp.employee_number) : '';
     // Resolved through the roster first, exactly as the daily rows are, so a
-    // person with no employee_number lands on the same key from both sides. An
-    // unmatched name has no roster entry to ask, so it keys on itself and is
-    // reported in unmatchedNames.
+    // person with no employee_number lands on the same key from both sides. A
+    // row with no roster entry keys on itself and is reported in unmatchedNames.
     const key       = rosterEmp ? rosterKey(rosterEmp) : `name:${nameKey(name)}`;
     const worked    = people.get(key);
     const hasHours  = !!(worked && worked.hasHoursThisWeek);
@@ -632,9 +694,15 @@ function buildReport({
 
     preRows.push({
       name,
+      employeeId: rosterEmp ? (cleanText(rosterEmp.id) || null) : null,
+      employeeNumber: number || null,
       otType,
       hours: round2(hours),
       dollars: round2(dollars),
+      // The description is the point of keeping three categories: the category
+      // says WHEN, the description says WHAT. Carried through to the report so
+      // the per-employee detail can show what the allowance is actually for.
+      description: cleanText(raw.description),
       department,
       rateSource,
       matched: !!rosterEmp
@@ -769,6 +837,18 @@ function buildReport({
   for (const type of Object.keys(preByType)) {
     byTypeOut[type] = { hours: round2(preByType[type].hours), dollars: round2(preByType[type].dollars) };
   }
+
+  // Pre-approved OT by department, as its own breakdown. It was already being
+  // accumulated for the departments block; Task 4 asks for it by category AND by
+  // department, and deriving it a second time on the client from preRows would
+  // be a second implementation of the same sum.
+  const preByDepartmentOut = [...preByDepartment.entries()]
+    .map(([department, t]) => ({
+      department,
+      hours: round2(t.hours),
+      dollars: round2(t.dollars)
+    }))
+    .sort((a, b) => b.hours - a.hours || a.department.localeCompare(b.department));
 
   // ---- per day ---------------------------------------------------------
   const rowsByDate = new Map(dates.map(d => [d, []]));
@@ -1092,10 +1172,22 @@ function buildReport({
       // did. standing and grace are the two components of the total that
       // summary.preApprovedHours reports, kept apart on purpose.
       byType: byTypeOut,
+      byDepartment: preByDepartmentOut,
       rows: preRows,
       unmatchedNames,
       withoutHoursThisWeek,
       rateMissing,
+      // Allowances held by people who have left. NOT counted in any total —
+      // somebody who is gone cannot work the overtime, and crediting them
+      // understates Net OT every week. Reported so the row can be deleted
+      // rather than silently ignored forever.
+      inactiveSkipped,
+      // True while the report is still reading the name-keyed `overtime` table,
+      // so the UI can say the allowance is not yet per-employee. Derived from
+      // the rows in hand rather than from a flag the caller sets, because the
+      // caller passing the wrong flag is the failure this is meant to catch.
+      keyedOnEmployeeId: standingRows.length > 0
+        && standingRows.every(r => cleanText(r.employee_id != null ? r.employee_id : r.employeeId) !== null),
       standing: { hours: round2(standingHours), dollars: round2(standingDollars) },
       grace: {
         hoursPerEmployee: gracePerEmployee,   // the value actually used, so the number can be audited

@@ -1,8 +1,6 @@
-const { createHmac } = require('crypto');
 const fs = require('fs');
 const path = require('path');
-
-const SESSION_SECRET = process.env.SESSION_SECRET;
+const { sessionFrom } = require('./session-lib');
 
 // The app's script, in load order. These are classic scripts sharing ONE global
 // scope, not ES modules: app.html's inline on* handlers call them by bare name,
@@ -17,11 +15,17 @@ const SCRIPT_MODULES = [
   'core.js',
   'data.js',
   'employees.js',
-  'economics.js',
-  'overtime.js',
+  'costs.js',
+  'preapproved.js',
+  'allocations.js',
   'points.js',
   'ot-report.js',
   'daily-hours.js',
+  // After the three modules it renders, so the container cannot be assembled
+  // without them. Only function declarations cross module boundaries here, but
+  // keeping the order honest is how the manifest stays readable as a dependency
+  // list rather than an arbitrary sequence.
+  'reports.js',
   'settings-tab.js',
   'bootstrap.js'
 ];
@@ -75,26 +79,8 @@ function buildPage(session) {
   );
 }
 
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected   = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
 exports.handler = async (event) => {
-  const cookies = Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-
-  const session = verifySession(cookies.sfp_session || '');
+  const session = sessionFrom(event);
   if (!session) {
     return { statusCode: 302, headers: { Location: '/?error=unauthorized' }, body: '' };
   }

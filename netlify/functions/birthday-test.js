@@ -11,31 +11,11 @@
 // logged into the app) OR an x-birthday-secret header matching
 // BIRTHDAY_TRIGGER_SECRET.
 
-const { createHmac, timingSafeEqual } = require('crypto');
+const { timingSafeEqual } = require('crypto');
 const { runBirthdayNotifications } = require('./birthday-lib');
+const { verifySession, getCookies } = require('./session-lib');
 
-const SESSION_SECRET = process.env.SESSION_SECRET;
 const TRIGGER_SECRET = process.env.BIRTHDAY_TRIGGER_SECRET;
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected   = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 function secretMatches(provided) {
   if (!TRIGGER_SECRET || !provided) return false;

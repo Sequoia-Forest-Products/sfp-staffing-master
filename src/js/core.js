@@ -31,14 +31,32 @@ function parseSettingsValue(v){
 }
 
 let state = {
-  tab:'employees', employees:[], economics:[],
-  ot:{post:[],weekend:[],pre:[]}, points:[],
+  tab:'employees', employees:[],
+  // One entry per cost class, created on demand by costView(). Keyed by the
+  // class itself so the Manufacturing Costs and Overhead tabs cannot render each
+  // other's numbers.
+  cost:{},
+  points:[],
+  // Pre-approved OT comes from /api/preapproved-ot now, keyed on employees.id.
+  // state.ot — the {pre,post,weekend} arrays the old editable grid held — is
+  // gone with it: it was a client-side copy of the whole table, which is what
+  // made a replace-the-table save look reasonable.
+  preRows:[], preLoaded:false, preLoading:false, preError:'',
+  preTableMissing:false, preNote:'',
+  // Cost allocations. allocDrafts is keyed by employee id so a half-finished
+  // edit on one person is not disturbed by opening somebody else's card.
+  allocations:[], allocDrafts:{}, allocLoaded:false, allocLoading:false,
+  allocError:'', allocTableMissing:false, allocNote:'',
   filterName:'', filterDept:'all', filterStatus:'Active',
-  editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
+  editing:null, dirty:false, loading:true, ptEditing:false,
   // Which employee's profile card is open, as {idx}, or null. Separate from
   // `editing`: the card is read-only until Edit sets `editing` as well, and
   // saveEdit() clearing `editing` is what drops it back to read-only.
   profile:null,
+  // Which sub-view the Reports tab is showing. Defaults to Pre-Approved OT
+  // because it needs no network call — the OT Report loads on first open, the
+  // way it did as a top-level tab.
+  reportView:'preapproved',
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
@@ -53,13 +71,27 @@ let state = {
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
 
+// The timeclock grace allowance, in hours per active hourly employee per week.
+// A policy number, so it is read from emailSettings rather than hardcoded, and
+// the stated default stands in for anything unusable — including a negative,
+// which is not a setting but a mistake. Zero IS a real setting: it switches the
+// policy off, so this can never be a truthiness test.
+//
+// Lives here rather than in ot-report.js because the OT report and the employee
+// profile card both state it, and a policy number two screens quote separately
+// is a policy number they will eventually quote differently.
+function graceHrs(){
+  const v=Number(state.emailSettings.graceHoursPerEmployee);
+  return isFinite(v)&&v>=0?v:EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee;
+}
+
 // Takes the whole employee, not a bare wage, because 'is this person salaried'
 // is no longer a fact about the wage column — see isSalaried below. A wage value
 // is still accepted so a caller holding nothing else keeps the legacy reading.
 //
-// Everything routes through isSalaried so the roster and Staffing Economics
-// cannot disagree about the same employee: a lowercase 'salary' used to render
-// as $NaN here while being correctly excluded there. A blank wage on an hourly
+// Everything routes through isSalaried so no two screens can disagree about the
+// same employee: a lowercase 'salary' used to render as $NaN here while being
+// correctly excluded from the costing report. A blank wage on an hourly
 // person is unknown, not salaried — it used to display as 'Salary', which made a
 // half-entered new hire look like staff they are not.
 function fmtWage(empOrWage){
@@ -76,8 +108,7 @@ function fmtWage(empOrWage){
 // lived inside employees.wage as the literal string 'Salary', and the migration
 // NULLS wage for salaried people — so code that decides this by reading wage
 // alone reads every salaried person as HOURLY the moment the migration runs,
-// which puts them into Staffing Economics and into the clock-grace headcount
-// and silently inflates both.
+// which puts them into the clock-grace headcount and silently inflates it.
 //
 // Hence the order: pay_type when it is present and recognised, the legacy wage
 // marker only as a fallback. That is correct before AND after the migration, and
@@ -342,19 +373,40 @@ function switchTab(tab,el){
   render();
   // The payroll tabs read their own endpoints, so they load on first open
   // rather than on every page load.
-  if(tab==='otreport'&&!state.otReport&&!state.otReportLoading) loadOTReport(state.otReportWeek);
+  //
+  // The OT Report's hook used to live here, keyed on tab==='otreport'. It is now
+  // a sub-view of Reports, so the hook moved to switchReportView() — and it also
+  // has to fire when Reports is opened while that sub-view is already the
+  // selected one, or a deep link from goToReport('otreport') would render the
+  // report shell and never load anything into it.
+  if(tab==='reports'){
+    const view=reportView(state.reportView);
+    if(view.load) view.load();
+  }
   if(tab==='dailyhours'&&!state.dailyLoaded&&!state.dailyLoading) loadDailyDays();
+  // Same rule as the payroll tabs: the cost report is its own endpoint, so it
+  // loads on first open rather than on every page load.
+  if(tab==='costs') loadCostsOnce([COST_CLASS_MANUFACTURING]);
+  if(tab==='overhead') loadCostsOnce(OVERHEAD_CLASSES);
 }
 
 function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  else if(state.tab==='economics')el.innerHTML=renderEcon();
-  else if(state.tab==='overtime')el.innerHTML=renderOT();
-  else if(state.tab==='points')el.innerHTML=renderPoints();
+  // 'economics' is gone. Staffing Economics assigned people to positions and
+  // showed each one's hourly rate next to a max, which is precisely what this
+  // phase stopped rendering — there is no permissions system, so that page was
+  // readable by every signed-in account. Manufacturing Costs answers the costing
+  // question in aggregate; the position/max reference data is still in the
+  // `economics` table, untouched, with nothing reading it.
+  else if(state.tab==='costs')el.innerHTML=renderCosts();
+  else if(state.tab==='overhead')el.innerHTML=renderOverhead();
+  // 'overtime', 'points' and 'otreport' are no longer tabs; they are sub-views
+  // of 'reports'. Their render functions are unchanged and are called from
+  // renderReports().
+  else if(state.tab==='reports')el.innerHTML=renderReports();
   else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
-  else if(state.tab==='otreport')el.innerHTML=renderOTReport();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }
 

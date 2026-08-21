@@ -86,7 +86,11 @@ test('annual_salary never reaches the response body, even if the database return
   assert.ok(!/104000/.test(body), 'the salary VALUE is in the response');
 });
 
-test('wage is still returned — the roster renders it and economics computes from it', async () => {
+// The roster still renders an hourly rate per person, on the Employees tab. That
+// predates this phase and is unchanged; what Manufacturing Costs stopped doing is
+// rendering rates on a COSTING page, where the whole point is the aggregate.
+// Removing wage from this projection is Phase D's job, with permissions.
+test('wage is still returned — the roster renders it', async () => {
   const urls = stubFetch([]);
   await get('employees');
   assert.match(urls[0], /\bwage\b/);
@@ -150,11 +154,30 @@ test('an unrelated failure is not hidden behind a narrower read', async () => {
 // The allowlist
 // ============================================================
 
-test('the four tables the app uses are permitted', async () => {
-  for (const table of ['employees', 'economics', 'overtime', 'points']) {
+test('the three tables the app uses are permitted', async () => {
+  for (const table of ['employees', 'overtime', 'points']) {
     stubFetch([]);
     const res = await get(table);
     assert.strictEqual(res.statusCode, 200, `${table} should be allowed`);
+  }
+});
+
+test('economics is refused now that nothing reads it, including on PUT', async () => {
+  // It backed Staffing Economics, which Manufacturing Costs replaced. What made
+  // this worth closing rather than leaving: PUT maps to db.replaceAll, which
+  // deletes every row before inserting, so an allowlisted table nothing renders
+  // is a live delete path with no screen that would show it had been emptied.
+  // max_wage is the only per-position rate ceiling recorded anywhere.
+  for (const method of ['GET', 'PUT', 'POST', 'PATCH', 'DELETE']) {
+    const urls = stubFetch([]);
+    const res = await data.handler({
+      httpMethod: method,
+      headers: { cookie: cookie() },
+      queryStringParameters: { table: 'economics' },
+      body: JSON.stringify({ rows: [] })
+    });
+    assert.strictEqual(res.statusCode, 400, `economics reachable via ${method}`);
+    assert.strictEqual(urls.length, 0, `economics reached the database via ${method}`);
   }
 });
 
@@ -167,7 +190,7 @@ test('a table the app does not use is refused, and never reaches Supabase', asyn
     assert.strictEqual(urls.length, 0, `${table} reached the database anyway`);
     const body = JSON.parse(res.body);
     assert.match(body.error, new RegExp(table));
-    assert.deepStrictEqual(body.allowed, ['employees', 'economics', 'overtime', 'points']);
+    assert.deepStrictEqual(body.allowed, ['employees', 'overtime', 'points']);
   }
 });
 

@@ -1,27 +1,5 @@
-const { createHmac } = require('crypto');
-
-const SESSION_SECRET  = process.env.SESSION_SECRET;
+const { verifySession, getCookies } = require('./session-lib');
 const SHARED_DRIVE_ID = process.env.SHARED_DRIVE_ID || '0AKnhIL1gZ8TmUk9PVA';
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 // Search for a folder by name within a parent, scoped to the shared drive
 async function findFolder(accessToken, parentId, name) {

@@ -1,8 +1,8 @@
-const { createHmac, randomBytes } = require('crypto');
+const { randomBytes } = require('crypto');
+const { signSession, buildCookie, SESSION_MAX_AGE_SECONDS } = require('./session-lib');
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const SESSION_SECRET       = process.env.SESSION_SECRET;
 const BASE_URL             = process.env.URL || 'http://localhost:8888';
 const REDIRECT_URI         = `${BASE_URL}/auth/callback`;
 
@@ -17,29 +17,6 @@ function isAllowed(email) {
   if (ALLOWED_DOMAIN && e.endsWith('@' + ALLOWED_DOMAIN)) return true;
   if (ALLOWED_USERS.includes(e)) return true;
   return false;
-}
-
-function signSession(payload) {
-  const data = JSON.stringify(payload);
-  const b64  = Buffer.from(data).toString('base64url');
-  const sig  = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-  return `${b64}.${sig}`;
-}
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected   = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function buildCookie(token) {
-  const maxAge = 8 * 60 * 60; // 8 hours
-  return `sfp_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
 exports.handler = async (event) => {
@@ -97,7 +74,7 @@ exports.handler = async (event) => {
         email:   user.email,
         name:    user.name,
         picture: user.picture,
-        exp:     Date.now() + 8 * 60 * 60 * 1000,
+        exp:     Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
         access_token: tokens.access_token
       };
 

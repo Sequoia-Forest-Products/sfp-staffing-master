@@ -4,16 +4,23 @@
 
 async function loadData(){
   try{
-    const [empRes, econRes, otRes, ptRes] = await Promise.all([
+    // The `economics` table is no longer read. Staffing Economics was the only
+    // reader, and it rendered each position's holder next to their hourly rate —
+    // which is what Manufacturing Costs replaced, in aggregate, for exactly that
+    // reason. The table and its position/max reference data are untouched in the
+    // database; nothing in the app reads them.
+    // The `overtime` table is no longer read here either. The pre-approved
+    // allowance comes from /api/preapproved-ot, keyed on employees.id, and it is
+    // loaded when the Reports tab opens rather than on every page load — the old
+    // grid needed the whole table in memory because it saved by replacing it.
+    const [empRes, ptRes] = await Promise.all([
       fetch('/api/data?table=employees'),
-      fetch('/api/data?table=economics'),
-      fetch('/api/data?table=overtime'),
       fetch('/api/data?table=points')
     ]);
     if(empRes.status===401){location.href='/';return;}
 
-    const [empJson, econJson, otJson, ptJson] = await Promise.all([
-      empRes.json(), econRes.json(), otRes.json(), ptRes.json()
+    const [empJson, ptJson] = await Promise.all([
+      empRes.json(), ptRes.json()
     ]);
 
     // Employees
@@ -43,21 +50,6 @@ async function loadData(){
       addressStreet:r.address_street||'', addressCity:r.address_city||'',
       addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
     }));
-
-    // Economics
-    state.economics = (econJson.data||[]).map(r=>({
-      id:r.id, num:r.num, section:r.section||'', position:r.position||'',
-      name:r.name||'', max:parseFloat(r.max_wage)||0
-    }));
-
-    // OT
-    state.ot = {pre:[], post:[], weekend:[]};
-    (otJson.data||[]).forEach(r=>{
-      const rec={id:r.id, name:r.name, hours:parseFloat(r.hours)||0, desc:r.description||''};
-      if(r.ot_type==='Pre-Shift') state.ot.pre.push(rec);
-      else if(r.ot_type==='Post-Shift') state.ot.post.push(rec);
-      else state.ot.weekend.push(rec);
-    });
 
     // Points
     state.points = (ptJson.data||[]).map(r=>({

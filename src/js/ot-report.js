@@ -35,9 +35,12 @@ async function loadOTReport(week){
 
 // The old email hardcoded 10%. It drives an over/under-budget flag managers act on,
 // so it lives in emailSettings and is editable on the Settings tab.
+// graceHrs() moved to core.js in Phase C task 4. It reads emailSettings and is
+// now needed by the employee profile card as well as by this report, and a
+// settings reader that two unrelated screens depend on does not belong in the OT
+// report's module.
 const OT_BUDGET_DEFAULT=10;
 function otBudgetPct(){const v=Number(state.emailSettings.otBudgetPercent);return isFinite(v)&&v>=0?v:OT_BUDGET_DEFAULT;}
-function graceHrs(){const v=Number(state.emailSettings.graceHoursPerEmployee);return isFinite(v)&&v>=0?v:EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee;}
 
 function otWeekRangeLabel(a,b){
   const pa=dateParts(a),pb=dateParts(b);

@@ -175,7 +175,13 @@ const DAILY_INDEX_PAGE_SIZE = 5000;
 // down — so the read falls back once to the projection that predates the
 // migration and says so in the log, rather than failing or silently narrowing
 // forever.
-const EMPLOYEE_COLUMNS = 'id,name,employee_number,department,wage,status,pay_type,cost_class,annual_salary';
+// position_group and position are here for the cost report, which groups by
+// position group and names a person's position when it lists somebody with no
+// group. Neither is used by the payroll import, so a database missing them must
+// cost the cost report and nothing else — hence a rung of its own rather than
+// widening the projection that the import depends on.
+const EMPLOYEE_COLUMNS = 'id,name,employee_number,department,wage,status,pay_type,cost_class,annual_salary,position_group,position';
+const EMPLOYEE_COLUMNS_PRE_PHASE_B = 'id,name,employee_number,department,wage,status,pay_type,cost_class,annual_salary,position_group';
 const EMPLOYEE_COLUMNS_PRE_V2 = 'id,name,employee_number,department,wage,status';
 
 // PostgREST's undefined-column error, in the shapes it actually arrives in:
@@ -187,33 +193,84 @@ function isUndefinedColumnError(err) {
   return /\b42703\b|does not exist|could not find/i.test(String((err && err.message) || ''));
 }
 
-let warnedAboutEmployeeColumns = false;
+// Widest projection first, then one rung narrower, then pre-v2. Each rung drops
+// only what the rung above it added, so a missing column costs exactly the
+// screens that read it. The old fallback was binary — naming one absent column
+// dropped pay_type, cost_class and annual_salary too, which is how a database
+// missing `position` would have taken salaried handling out of the payroll
+// import along with it.
+const EMPLOYEE_PROJECTIONS = [
+  { columns: EMPLOYEE_COLUMNS, missing: null },
+  {
+    columns: EMPLOYEE_COLUMNS_PRE_PHASE_B,
+    missing: 'employees has no `position` column — run SCHEMA_PHASE_B_POSITION.sql. ' +
+             'The cost report will show no position for anyone in the bullpen; ' +
+             'everything else is unaffected.'
+  },
+  {
+    columns: EMPLOYEE_COLUMNS_PRE_V2,
+    missing: 'employees is missing pay_type / cost_class / annual_salary / position_group — ' +
+             'run SCHEMA_V2_MODEL.sql sections 5 and 5b. Salaried staff are identified by ' +
+             'the legacy wage marker and no salary can be converted to an hourly rate ' +
+             'until then, so the cost report will report them as rate gaps.'
+  }
+];
+
+// Warned once per cold start per rung. Every call still tries the full
+// projection first, so the day a migration runs the new columns appear without a
+// deploy — but the log is not one line per read until then.
+const warnedAboutProjection = new Set();
 
 async function fetchEmployees() {
-  try {
-    return await requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS}&order=name.asc`);
-  } catch (err) {
-    if (!isUndefinedColumnError(err)) throw err;
+  let lastErr = null;
 
-    // Once per cold start. Every subsequent call still tries the full projection
-    // first, so the day the migration runs the new columns appear without a
-    // deploy — but the log is not one line per read until then.
-    if (!warnedAboutEmployeeColumns) {
-      warnedAboutEmployeeColumns = true;
-      console.warn(
-        'employees is missing pay_type / cost_class / annual_salary — run ' +
-        'SCHEMA_V2_MODEL.sql sections 5 and 5b. Falling back to the pre-v2 ' +
-        'projection: salaried staff are identified by the legacy wage marker ' +
-        'and no salary can be converted to an hourly rate until then. ' +
-        `(${err.message})`);
+  for (let i = 0; i < EMPLOYEE_PROJECTIONS.length; i++) {
+    const rung = EMPLOYEE_PROJECTIONS[i];
+    try {
+      return await requestRows('GET', `employees?select=${rung.columns}&order=name.asc`);
+    } catch (err) {
+      if (!isUndefinedColumnError(err)) throw err;
+      lastErr = err;
+      const next = EMPLOYEE_PROJECTIONS[i + 1];
+      if (next && next.missing && !warnedAboutProjection.has(i + 1)) {
+        warnedAboutProjection.add(i + 1);
+        console.warn(`${next.missing} (${err.message})`);
+      }
     }
-    return requestRows('GET', `employees?select=${EMPLOYEE_COLUMNS_PRE_V2}&order=name.asc`);
   }
+
+  throw lastErr;
 }
 
 function fetchOvertime() {
   return requestRows('GET',
     'overtime?select=id,name,ot_type,hours,description&order=ot_type.asc,name.asc');
+}
+
+// The standing pre-approved OT allowance, keyed on employees.id. Superseded the
+// name-keyed `overtime` table in Phase C.
+//
+// Like fetchAllocations below, this does NOT swallow a missing table: the caller
+// distinguishes "the migration has not run" (fall back to `overtime`) from "the
+// database is unreachable" (fail), and those two produce very different reports
+// from the same empty array.
+function fetchPreApprovedOt() {
+  return requestRows('GET',
+    'preapproved_ot?select=id,employee_id,ot_type,hours,description,updated_at' +
+    '&order=ot_type.asc,employee_id.asc');
+}
+
+// Cost allocations: the departments a person's cost splits across, keyed on
+// employees.id. Absent rows mean 100% to the primary department, so most of the
+// roster has none — the table is the exception list, not a per-person record.
+//
+// The table does not exist yet (Phase C task 5). Callers handle its absence;
+// this function does not swallow the error, because "the database is
+// unreachable" and "nobody has an allocation" produce the same numbers and only
+// one of them is correct.
+function fetchAllocations() {
+  return requestRows('GET',
+    'employee_allocations?select=id,employee_id,department,percent&order=employee_id.asc');
 }
 
 // ============================================================
@@ -620,9 +677,12 @@ module.exports = {
   // Everything else here is a thin wrapper over it.
   request,
   fetchEmployees,
+  fetchAllocations,
+  fetchPreApprovedOt,
   // Exported so a test can assert the projection rather than the string that
   // builds it, and so the fallback boundary is nameable.
   EMPLOYEE_COLUMNS,
+  EMPLOYEE_COLUMNS_PRE_PHASE_B,
   EMPLOYEE_COLUMNS_PRE_V2,
   fetchDailyHours,
   fetchDaySummaries,

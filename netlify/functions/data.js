@@ -1,7 +1,5 @@
-const { createHmac } = require('crypto');
 const db = require('./db');
-
-const SESSION_SECRET = process.env.SESSION_SECRET;
+const { verifySession, getCookies } = require('./session-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -12,7 +10,16 @@ const SESSION_SECRET = process.env.SESSION_SECRET;
 // The read was not the worst of it. PUT maps to db.replaceAll, which DELETEs
 // every row in the table before inserting, so `PUT /api/data?table=daily_hours`
 // with an empty rows array would have emptied the table.
-const ALLOWED_TABLES = new Set(['employees', 'economics', 'overtime', 'points']);
+//
+// `economics` came OFF this list in Phase C. It backed the Staffing Economics
+// tab, which was replaced by Manufacturing Costs; nothing in the app reads it
+// now. Leaving it allowlisted meant a signed-in caller could still PUT it, and
+// PUT is delete-and-replace — a live write path to the only record of a per
+// position rate ceiling, with no screen that would show it had been emptied.
+// The table and its rows are untouched in the database; they are simply no
+// longer reachable through this endpoint. Phase D can add it back, read-only,
+// when the page that needs it is gated.
+const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 
 // An explicit projection, not a denylist. A column added to `employees` later
 // is excluded until somebody deliberately lists it here, which is the right
@@ -114,26 +121,6 @@ async function queryEmployees() {
   throw lastErr;
 }
 
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
-
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
@@ -161,7 +148,6 @@ exports.handler = async (event) => {
     if (method === 'GET' && table) {
       let orderBy = '';
       if (table === 'employees') orderBy = '?order=name.asc';
-      if (table === 'economics') orderBy = '?order=num.asc';
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
       const rows = table === 'employees'

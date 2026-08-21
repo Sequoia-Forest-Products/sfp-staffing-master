@@ -12,15 +12,15 @@
 // is never trusted, so a tampered or simply stale browser tab cannot write
 // dollars that the file does not contain.
 
-const { createHmac, randomUUID } = require('crypto');
+const { randomUUID } = require('crypto');
 
 const db = require('./payroll-db');
 const {
   buildImport, validateWorkDate, workDateInfo, DEFAULT_TIME_ZONE
 } = require('./payroll-lib');
 const { planWageSync } = require('./wage-sync');
+const { verifySession, getCookies } = require('./session-lib');
 
-const SESSION_SECRET = process.env.SESSION_SECRET;
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || DEFAULT_TIME_ZONE;
 
 // Netlify caps a function request at ~6 MB including base64 inflation. The real
@@ -31,30 +31,6 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 // How far back `days` looks when the caller does not say.
 const DEFAULT_DAY_WINDOW = 30;
-
-// ============================================================
-// SESSION  (identical to data.js — same cookie, same HMAC)
-// ============================================================
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 // ============================================================
 // HELPERS
