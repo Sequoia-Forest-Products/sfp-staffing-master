@@ -173,46 +173,17 @@ function renderEmployees(){
   `;
 }
 
-// The wage input is an HOURLY RATE and nothing else. It used to write the literal
-// string 'Salary' into employees.wage, which is exactly the conflation
-// SCHEMA_V2_MODEL.sql section 5b removes — pay type is its own column now, so
-// this must never put a word where a rate goes.
+// The pay type select. It no longer touches the rate. There is no wage input to
+// clear, and state.editing.wage is now only the value READ from the roster for
+// display — blanking it would make the modal, and then the roster row behind it,
+// show nothing for a rate the database still holds and BBSI still maintains.
 //
-// Somebody typing 'salary' out of habit is still meaning something real, so it
-// is honoured as a pay-type change rather than discarded: pay type flips to
-// Salaried, the rate is cleared, and the re-render disables the field.
-function formatWageInput(input) {
-  const val = input.value.trim();
-  if (isSalaried(state.editing)) { state.editing.wage = ''; return; }
-
-  if (val.toLowerCase() === 'salary') {
-    state.editing.payType = 'Salaried';
-    state.editing.wage = '';
-    render();
-    return;
-  }
-  if (!val) { state.editing.wage = ''; input.value = ''; return; }
-
-  const num = parseFloat(val.replace(/[$,]/g, ''));
-  if (!isNaN(num)) {
-    const formatted = '$' + num.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    input.value = formatted;
-    state.editing.wage = num;
-    return;
-  }
-  // Not a number and not the old word. It cannot be stored, so it is cleared on
-  // the spot rather than left looking accepted and then dropped on save.
-  input.value = '';
-  state.editing.wage = '';
-}
-
-// The pay type select. Switching to Salaried clears the hourly rate in the same
-// move — leaving a stale rate behind on a salaried person is how a number nobody
-// entered ends up in a report. Re-renders so the wage field's disabled state and
-// its note follow the choice immediately.
+// Flipping somebody to Salaried therefore leaves employees.wage exactly as the
+// import left it. Nothing reads it for a salaried person: isSalaried() consults
+// pay_type first and only falls back to the wage column when pay_type is absent,
+// so the stale rate cannot resurface as a fact about them.
 function setPayType(v) {
   state.editing.payType = v === 'Salaried' ? 'Salaried' : 'Hourly';
-  if (state.editing.payType === 'Salaried') state.editing.wage = '';
   render();
 }
 
@@ -785,9 +756,10 @@ function birthdayField(e){
 // below matches profileReadBody() group for group, so a field cannot be readable
 // and not editable, or the other way round.
 //
-// No wage input and no annual_salary input, in either mode. Hourly rates come
-// from the daily payroll file and salary is Phase D; the roster's own Edit modal
-// still has the wage field for the cases that need it.
+// No wage input and no annual_salary input, in either mode — and as of Phase D
+// the roster's Edit modal has none either, so there is no longer anywhere in the
+// app that types an hourly rate. That was the modal's last reason to exist as a
+// separate field list; collapsing the two surfaces is what remains.
 function profileEditBody(e){
   const bdayInput=birthdayInputValue(e.birthday);
   const bdayRaw=String(e.birthday==null?'':e.birthday).trim();
@@ -900,9 +872,11 @@ const profileStyle=`<style>
 </style>`;
 
 function openEdit(idx){
-  // The roster's own Edit modal. Kept alongside the profile card because it is
-  // the only surface with the hourly wage field, and Add uses it too. The card's
-  // Edit deliberately has no compensation field.
+  // The roster's own Edit modal. It used to be kept alongside the profile card
+  // because it was the only surface with an hourly wage input; Phase D removed
+  // that input, since BBSI owns the column and the server refuses it on write.
+  // What still justifies the modal is Add — a person who does not exist yet has
+  // no profile card to open. Neither surface has a compensation field now.
   state.profile=null;
   state.editing={...state.employees[idx],_idx:idx,_isNew:false};
   render();
@@ -924,25 +898,20 @@ async function saveEdit(){
 
   setSyncStatus('saving');
   try{
-    // Pay type is the fact; wage is only ever an hourly rate. A salaried person
-    // is written with a NULL wage — never the literal 'Salary', which is the
-    // sentinel SCHEMA_V2_MODEL.sql section 5b retires. Salaried compensation is
-    // annual_salary, edited elsewhere.
+    // WAGE IS NOT WRITTEN FROM HERE, in either direction. It is BBSI's column:
+    // payroll-db.updateEmployeeWage sets it from the daily file with the service
+    // key, and permissions-lib refuses it on this path for every tier. So this
+    // save neither sends it nor edits the local copy — e.wage stays whatever the
+    // roster read, and the row behind the modal keeps showing the real rate.
+    //
+    // Pay type IS written, and is the only fact about compensation this form
+    // still asserts. Flipping to Salaried no longer nulls the rate: isSalaried()
+    // reads pay_type first, so a leftover value cannot be mistaken for theirs.
     const payType = isSalaried(e) ? 'Salaried' : 'Hourly';
-    let wage = e.wage;
-    if(payType === 'Salaried'){
-      wage = null;
-    } else if(typeof wage === 'string'){
-      // A rate or nothing. Anything unparseable is NOT stored as text — that is
-      // how 'Salary' got into this column in the first place.
-      const parsed = parseFloat(wage.replace(/[$,]/g,''));
-      wage = isNaN(parsed) ? null : parsed;
-    }
-    e.wage = wage === null ? '' : wage;   // what the roster row will render
     e.payType = payType;
 
     const row={
-      name:e.name, wage:wage, pay_type:payType, status:e.status,
+      name:e.name, pay_type:payType, status:e.status,
       // clock_in / clock_out are no longer written; see the note in the form.
       days:e.days,
       // Normalized, preserved or null — never a fabricated default. See
@@ -1048,11 +1017,16 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Pay type</label><select onchange="setPayType(this.value)">
             ${PAY_TYPES.map(t=>`<option value="${t}" ${payTypeOf(e)===t?'selected':''}>${t}</option>`).join('')}
           </select></div>
-          <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label><input type="text" value="${salariedHere?'':esc(String(e.wage==null?'':e.wage))}" id="wageInput"
-            ${salariedHere?'disabled readonly placeholder="—"':''}
-            oninput="state.editing.wage=this.value"
-            onblur="formatWageInput(this)"></div>
-          ${salariedHere?`<div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Hourly rates come from the daily payroll file; a salaried person has none, and their salary is entered on the Salaries &amp; Wages page, not here.</div></div>`:''}
+          <!-- READ-ONLY, and deliberately not an input. employees.wage belongs to BBSI:
+               payroll-db.updateEmployeeWage rewrites it from the daily file with the
+               service key, so a rate typed here would be replaced by the next morning's
+               import with nobody told. The server now refuses the column on write too
+               (permissions-lib, EMPLOYEE_WRITABLE_BASE) — a box that 403s on save is
+               worse than no box. The value is still SHOWN, because the question "what is
+               this person paid" is a fair one to ask of an employee record. -->
+          <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
+            <div style="padding:8px 0;font-size:13px;color:var(--text)">${esc(fmtWage(e))}</div></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">${salariedHere?'A salaried person has no hourly rate. Their salary is entered on the Salaries &amp; Wages page.':'Hourly rates come from the daily payroll file and are not editable here — the import would overwrite anything typed.'}</div></div>
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
           <!-- The three taxonomy axes: three separate selects, three separate columns,
                and no handler here touches more than its own field. Changing the

@@ -103,6 +103,9 @@ test('preapproved_ot is not reachable through /api/data, so it cannot be replace
       });
       assert.strictEqual(res.statusCode, 400, `reachable via ${method}`);
     }
+    // Zero, and that is not incidental: Phase D resolves the caller's permission
+    // tiers LAZILY, after the table allowlist. Resolving them up front would
+    // cost a round-trip on every request the allowlist is about to refuse.
     assert.strictEqual(urls.length, 0, 'it reached the database anyway');
   } finally {
     global.fetch = realFetch;

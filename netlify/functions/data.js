@@ -1,5 +1,6 @@
 const db = require('./db');
 const { verifySession, getCookies } = require('./session-lib');
+const perms = require('./permissions-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -30,40 +31,18 @@ const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 // payload of every signed-in user's browser whether or not anything rendered
 // it — and today every sequoiafp.com account has full access. It stays out
 // until the Salaries & Wages tier exists to gate it.
-const EMPLOYEE_COLUMNS = [
-  'id', 'name', 'wage', 'dept', 'status', 'days',
-  'clock_in', 'clock_out', 'break_1', 'break_2',
-  'birthday', 'phone', 'language', 'email',
-  'sms_opted_out', 'text_bolt', 'drive_folder_id',
-  'employee_number', 'department', 'pay_type', 'cost_class', 'position_group',
-  // Phase B. The address columns have existed since SCHEMA_V2_MODEL.sql section
-  // 4 but were never projected, so the profile card could not have shown them.
-  // `position` is the specific job within a position group, and unlike
-  // position_group it applies to everyone — the CEO has a position and no
-  // position group.
-  'position', 'address_street', 'address_city', 'address_state', 'address_postal_code'
-];
-
-// The Phase B additions, listed separately so a database missing them degrades to
-// "no position and no address on the profile card" instead of falling all the way
-// back to pre-v2 and losing pay_type, cost_class and position_group from every
-// screen that reads them. The old fallback was binary; naming one absent column
-// took the whole classification model out of the payload with it.
-const EMPLOYEE_COLUMNS_PRE_PHASE_B = EMPLOYEE_COLUMNS.filter(
-  c => c !== 'position' && !c.startsWith('address_')
-);
-
-// pay_type, cost_class and position_group do not exist until
-// SCHEMA_V2_MODEL.sql has run. Naming a missing column is a 400 from PostgREST,
-// which would take the roster — and so the whole app — down. Fall back once and
-// carry on, the same way writeEmployeeRow does for writes.
-const EMPLOYEE_COLUMNS_PRE_V2 = [
-  'id', 'name', 'wage', 'dept', 'status', 'days',
-  'clock_in', 'clock_out', 'break_1', 'break_2',
-  'birthday', 'phone', 'language', 'email',
-  'sms_opted_out', 'text_bolt', 'drive_folder_id',
-  'employee_number', 'department'
-];
+//
+// PHASE D: THE LIST NO LONGER LIVES HERE. permissions-lib.js is the one place
+// that decides who may see and write which columns, and the projection is built
+// from it per request out of the caller's tiers — see projectionsFor below. A
+// reader without the salaries tier gets a select that does not name
+// annual_salary at all: absent from the QUERY, not merely filtered out of the
+// answer, so the column never crosses the wire even once.
+//
+// The three hardcoded lists that used to sit here are gone rather than kept
+// alongside it. A second copy of a permission list is not redundancy, it is a
+// pair of lists that will disagree, and the one that loses the argument is
+// whichever the next edit happens to touch.
 
 // Second layer, and it earns its keep. The projection above is what SHOULD keep
 // annual_salary out of the payload, but it is a single string in a single place:
@@ -85,35 +64,104 @@ function isUndefinedColumnError(message) {
   return /\b42703\b|does not exist|could not find/i.test(String(message || ''));
 }
 
-// Widest projection first, then one step narrower, then pre-v2. Each rung drops
-// only what the rung above it added, so a missing column costs exactly the
-// screens that use it. Naming a column PostgREST does not have is a 400, which
-// would take the roster — and so the whole app — down.
-const EMPLOYEE_PROJECTIONS = [
-  { columns: EMPLOYEE_COLUMNS, missing: null },
-  {
-    columns: EMPLOYEE_COLUMNS_PRE_PHASE_B,
-    missing: 'employees is missing the Phase B columns (position, address_*) — run ' +
-             'SCHEMA_PHASE_B_POSITION.sql. The profile card will show no position and no address.'
-  },
-  {
-    columns: EMPLOYEE_COLUMNS_PRE_V2,
-    missing: 'employees is missing the v2 columns — run SCHEMA_V2_MODEL.sql. Falling back ' +
-             'to the pre-v2 projection.'
-  }
-];
+// The projection ladder, built FROM the caller's permitted columns.
+//
+// Built from, not intersected with. The first version of this filtered the
+// hardcoded projection list down to what the tiers allowed — which can
+// only ever REMOVE columns, so annual_salary (never in that list) could not
+// appear for anybody, tier or no tier. The permitted set has to be the source
+// and the rungs have to subtract from it.
+//
+// Each rung drops exactly what the rung above it added, so a database missing
+// one migration costs the screens that use those columns and nothing else. The
+// order is newest-migration-first: Phase D's hire_date does not exist until
+// SCHEMA_PHASE_D_PERMISSIONS.sql runs, and without its own rung the full
+// projection would 400 and fall all the way through to pre-Phase-B, quietly
+// taking `position` and the addresses with it.
+const PHASE_D_COLUMNS = ['hire_date'];
+const PHASE_B_COLUMNS = ['position', 'address_street', 'address_city', 'address_state', 'address_postal_code'];
+const V2_COLUMNS      = ['pay_type', 'cost_class', 'position_group', 'annual_salary'];
 
-async function queryEmployees() {
+function projectionsFor(tiers) {
+  const without = (cols, drop) => cols.filter(c => !drop.includes(c));
+
+  const full      = perms.employeeReadColumns(tiers);
+  const preD      = without(full, PHASE_D_COLUMNS);
+  const prePhaseB = without(preD, PHASE_B_COLUMNS);
+  const preV2     = without(prePhaseB, V2_COLUMNS);
+
+  return [
+    { columns: full, missing: null },
+    {
+      columns: preD,
+      missing: 'employees has no hire_date column — run SCHEMA_PHASE_D_PERMISSIONS.sql. ' +
+               'Nothing reads it yet, so this costs nothing today.'
+    },
+    {
+      columns: prePhaseB,
+      missing: 'employees is missing the Phase B columns (position, address_*) — run ' +
+               'SCHEMA_PHASE_B_POSITION.sql. The profile card will show no position and no address.'
+    },
+    {
+      columns: preV2,
+      missing: 'employees is missing the v2 columns — run SCHEMA_V2_MODEL.sql. Falling back ' +
+               'to the pre-v2 projection.'
+    }
+  ];
+}
+
+// The write gate.
+//
+// REFUSES, it does not silently drop. A 200 for a write that discarded half the
+// body reports success for something that did not happen, which is how somebody
+// comes to believe a salary was recorded. The response names the columns.
+//
+// Only `employees` is gated by column: it is the table that holds compensation.
+// overtime and points carry no pay and are left as they were.
+function gateWrite(table, body, tiers) {
+  if (table !== 'employees') return { body };
+
+  const { permitted, refused } = perms.partitionWrite(body, tiers);
+  if (!refused.length) return { body: permitted };
+
+  return {
+    error: {
+      statusCode: 403,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({
+        error: 'Not permitted to write: ' + refused.join(', '),
+        refused,
+        // Said plainly, because the two refusals have different remedies and a
+        // generic "forbidden" would send somebody looking for the wrong one.
+        detail: refused.includes('wage')
+          ? 'Hourly rates come from the daily payroll file and are overwritten every ' +
+            'morning; nothing in the app may set them. Other refused columns require ' +
+            'a permission tier this account does not hold.'
+          : 'This column requires a permission tier this account does not hold.'
+      })
+    }
+  };
+}
+
+async function queryEmployees(tiers) {
   let lastErr = null;
 
-  for (const rung of EMPLOYEE_PROJECTIONS) {
+  // Built ONCE, and indexed by position. projectionsFor returns fresh objects
+  // every call, so asking a second copy of the ladder for indexOf(rung) finds
+  // nothing, returns -1, and lands on rung 0 — whose `missing` is null. The
+  // effect was not a crash but a silence: the console warning naming the
+  // migration that had not been run would never have printed.
+  const ladder = projectionsFor(tiers);
+
+  for (let i = 0; i < ladder.length; i++) {
+    const rung = ladder[i];
     try {
       const rows = await db.query('employees', `?select=${rung.columns.join(',')}&order=name.asc`);
       return pickColumns(rows, rung.columns);
     } catch (err) {
       if (!isUndefinedColumnError(err.message)) throw err;
       lastErr = err;
-      const next = EMPLOYEE_PROJECTIONS[EMPLOYEE_PROJECTIONS.indexOf(rung) + 1];
+      const next = ladder[i + 1];
       if (next && next.missing) console.warn(next.missing);
     }
   }
@@ -126,6 +174,13 @@ exports.handler = async (event) => {
 
   const session = verifySession(getCookies(event).sfp_session || '');
   if (!session) return { statusCode: 401, headers, body: JSON.stringify({ error: 'Unauthorized' }) };
+
+  // Resolved LAZILY and at most once per request. Two reasons it is not
+  // resolved up front: a request the table allowlist is about to refuse should
+  // not cost a permissions round-trip first, and the tables that carry no pay
+  // never need the answer at all.
+  let tiersPromise = null;
+  const callerTiers = () => (tiersPromise || (tiersPromise = perms.fetchTiers(session.email, db)));
 
   const method = event.httpMethod;
   const params = event.queryStringParameters || {};
@@ -151,7 +206,7 @@ exports.handler = async (event) => {
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
       const rows = table === 'employees'
-        ? await queryEmployees()
+        ? await queryEmployees(await callerTiers())
         : await db.query(table, orderBy);
       return { statusCode: 200, headers, body: JSON.stringify({ data: rows }) };
     }
@@ -159,14 +214,18 @@ exports.handler = async (event) => {
     // POST /api/data?table=employees — insert single row
     if (method === 'POST' && table) {
       const body = JSON.parse(event.body || '{}');
-      const row = await db.insert(table, body);
+      const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
+      if (gated.error) return gated.error;
+      const row = await db.insert(table, gated.body);
       return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
     }
 
     // PATCH /api/data?table=employees&id=uuid — update single row
     if (method === 'PATCH' && table && params.id) {
       const body = JSON.parse(event.body || '{}');
-      const row = await db.update(table, params.id, body);
+      const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
+      if (gated.error) return gated.error;
+      const row = await db.update(table, params.id, gated.body);
       return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
     }
 
@@ -177,6 +236,27 @@ exports.handler = async (event) => {
     }
 
     // PUT /api/data?table=overtime — replace entire table (for OT and Points batch saves)
+    //
+    // NOT employees, ever. replaceAll DELETES the table and re-inserts the body,
+    // so a column gate is the wrong instrument here: refusing annual_salary in
+    // the payload would still leave a request that drops every employee row and
+    // rebuilds the roster from whatever the browser happened to be holding. The
+    // gate on PATCH would be worth nothing next to a door like that.
+    //
+    // Nothing PUTs employees. Audited across the frontend: /api/data?table=
+    // employees is used with GET, POST and PATCH only, and points is the sole
+    // PUT caller. So this costs nothing and closes the one write path into the
+    // compensation table that the column gate cannot cover.
+    if (method === 'PUT' && table === 'employees') {
+      return {
+        statusCode: 405, headers,
+        body: JSON.stringify({
+          error: 'PUT is not allowed on employees',
+          detail: 'This method replaces the whole table. Employee rows are written one ' +
+                  'at a time with POST and PATCH.'
+        })
+      };
+    }
     if (method === 'PUT' && table) {
       const body = JSON.parse(event.body || '{}');
       const rows = await db.replaceAll(table, body.rows || []);
