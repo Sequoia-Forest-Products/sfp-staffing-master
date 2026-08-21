@@ -28,31 +28,11 @@
 // header) cannot be set by a cross-site form either. So: reads over GET, writes
 // and sends over POST. Parameters may be query string or JSON body on a POST.
 
-const { createHmac, timingSafeEqual } = require('crypto');
+const { timingSafeEqual } = require('crypto');
 const { runPayrollIngest, runMissedDeliveryCheck } = require('./payroll-email-lib');
+const { verifySession, getCookies } = require('./session-lib');
 
-const SESSION_SECRET = process.env.SESSION_SECRET;
 const TRIGGER_SECRET = process.env.PAYROLL_TRIGGER_SECRET;
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected   = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 function secretMatches(provided) {
   if (!TRIGGER_SECRET || !provided) return false;

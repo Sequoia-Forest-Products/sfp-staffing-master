@@ -10,12 +10,10 @@
 // ot-report-lib.js, which is pure, so the arithmetic is tested without a network
 // or a database anywhere near it.
 
-const { createHmac } = require('crypto');
 const db = require('./db');
 const payrollDb = require('./payroll-db');
 const { weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS } = require('./ot-report-lib');
-
-const SESSION_SECRET = process.env.SESSION_SECRET;
+const { verifySession, getCookies } = require('./session-lib');
 
 // The payroll vendor sends at ~6:04 AM Pacific, so Pacific is the clock that
 // decides what "today" means here. birthday-lib.js deliberately uses
@@ -33,26 +31,6 @@ const WEEK_INDEX_PAGE_SIZE = 5000;
 const WEEK_INDEX_MAX_PAGES = 40;
 
 const DAY_MS = 86400000;
-
-function verifySession(token) {
-  try {
-    const [b64, sig] = token.split('.');
-    const expected = createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
-    if (sig !== expected) return null;
-    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
-    if (payload.exp < Date.now()) return null;
-    return payload;
-  } catch { return null; }
-}
-
-function getCookies(event) {
-  return Object.fromEntries(
-    (event.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-}
 
 // ---- calendar helpers -------------------------------------------------
 // Same rule as ot-report-lib.js: split the string and use Date.UTC, never
