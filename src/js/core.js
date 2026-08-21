@@ -31,7 +31,11 @@ function parseSettingsValue(v){
 }
 
 let state = {
-  tab:'employees', employees:[], economics:[],
+  tab:'employees', employees:[],
+  // One entry per cost class, created on demand by costView(). Keyed by the
+  // class itself so the Manufacturing Costs and Overhead tabs cannot render each
+  // other's numbers.
+  cost:{},
   ot:{post:[],weekend:[],pre:[]}, points:[],
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
@@ -61,9 +65,9 @@ function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{mini
 // is no longer a fact about the wage column — see isSalaried below. A wage value
 // is still accepted so a caller holding nothing else keeps the legacy reading.
 //
-// Everything routes through isSalaried so the roster and Staffing Economics
-// cannot disagree about the same employee: a lowercase 'salary' used to render
-// as $NaN here while being correctly excluded there. A blank wage on an hourly
+// Everything routes through isSalaried so no two screens can disagree about the
+// same employee: a lowercase 'salary' used to render as $NaN here while being
+// correctly excluded from the costing report. A blank wage on an hourly
 // person is unknown, not salaried — it used to display as 'Salary', which made a
 // half-entered new hire look like staff they are not.
 function fmtWage(empOrWage){
@@ -80,8 +84,7 @@ function fmtWage(empOrWage){
 // lived inside employees.wage as the literal string 'Salary', and the migration
 // NULLS wage for salaried people — so code that decides this by reading wage
 // alone reads every salaried person as HOURLY the moment the migration runs,
-// which puts them into Staffing Economics and into the clock-grace headcount
-// and silently inflates both.
+// which puts them into the clock-grace headcount and silently inflates it.
 //
 // Hence the order: pay_type when it is present and recognised, the legacy wage
 // marker only as a fallback. That is correct before AND after the migration, and
@@ -357,13 +360,24 @@ function switchTab(tab,el){
     if(view.load) view.load();
   }
   if(tab==='dailyhours'&&!state.dailyLoaded&&!state.dailyLoading) loadDailyDays();
+  // Same rule as the payroll tabs: the cost report is its own endpoint, so it
+  // loads on first open rather than on every page load.
+  if(tab==='costs') loadCostsOnce([COST_CLASS_MANUFACTURING]);
+  if(tab==='overhead') loadCostsOnce(OVERHEAD_CLASSES);
 }
 
 function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  else if(state.tab==='economics')el.innerHTML=renderEcon();
+  // 'economics' is gone. Staffing Economics assigned people to positions and
+  // showed each one's hourly rate next to a max, which is precisely what this
+  // phase stopped rendering — there is no permissions system, so that page was
+  // readable by every signed-in account. Manufacturing Costs answers the costing
+  // question in aggregate; the position/max reference data is still in the
+  // `economics` table, untouched, with nothing reading it.
+  else if(state.tab==='costs')el.innerHTML=renderCosts();
+  else if(state.tab==='overhead')el.innerHTML=renderOverhead();
   // 'overtime', 'points' and 'otreport' are no longer tabs; they are sub-views
   // of 'reports'. Their render functions are unchanged and are called from
   // renderReports().

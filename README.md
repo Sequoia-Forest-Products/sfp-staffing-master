@@ -22,14 +22,18 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-- **Employees tab** — roster with search, filter, sort, inline edit modals, SMS reachability column, SMS opt-out toggle, Drive folder linking
-- **Staffing Economics tab** — position assignment with wage, burdened cost, max wage, and variance
-- **Overtime tab** — view/edit for Before Shift, After Shift, and Weekend Pre-Approved OT
-- **Points Tracker tab** — attendance points with disciplinary flags, full CRUD
+- **Employees tab** — roster with search, filter, sort, inline edit modals, the employee profile
+  card, SMS reachability column, SMS opt-out toggle, Drive folder linking
+- **Manufacturing Costs tab** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
+  department and position group, with burdened cost and cost per MBF. Replaced Staffing Economics.
+  Aggregates only: no individual's pay rate is sent to the browser, and a grouping too small to
+  average withholds its money rather than publishing somebody's rate as a bucket average.
+- **Overhead tab** — the same report for `Mill Overhead` and `SG&A`, broken out by department
 - **Daily Hours tab** — manual `.xlsx` payroll upload with preview-before-commit, imported-day
   history, department re-stamping, and the email pipeline's issue queue
-- **OT Report tab** — weekly All / Pre-Approved / Net OT, scheduled vs. weekend split, and a
-  department breakdown, on top of `daily_hours`
+- **Reports tab** — three sub-views: **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend),
+  the weekly **OT Report** (All / Pre-Approved / Net OT, scheduled vs. weekend split, department
+  breakdown, manager email), and the **Points Tracker** (attendance points, disciplinary flags)
 - **Payroll email ingestion** — hourly scheduled function reads the `payroll import` Gmail
   label on `info@` over IMAP and imports the daily report automatically
 - **Birthday notifications** — daily scheduled function sends bilingual TextBolt texts
@@ -163,7 +167,7 @@ having no classification at all.
 
 `pay_type` replaces the old convention of storing the literal string `Salary` in `wage`. That made
 one column both the wage and the pay-type flag, and the two disagreed: a lowercase `salary`
-rendered as `$NaN` on the roster while being correctly excluded from Staffing Economics. `wage` now
+rendered as `$NaN` on the roster while being correctly excluded from the costing report. `wage` now
 holds an hourly rate or nothing; salaried compensation lives in `annual_salary`.
 Set it before importing payroll data — `daily_hours` snapshots the department at import time, so
 a row imported for an employee with no department lands as Unassigned.
@@ -177,6 +181,18 @@ has been removed now that it is done; departments are set per employee in the ed
 
 ### economics
 `id, num, section, position, name, max_wage`
+
+The staffing plan that backed the **Staffing Economics** tab: a numbered list of positions, each
+with the employee assigned to it and a maximum hourly rate to compare against. Phase C replaced
+that tab with **Manufacturing Costs**, which reports in aggregate, because the old page rendered
+every position's holder next to their hourly rate and there is no permissions system — anything on
+screen is readable by every signed-in account.
+
+**Nothing in the app reads or writes this table now.** The rows are intact, including `max_wage`,
+which is the only place a rate ceiling per position is recorded; the wage-vs-max variance column
+went with the tab and has no replacement. `position` here is NOT authoritative — `employees.position`
+is, loaded from the classification worksheet. The table stays allowlisted in `/api/data`, so it is
+still readable (and, via PUT, still replaceable) by a signed-in caller even though no screen asks.
 
 ### overtime
 `id, name, ot_type (Pre-Shift|Post-Shift|Weekend), hours, description`

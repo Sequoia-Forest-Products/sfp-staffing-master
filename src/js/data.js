@@ -4,16 +4,20 @@
 
 async function loadData(){
   try{
-    const [empRes, econRes, otRes, ptRes] = await Promise.all([
+    // The `economics` table is no longer read. Staffing Economics was the only
+    // reader, and it rendered each position's holder next to their hourly rate —
+    // which is what Manufacturing Costs replaced, in aggregate, for exactly that
+    // reason. The table and its position/max reference data are untouched in the
+    // database; nothing in the app reads them.
+    const [empRes, otRes, ptRes] = await Promise.all([
       fetch('/api/data?table=employees'),
-      fetch('/api/data?table=economics'),
       fetch('/api/data?table=overtime'),
       fetch('/api/data?table=points')
     ]);
     if(empRes.status===401){location.href='/';return;}
 
-    const [empJson, econJson, otJson, ptJson] = await Promise.all([
-      empRes.json(), econRes.json(), otRes.json(), ptRes.json()
+    const [empJson, otJson, ptJson] = await Promise.all([
+      empRes.json(), otRes.json(), ptRes.json()
     ]);
 
     // Employees
@@ -42,12 +46,6 @@ async function loadData(){
       position:r.position||'',
       addressStreet:r.address_street||'', addressCity:r.address_city||'',
       addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
-    }));
-
-    // Economics
-    state.economics = (econJson.data||[]).map(r=>({
-      id:r.id, num:r.num, section:r.section||'', position:r.position||'',
-      name:r.name||'', max:parseFloat(r.max_wage)||0
     }));
 
     // OT

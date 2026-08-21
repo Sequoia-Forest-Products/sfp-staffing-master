@@ -86,7 +86,11 @@ test('annual_salary never reaches the response body, even if the database return
   assert.ok(!/104000/.test(body), 'the salary VALUE is in the response');
 });
 
-test('wage is still returned — the roster renders it and economics computes from it', async () => {
+// The roster still renders an hourly rate per person, on the Employees tab. That
+// predates this phase and is unchanged; what Manufacturing Costs stopped doing is
+// rendering rates on a COSTING page, where the whole point is the aggregate.
+// Removing wage from this projection is Phase D's job, with permissions.
+test('wage is still returned — the roster renders it', async () => {
   const urls = stubFetch([]);
   await get('employees');
   assert.match(urls[0], /\bwage\b/);
