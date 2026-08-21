@@ -186,7 +186,12 @@ async function syncToSheet(){
         // Absent is not null: PostgREST leaves a column a PATCH does not name
         // alone, so this loop re-writing every row does NOT blank them.
         days:e.days,
-        break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
+        // THIS LOOP RE-WRITES EVERY ROW ON THE ROSTER, which is what made the
+        // old `e.break1 || '7:00 AM'` here so much worse than the same
+        // expression in saveEdit: one click of Sync stamped a fabricated 7:00 AM
+        // and 12:45 PM onto every employee who had no break time on file, and
+        // nothing on any screen would have shown it happening.
+        break_1:breakStorageValue(e.break1), break_2:breakStorageValue(e.break2),
         birthday:e.birthday, phone:e.phone, language:e.language,
         email:e.email, sms_opted_out:e.smsOptedOut===true,
         drive_folder_id:e.driveFolderId||null,

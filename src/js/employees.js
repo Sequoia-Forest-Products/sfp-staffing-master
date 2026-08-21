@@ -353,19 +353,51 @@ function closeProfile(){
   render();
 }
 
+// ONE Edit button for the whole card.
+//
+// The card used to have three save mechanics on it: Edit/Save for the employee
+// row, a per-category Save for pre-approved OT, and a Save/Revert pair for the
+// allocation. Three buttons, and no way to tell from the screen which one
+// committed what. Now Edit makes everything editable and Save commits all of it.
+//
+// What did NOT change is how the writes reach the database. Pre-approved OT is
+// still one row per call and allocations still go through one transaction — see
+// preApprovedCommit and allocCommit. Batching the calls behind one button is a
+// UI change; changing the endpoints' shape would undo two bug fixes.
 function startProfileEdit(){
   if(state.profile===null) return;
-  state.editing={...state.employees[state.profile.idx],_idx:state.profile.idx,_isNew:false};
+  const person=state.employees[state.profile.idx];
+  state.editing={...person,_idx:state.profile.idx,_isNew:false};
+  // Both drafts are seeded here so Cancel has something definite to throw away
+  // and Save has something definite to compare against.
+  if(person.id){
+    state.editing._pre=preApprovedDraft(person.id);
+    allocDraft(person.id, hasDepartment(person.department)?person.department:'');
+  }
   render();
-  if(needsDriveLookup(state.employees[state.profile.idx])) setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  if(needsDriveLookup(person)) setTimeout(()=>loadDriveLink(person.name),50);
 }
 
+// Cancel discards ALL of it — the employee fields, the allowance draft and the
+// allocation draft. Leaving one behind is how a discarded edit reappears on the
+// next Save.
 function cancelProfileEdit(){
+  const person=state.profile!==null?state.employees[state.profile.idx]:null;
+  if(person&&person.id&&state.allocDrafts) delete state.allocDrafts[String(person.id)];
   state.editing=null;
   render();
-  if(state.profile!==null&&needsDriveLookup(state.employees[state.profile.idx])){
-    setTimeout(()=>loadDriveLink(state.employees[state.profile.idx].name),50);
+  if(person&&needsDriveLookup(person)){
+    setTimeout(()=>loadDriveLink(person.name),50);
   }
+}
+
+// True while this specific person's card is in edit mode. Both sections below
+// ask this rather than reading state.editing directly, so the roster's own Edit
+// modal — which renders neither section — cannot accidentally put them into edit
+// mode for the wrong record.
+function profileEditing(e){
+  return state.profile!==null && state.editing!==null
+    && !!e && !!e.id && String(state.editing.id)===String(e.id);
 }
 
 // The position vocabulary, read from the roster at render time rather than
@@ -430,7 +462,16 @@ function renderProfile(){
   const editing=state.editing!==null;
   const e=editing?state.editing:person;
 
-  const body=editing?profileEditBody(e):profileReadBody(e);
+  // The two Phase C sections render in BOTH modes and are appended HERE rather
+  // than inside either body — they were in profileReadBody only, so switching to
+  // edit mode made them vanish entirely. Appending once is what stops the two
+  // bodies from disagreeing about which sections exist.
+  const body=(editing?profileEditBody(e):profileReadBody(e))
+    + profilePreApproved(e) + profileAllocation(e);
+  // The database would refuse a partial allocation anyway; letting somebody
+  // press Save to discover that is worse than not offering it. Gated here rather
+  // than inside the allocation block so the one Save button owns the decision.
+  const allocOk=!editing||!person.id||allocDraftValid(person.id);
 
   return `
     <div class="modal-bg" onclick="if(event.target===this)closeProfile()">
@@ -442,8 +483,9 @@ function renderProfile(){
         <div class="modal-body">${body}</div>
         <div class="modal-footer">
           ${editing
-            ? `<button class="btn btn-outline" onclick="cancelProfileEdit()">Cancel</button>
-               <button class="btn btn-primary" onclick="saveEdit()">Save</button>`
+            ? `${allocOk?'':'<span style="font-size:11px;color:var(--brick);margin-right:auto;line-height:1.4">The cost allocation must add up to 100% before this can be saved.</span>'}
+               <button class="btn btn-outline" onclick="cancelProfileEdit()">Cancel</button>
+               <button class="btn btn-primary" ${allocOk?'':'disabled'} onclick="saveEdit()">Save</button>`
             : `<button class="btn btn-outline" onclick="closeProfile()">Close</button>
                <button class="btn btn-primary" onclick="startProfileEdit()">Edit</button>`}
         </div>
@@ -476,6 +518,21 @@ function driveLinkBlock(e){
     return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">Open HR file in Drive</a>`;
   }
   return '<span style="color:var(--muted)">No folder yet — one is created for a new employee automatically, or on the first upload in Drive.</span>';
+}
+
+// One break time, read-only. Three states, because a reader needs to tell them
+// apart: a formatted time, nothing on file, and something on file that cannot be
+// read. The last one used to render as the raw stored string —
+// '1899-12-30T20:45:00.000Z' — which looked like a rendering fault rather than
+// data worth fixing.
+function breakField(label,value){
+  const shown=fmtTime(value);
+  if(shown) return pf(label,shown);
+  const raw=String(value==null?'':value).trim();
+  if(raw==='') return pf(label,'',{empty:'not set'});
+  return pf(label,
+    `<span style="color:#b8860b;font-weight:700">Unreadable — ${esc(raw)}</span>`,
+    {html:true});
 }
 
 function profileReadBody(e){
@@ -525,12 +582,11 @@ function profileReadBody(e){
       pf('HR file',`<span id="driveLinkArea">${driveLinkBlock(e)}</span>`,{html:true})
     ])}
     ${profileGroup('Schedule',[
-      pf('Days',e.days),
-      pf('Break 1',e.break1),
-      pf('Break 2',e.break2)
+      pf('Days',e.days,{empty:'not set'}),
+      breakField('Break 1',e.break1),
+      breakField('Break 2',e.break2)
     ])}
-    ${profilePreApproved(e)}
-    ${profileAllocation(e)}`;
+`;
 }
 
 // ============================================================
@@ -583,28 +639,43 @@ function profilePreApproved(e){
     ]);
   }
 
+  const editing=profileEditing(e);
+  const draft=(editing&&state.editing._pre)?state.editing._pre:null;
   const mine=preApprovedFor(id);
-  const total=PREAPPROVED_TYPES.reduce((t,k)=>t+(mine[k]?Number(mine[k].hours)||0:0),0);
+
+  const hoursOf=(type)=>draft
+    ? String(draft[type]?draft[type].hours:'' )
+    : (mine[type]?String(mine[type].hours):'');
+  const descOf=(type)=>draft
+    ? String(draft[type]?draft[type].description:'')
+    : (mine[type]?(mine[type].description||''):'');
+
+  const total=PREAPPROVED_TYPES.reduce((t,k)=>t+(Number(hoursOf(k))||0),0);
 
   const rows=PREAPPROVED_TYPES.map(type=>{
-    const row=mine[type]||null;
-    const hours=row?Number(row.hours)||0:0;
-    const desc=row?(row.description||''):'';
-    const hid='pre-h-'+type.replace(/[^A-Za-z]/g,'');
-    const did='pre-d-'+type.replace(/[^A-Za-z]/g,'');
-    return `<div style="display:grid;grid-template-columns:104px 88px 1fr auto auto;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
-      <div style="font-size:11.5px;font-weight:600">${esc(type)}
-        <div style="font-size:10px;color:var(--muted);font-weight:400">${esc(PREAPPROVED_TYPE_NOTE[type]||'')}</div></div>
-      <input id="${hid}" type="number" value="${hours}" min="0" max="40" step="0.25"
+    const hours=hoursOf(type);
+    const desc=descOf(type);
+    const label=`<div style="font-size:11.5px;font-weight:600">${esc(type)}
+        <div style="font-size:10px;color:var(--muted);font-weight:400">${esc(PREAPPROVED_TYPE_NOTE[type]||'')}</div></div>`;
+
+    if(!editing){
+      // Read mode. An allowance of zero is shown as 0, not as a dash: it means
+      // "recorded and switched off", which is a different statement from "none".
+      return `<div style="display:grid;grid-template-columns:104px 88px 1fr;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+        ${label}
+        <div style="font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums">${hours===''?'<span style="color:var(--muted)">none</span>':fmtHrs(hours)}</div>
+        <div style="font-size:11.5px;color:var(--muted)">${desc?esc(desc):(hours===''?'':'<em>no description</em>')}</div>
+      </div>`;
+    }
+
+    return `<div style="display:grid;grid-template-columns:104px 88px 1fr;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+      ${label}
+      <input type="number" value="${esc(hours)}" min="0" max="40" step="0.25" placeholder="none"
+        oninput="preDraftSet('${jsStr(type)}','hours',this.value)"
         style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%">
-      <input id="${did}" type="text" value="${esc(desc)}" placeholder="what the work is"
+      <input type="text" value="${esc(desc)}" placeholder="what the work is"
+        oninput="preDraftSet('${jsStr(type)}','description',this.value)"
         style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%">
-      <button class="btn btn-primary btn-sm" style="padding:2px 10px"
-        onclick="profileSavePreApproved('${jsStr(id)}','${jsStr(type)}','${hid}','${did}')">Save</button>
-      ${row
-        ? `<button class="btn btn-outline btn-sm" style="padding:2px 8px"
-             onclick="deletePreApproved('${jsStr(id)}','${jsStr(type)}','${jsStr(e.name||'')}')">✕</button>`
-        : '<span style="width:26px"></span>'}
     </div>`;
   }).join('');
 
@@ -614,7 +685,8 @@ function profilePreApproved(e){
     <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">
       Hours per WEEK, not per day, and the same figure applies to every week — there is no week column.
       The category says when the overtime happens; the description says what the work is, and it is the
-      part a manager can argue with. Each row saves on its own.
+      part a manager can argue with.
+      ${editing?'<br><strong>Blank removes the allowance. Zero keeps it and switches it off</strong> — those are different statements, and the report counts them differently.':''}
     </div>
     ${rows}
     <div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:700;padding-top:7px">
@@ -629,14 +701,13 @@ function profilePreApproved(e){
   </div>`;
 }
 
-// Reads the two inputs by id rather than threading values through the onclick
-// attribute: an apostrophe in a description would otherwise have to survive
-// being written into an HTML attribute AND parsed as a JS string literal, and
-// this codebase has already been bitten twice by that.
-async function profileSavePreApproved(employeeId, otType, hoursId, descId){
-  const h=document.getElementById(hoursId);
-  const d=document.getElementById(descId);
-  await savePreApproved(employeeId, otType, h?h.value:'', d?d.value:'');
+// Updates the draft in place. Deliberately does NOT re-render: re-rendering on
+// every keystroke would rebuild the inputs and move the caret to the end, which
+// makes a description field unusable to type in. The draft is read at Save.
+function preDraftSet(otType, field, value){
+  if(!state.editing||!state.editing._pre) return;
+  if(!state.editing._pre[otType]) state.editing._pre[otType]={hours:'',description:'',existed:false};
+  state.editing._pre[otType][field]=value;
 }
 
 // Deep link from the Pre-Approved OT report: open this person's card.
@@ -648,6 +719,52 @@ function goToEmployeeProfile(employeeId){
   goToTab('employees');
   openProfile(idx);
 }
+// A break time input.
+//
+// A <input type="time"> given a value it cannot represent renders BLANK, and the
+// next save writes that blank back as though somebody had deliberately cleared
+// the field. That is precisely the trap the birthday date picker hit on a live
+// system, so the same escape hatch applies: an unreadable value gets a text box
+// and a warning, and is preserved until a human retypes it.
+//
+// A readable value is shown in a time picker and comes back as 'HH:MM', which is
+// exactly what gets stored — so the edit path needs no conversion at all.
+function breakInput(label,field,value){
+  const picker=timeInputValue(value);
+  const raw=String(value==null?'':value).trim();
+  const unreadable=raw!==''&&picker==='';
+
+  if(unreadable){
+    return `<div class="form-group full"><label class="form-label">${esc(label)}</label>
+      <input type="text" value="${esc(raw)}" oninput="state.editing.${field}=this.value">
+      <div style="font-size:11px;color:#b8860b;margin-top:4px;line-height:1.5">Not a time the picker can show, so it is left as text rather than blanked — blanking it would write the emptiness back as fact on the next save. Retype it as a time to get a picker.</div>
+    </div>`;
+  }
+  return `<div class="form-group"><label class="form-label">${esc(label)}</label>
+    <input type="time" value="${esc(picker)}" oninput="state.editing.${field}=this.value">
+    <div style="font-size:11px;color:var(--muted);margin-top:4px">Leave blank for no break time on file. Blank is stored as nothing, not as a default.</div>
+  </div>`;
+}
+
+// Schedule days.
+//
+// A select if the roster agrees on a small set of values, free text otherwise —
+// decided from the DATA rather than assumed, because a select silently drops any
+// value not in its option list, and on this field that would rewrite somebody's
+// schedule the first time their profile was saved. SCHEDULE_DAYS holds the
+// values found in the column; anything else keeps a text box and is offered as
+// a suggestion via the datalist so the common values are still one click away.
+function daysField(e){
+  const current=String(e.days==null?'':e.days).trim();
+  const known=SCHEDULE_DAYS.includes(current);
+  const list=SCHEDULE_DAYS.map(d=>`<option value="${esc(d)}">`).join('');
+  return `<div class="form-group"><label class="form-label">Schedule days</label>
+    <input type="text" list="sched-days" value="${esc(current)}" oninput="state.editing.days=this.value">
+    <datalist id="sched-days">${list}</datalist>
+    ${(current!==''&&!known)?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Not one of the values already on the roster. Kept as typed.</div>`:''}
+  </div>`;
+}
+
 // The birthday input, shared by both edit surfaces so they cannot disagree about
 // what happens to a value the picker cannot show. See profileEditBody for why
 // blanking is not an option.
@@ -741,8 +858,9 @@ function profileEditBody(e){
         <input type="date" value="${esc(bdayInput)}" oninput="state.editing.birthday=this.value">
       </div>`}
 
-      <div class="form-group"><label class="form-label">Schedule days</label>
-        <input type="text" value="${esc(e.days||'')}" oninput="state.editing.days=this.value"></div>
+      ${daysField(e)}
+      ${breakInput('Break 1','break1',e.break1)}
+      ${breakInput('Break 2','break2',e.break2)}
 
       <div class="form-group full"><label class="form-label">Street</label>
         <input type="text" value="${esc(e.addressStreet||'')}" oninput="state.editing.addressStreet=this.value"></div>
@@ -827,7 +945,9 @@ async function saveEdit(){
       name:e.name, wage:wage, pay_type:payType, status:e.status,
       // clock_in / clock_out are no longer written; see the note in the form.
       days:e.days,
-      break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
+      // Normalized, preserved or null — never a fabricated default. See
+      // breakStorageValue in core.js.
+      break_1:breakStorageValue(e.break1), break_2:breakStorageValue(e.break2),
       birthday:e.birthday, phone:e.phone, language:e.language,
       email:e.email, sms_opted_out:e.smsOptedOut===true,
       drive_folder_id:e.driveFolderId||null,
@@ -854,8 +974,45 @@ async function saveEdit(){
       if(d.data?.[0]?.id) e.id=d.data[0].id;
     }
 
+    // ---- the employee row is committed. Now the two other tables. ----
+    //
+    // ONE BUTTON, THREE WRITES, so partial failure is possible where it was not
+    // before. It is reported precisely: the card stays open, the message names
+    // which part did not commit, and nothing claims success. Silently reporting
+    // "Saved" after two of three writes landed is how somebody walks away
+    // believing an allowance was recorded.
+    //
+    // The employee row goes first because it is what the card is about, and
+    // because the allocation's foreign key needs a saved employee to point at.
+    // Its failure aborts before anything else is attempted (the throw above).
+    const problems=[];
+    if(state.profile!==null && e.id){
+      if(state.editing&&state.editing._pre){
+        const pre=await preApprovedCommit(e.id, state.editing._pre);
+        if(!pre.ok) problems.push('Pre-approved OT — '+pre.failures.join('; '));
+      }
+      const alloc=await allocCommit(e.id);
+      if(!alloc.ok) problems.push('Cost allocation — '+alloc.error);
+      // Re-read both, so the card shows what the database now holds rather than
+      // what the draft hoped for. Done even on failure, for the same reason.
+      await loadPreApproved();
+      await loadAllocations();
+    }
+
     if(isNew)state.employees.push(e);else state.employees[idx]=e;
+
+    if(problems.length){
+      // The employee row DID save. Say so, then say what did not — the opposite
+      // order would read as a total failure and invite a retry that re-writes
+      // the part that already worked.
+      setSyncStatus('error');
+      toast('Employee details saved. NOT saved: '+problems.join(' | '),'error');
+      render();
+      return;
+    }
+
     state.editing=null;
+    if(e.id&&state.allocDrafts) delete state.allocDrafts[String(e.id)];
     setSyncStatus('idle');
     toast('Saved','success');
 

@@ -105,34 +105,74 @@ function allocSplitEvenly(employeeId){
   render();
 }
 
-async function allocSave(employeeId){
-  const rows = (state.allocDrafts || {})[String(employeeId)] || [];
+// Commits one employee's allocation and RETURNS A RESULT rather than toasting.
+// The profile card's single Save composes this with two other writes and has to
+// be able to say which part failed.
+//
+// STILL ONE TRANSACTION. The endpoint is unchanged: it calls
+// set_employee_allocations, which deletes and re-inserts inside a single
+// transaction with the deferred sum-to-100 check firing once at commit. That is
+// what made Jeff Cook's 50/50 survive a rejected 90% write, and batching the
+// card's saves behind one button does not touch it.
+// The comparable form of an allocation: departments sorted, percentages to the
+// cent. Two allocations are the same allocation if this matches, whatever order
+// the rows happen to be in.
+function allocFingerprint(rows){
+  return (rows||[])
+    .filter(r=>String(r.department||'').trim()!=='')
+    .map(r=>String(r.department).trim()+':'+Math.round((Number(r.percent)||0)*100))
+    .sort()
+    .join('|');
+}
+
+async function allocCommit(employeeId){
+  const key=String(employeeId);
+  const rows=(state.allocDrafts||{})[key];
+  if(!rows) return {ok:true, skipped:true};
+
+  // AN UNCHANGED DRAFT IS NOT A WRITE. startProfileEdit seeds this draft the
+  // moment Edit is pressed, so without this check every profile save sent an
+  // allocation write: a pointless one for somebody with a split (moving
+  // updated_at on a record nobody touched), and a removal of a non-existent
+  // allocation for the 65 people who have none.
+  const stored=allocationFor(employeeId);
+  const storedPrint=allocFingerprint(stored?stored.rows:[]);
+  const draftPrint=allocFingerprint(
+    // A lone department at 100% is the default written down, i.e. no allocation,
+    // so it compares equal to having no rows at all.
+    (rows.length===1&&Math.round((Number(rows[0].percent)||0)*100)===10000)?[]:rows);
+  if(storedPrint===draftPrint) return {ok:true, skipped:true};
+
   // A single department at 100% is not an allocation — it is the default written
   // down — so it is sent as a removal. Storing it would put somebody on the
   // exception list who is not an exception.
-  const payload = (rows.length === 1 && Math.round((Number(rows[0].percent) || 0) * 100) === 10000)
+  const payload=(rows.length===1 && Math.round((Number(rows[0].percent)||0)*100)===10000)
     ? []
-    : rows.filter(r => String(r.department || '').trim() !== '');
+    : rows.filter(r => String(r.department||'').trim()!=='');
+
   try{
-    const res = await fetch('/api/allocations', {
-      method: 'PUT', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ employeeId, rows: payload })
+    const res=await fetch('/api/allocations',{
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({employeeId, rows:payload})
     });
-    const json = await res.json().catch(() => null);
-    if(!res.ok || !json || json.ok === false) throw new Error((json && json.error) || ('Save failed (' + res.status + ')'));
-    toast(json.removed ? 'Allocation removed — 100% to the primary department' : 'Allocation saved', 'success');
-    delete state.allocDrafts[String(employeeId)];
-    await loadAllocations();
-    return true;
+    const json=await res.json().catch(()=>null);
+    if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('status '+res.status));
+    delete state.allocDrafts[key];
+    return {ok:true, removed:json.removed===true};
   }catch(err){
-    toast(err.message, 'error');
-    return false;
+    return {ok:false, error:err.message};
   }
 }
 
-function allocReset(employeeId){
-  if(state.allocDrafts) delete state.allocDrafts[String(employeeId)];
-  render();
+// Whether this employee's draft is committable. The card's Save is disabled
+// while it is not — the database would refuse it anyway, and letting somebody
+// press Save to find that out is worse than not offering it.
+function allocDraftValid(employeeId){
+  const rows=(state.allocDrafts||{})[String(employeeId)];
+  if(!rows) return true;                       // untouched
+  if(!rows.length) return true;                // removal
+  if(rows.some(r=>String(r.department||'').trim()==='')) return false;
+  return Math.round(allocDraftTotal(rows)*100)===10000;
 }
 
 // The profile card's allocation block.
@@ -156,12 +196,37 @@ function profileAllocation(e){
   }
 
   const primary = hasDepartment(e.department) ? e.department : '';
+  const stored = allocationFor(id);
+  const editing = profileEditing(e);
+
+  // READ MODE: the stored split, or a plain statement that there is none. No
+  // editor, no inputs, nothing to press — the card has one Edit button now.
+  if(!editing){
+    if(!stored){
+      return profileGroup('Cost allocation',[
+        pf('', '<span style="color:var(--muted)">No allocation — 100% of this person\'s cost goes to '
+           + (primary ? esc(primary) : 'their primary department') + '.</span>', {html:true})
+      ]);
+    }
+    return `<div class="pf-group">
+      <div class="pf-group-title">Cost allocation</div>
+      ${stored.rows.map(r => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span>${esc(r.department)}${r.department===primary?'<span style="color:var(--muted);font-size:10px"> · primary</span>':''}</span>
+        <span style="font-weight:600;font-variant-numeric:tabular-nums">${Number(r.percent).toFixed(2)}%</span>
+      </div>`).join('')}
+      <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;padding-top:6px">
+        <span>Total</span><span>${Number(stored.total).toFixed(2)}%</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px">
+        Cost only — this person's HOURS are not split and stay with
+        ${primary ? esc(primary) : 'their primary department'}.
+        ${stored.sumsTo100 ? '' : '<strong style="color:var(--brick)">This does not sum to 100%, which the database should have made impossible — report it.</strong>'}
+      </div>
+    </div>`;
+  }
+
   const rows = allocDraft(id, primary);
   const total = allocDraftTotal(rows);
-  const stored = allocationFor(id);
-  const dirty = JSON.stringify(rows) !== JSON.stringify(
-    stored ? stored.rows.map(r => ({ department: r.department, percent: r.percent }))
-           : [{ department: primary, percent: 100 }]);
 
   const isDefault = rows.length === 1 && Math.round((Number(rows[0].percent) || 0) * 100) === 10000;
   const ok = isDefault || Math.round(total * 100) === 10000;
@@ -209,12 +274,7 @@ function profileAllocation(e){
         ? esc((100 - total).toFixed(2)) + '% of this person\'s cost would land nowhere, and every department total would be quietly short.'
         : esc((total - 100).toFixed(2)) + '% of this person\'s cost would be counted twice.'}
       The database refuses a partial allocation, so this will not save.</div>` : ''}
-    ${isDefault && !stored ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">
-      No allocation: 100% of this person's cost goes to their primary department.</div>` : ''}
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
-      ${dirty ? `<button class="btn btn-outline btn-sm" onclick="allocReset('${jsStr(id)}')">Revert</button>` : ''}
-      <button class="btn btn-primary btn-sm" ${ok ? '' : 'disabled'} onclick="allocSave('${jsStr(id)}')">
-        ${isDefault && stored ? 'Remove allocation' : 'Save allocation'}</button>
-    </div>
+    ${isDefault ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">
+      One department at 100% means no allocation${stored ? ' — saving this removes the existing split' : ''}.</div>` : ''}
   </div>`;
 }

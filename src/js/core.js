@@ -339,6 +339,199 @@ function fmtBirthday(value){
   return MONTH_NAMES[p.month-1]+' '+p.day;
 }
 
+// ---------------------------------------------------------------------------
+// TIME OF DAY — break_1 and break_2
+// ---------------------------------------------------------------------------
+//
+// The column holds a break time and nothing else, but it has been written by
+// several things over the years and holds several shapes:
+//
+//   '1899-12-30T20:45:00.000Z'   a spreadsheet time-only serialisation. The
+//                                1899-12-30 epoch is Excel/Sheets' zero date;
+//                                the DATE PART IS MEANINGLESS and only the
+//                                clock time matters.
+//   '8:45 PM'                    what the roster's own Add form writes.
+//   '20:45'                      what <input type="time"> produces.
+//
+// This was rendering the raw stored string on the profile card, so somebody's
+// afternoon break read as '1899-12-30T20:45:00.000Z'. Same class of bug as the
+// birthday column: a stored value shown without formatting.
+//
+// THE ISO VALUES ARE SHIFTED BY EIGHT HOURS AND THE TEXT ONES ARE NOT.
+//
+// Audited against all 74 rows. break_1 is '15:00' on 68 of them; break_2 is
+// '20:45' on 64. The four rows in each column that hold TEXT read '7:00 AM' and
+// '12:45 PM' — the mill's standard breaks, and what openAdd() defaults a new hire
+// to. 15:00 - 8h is 07:00 and 20:45 - 8h is 12:45: two independent values both
+// landing exactly on the known break times under the same offset.
+//
+// Read as written instead, 68 people's 7:00 AM break displays as 3:00 PM and 64
+// people's lunch as 8:45 PM, and the ISO rows would describe a different mill
+// from the text rows in the same column. Under the shift the whole roster reads
+// as one place: 7:00 AM and 12:45 PM for the bulk, a 1:00/1:30 PM lunch for four
+// people, and one later shift of two on 4:30 PM and 8:45 PM — the same two rows
+// in both columns. It also explains the 1899-12-31 dates: a time-only value
+// cannot roll past its own epoch day unless something shifted it.
+//
+// So the offset is applied to the ISO shape ONLY. Applying it to the text rows
+// would shift already-correct values a second time.
+//
+// PARSED, NOT CAST, and the offset is FIXED. `new Date(...)` then reading local
+// hours would shift by the VIEWER's offset — a different break time in
+// California, Berlin and on a UTC build server, none of them the stored one. And
+// no DST: 15:00 - 8 matching the text exactly means the export used a flat -8,
+// not a date-aware conversion. 1899 predates US DST anyway. There is no instant
+// here to convert, only digits to correct.
+const SPREADSHEET_UTC_OFFSET_MINUTES=-8*60;
+
+// The time part of any shape above, as {hour, minute} on a 24-hour clock, or
+// null when the value cannot be read as a time at all.
+function parseTimeParts(value){
+  const raw=String(value==null?'':value).trim();
+  if(raw==='') return null;
+
+  // The 1899 spreadsheet shape. The date is ignored — it is the epoch, not a
+  // date — and the time is corrected by the fixed offset above. Any zone marker
+  // in the string is ignored too: the correction is the same either way, and
+  // trusting a '+00:00' that the exporter wrote as boilerplate would be reading
+  // meaning into punctuation.
+  let m=/^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/.exec(raw);
+  if(m){
+    const h=+m[1], min=+m[2];
+    if(h<0||h>23||min<0||min>59) return null;
+    // Wrapped into the day. 00:30 - 8h is 16:30 the day before, which is 4:30 PM
+    // — the point being that the DAY is meaningless and only the clock survives.
+    const mins=((h*60+min)+SPREADSHEET_UTC_OFFSET_MINUTES+1440)%1440;
+    return {hour:Math.floor(mins/60),minute:mins%60};
+  }
+
+  // A bare 'HH:MM'. Already local — this is what <input type="time"> emits and
+  // what everything writes from now on — so it is NOT shifted.
+  m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*$/.exec(raw);
+  if(m){
+    const h=+m[1], min=+m[2];
+    if(h>=0&&h<=23&&min>=0&&min<=59) return {hour:h,minute:min};
+    return null;
+  }
+
+  // 12-hour with a meridiem, e.g. '7:00 AM'. Already local — four rows per
+  // column hold this shape and they are the reference the offset above was
+  // derived FROM — so it is not shifted either.
+  //
+  // 12 AM is hour 0 and 12 PM is hour 12: the one pair of cases that a naive
+  // (h % 12) + offset gets wrong in both directions.
+  m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp])\.?[Mm]\.?\s*$/.exec(raw);
+  if(m){
+    let h=+m[1];
+    const min=+m[2];
+    const pm=m[3].toLowerCase()==='p';
+    if(h<1||h>12||min<0||min>59) return null;
+    if(h===12) h=0;
+    return {hour:pm?h+12:h,minute:min};
+  }
+
+  // A bare number is a spreadsheet serial: the fraction of a day. 0.53125 is
+  // 12:45. NOT shifted — a raw fraction has no zone applied to it, unlike the
+  // ISO strings which were serialised through one.
+  //
+  // The audit found none of these in the column, so this branch is defensive
+  // rather than load-bearing. Kept because the same export that produced the
+  // ISO values produces this shape too, depending on the cell format.
+  //
+  // Only below 1: a value of 45000 is a full date serial, which is not a break
+  // time and is more likely a column mix-up worth seeing as "unreadable".
+  m=/^(\d?\.\d+|0)$/.exec(raw);
+  if(m){
+    const frac=parseFloat(m[1]);
+    if(!(frac>=0&&frac<1)) return null;
+    const total=Math.round(frac*24*60);
+    // 0.9999 rounds to 1440, which is midnight the next day rather than an
+    // invalid time. Wrap rather than reject.
+    const mins=total%1440;
+    return {hour:Math.floor(mins/60),minute:mins%60};
+  }
+
+  return null;
+}
+
+// '8:45 PM'. Null — not a dash, not the raw value — when it cannot be read, so
+// the caller decides how to show a value it does not understand.
+function fmtTime(value){
+  const p=parseTimeParts(value);
+  if(!p) return null;
+  const pm=p.hour>=12;
+  let h=p.hour%12;
+  if(h===0) h=12;
+  return h+':'+String(p.minute).padStart(2,'0')+' '+(pm?'PM':'AM');
+}
+
+// 'HH:MM' for <input type="time">, or '' when the value cannot be represented.
+//
+// The empty string is the dangerous case and the caller must handle it. A time
+// input given '' renders blank, and the next save writes that blank back over
+// a real value as though it were a deliberate clearing. That is exactly the
+// trap the birthday date picker hit, which is why profileEditBody switches to a
+// text field and a warning instead of showing an empty picker.
+function timeInputValue(value){
+  const p=parseTimeParts(value);
+  if(!p) return '';
+  return String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
+}
+
+// WHAT GETS STORED GOING FORWARD: 'HH:MM', 24-hour.
+//
+// Chosen over the other two shapes already in the column because it is what
+// <input type="time"> emits (so the edit path needs no conversion), it sorts
+// correctly as text, it is unambiguous without a meridiem, and it carries no
+// fake 1899 date to be misread as an instant later. Existing values are NOT
+// migrated — nothing parses this column except the display layer, so a
+// migration would be risk without a reader to benefit. fmtTime reads all three
+// shapes, so old and new rows render identically.
+function timeStorageValue(value){
+  const p=parseTimeParts(value);
+  if(!p) return null;
+  return String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
+}
+
+// What a WRITE puts in break_1 / break_2. Three outcomes, and each one is a
+// deliberate choice about somebody's record:
+//
+//   readable      -> normalized to 'HH:MM'
+//   absent        -> null. NOT a default. `break_1: e.break1 || '7:00 AM'` used
+//                    to sit in two writers, one of which re-writes every row on
+//                    the roster, so a single Sync gave a fabricated 7:00 AM
+//                    break to everybody who had none on file. A person with no
+//                    break time recorded is a fact, not a gap to fill in.
+//   unreadable    -> kept exactly as it was found. Normalizing it is impossible
+//                    and nulling it would destroy the only copy — which is the
+//                    same mistake as inventing one, pointed the other way. The
+//                    edit surface shows it as text with a warning so a human can
+//                    correct it; until then it is preserved.
+function breakStorageValue(value){
+  const normalized=timeStorageValue(value);
+  if(normalized!==null) return normalized;
+  const raw=String(value==null?'':value).trim();
+  return raw===''?null:raw;
+}
+
+// The schedule-day values present on the roster. Drives the suggestion list on
+// the profile card, NOT a validation list — a value not in here is kept as typed,
+// because a select that silently drops an unrecognised value would rewrite
+// somebody's schedule the first time their profile was saved.
+//
+// AUDITED 2026-08-21 against the live roster, 74 rows:
+//   MON-THU   71
+//   FRI-MON    1
+//   MON-SUN    1
+//   (blank)    1
+//
+// Three distinct values, two of them held by one person each. That is why this
+// is a datalist on a text input and not a select: a select offering only these
+// three would silently drop the next one-off somebody types, and 'FRI-MON' shows
+// that one-offs are real here. The provisional list guessed 'MON-FRI', which
+// does not exist, and missed 'FRI-MON', which does.
+const SCHEDULE_DAYS=['MON-THU','FRI-MON','MON-SUN'];
+
 const MONTH_NAMES=['January','February','March','April','May','June','July',
   'August','September','October','November','December'];
 
