@@ -112,8 +112,13 @@ from employees;
 -- than hidden in a function so the arithmetic is visible: take the HH:MM
 -- after the 'T', subtract 480 minutes, wrap into the day.
 --
--- Expected: 140 rows (70 per column), and the `after` column should read
--- as a plausible break time on every single one.
+-- Expected: 6 rows, not 140. The query GROUPS by distinct stored value, so
+-- each row carries a `rows` count and those counts sum to 140. (An earlier
+-- version of this comment said 140 rows; it was counting the rows affected,
+-- not the rows returned.) More than 6 would mean the ISO strings are not
+-- formatted uniformly — still fine, but worth a look before §3.
+--
+-- Every `reads_as` should be a plausible break time.
 -- =====================================================================
 
 with iso as (
@@ -132,7 +137,16 @@ converted as (
 )
 select col, before,
        lpad((mins/60)::text, 2, '0') || ':' || lpad((mins%60)::text, 2, '0') as after,
-       to_char(make_time(mins/60, mins%60, 0), 'FMHH12:MI AM') as reads_as,
+       -- Formatted with integer arithmetic, NOT make_time/to_char. Postgres has
+       -- no to_char(time, text) overload, so that version depended on an
+       -- implicit cast to interval to resolve at all. It also contradicted this
+       -- file's own rule: no time types anywhere, because a time type is how a
+       -- session TimeZone gets a say in the answer.
+       (case when mins/60 = 0 then 12
+             when mins/60 > 12 then mins/60 - 12
+             else mins/60 end)::text
+         || ':' || lpad((mins%60)::text, 2, '0')
+         || (case when mins >= 720 then ' PM' else ' AM' end) as reads_as,
        count(*) as rows
 from converted
 group by col, before, mins
