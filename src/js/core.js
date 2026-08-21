@@ -36,9 +36,15 @@ let state = {
   // class itself so the Manufacturing Costs and Overhead tabs cannot render each
   // other's numbers.
   cost:{},
-  ot:{post:[],weekend:[],pre:[]}, points:[],
+  points:[],
+  // Pre-approved OT comes from /api/preapproved-ot now, keyed on employees.id.
+  // state.ot — the {pre,post,weekend} arrays the old editable grid held — is
+  // gone with it: it was a client-side copy of the whole table, which is what
+  // made a replace-the-table save look reasonable.
+  preRows:[], preLoaded:false, preLoading:false, preError:'',
+  preTableMissing:false, preNote:'',
   filterName:'', filterDept:'all', filterStatus:'Active',
-  editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
+  editing:null, dirty:false, loading:true, ptEditing:false,
   // Which employee's profile card is open, as {idx}, or null. Separate from
   // `editing`: the card is read-only until Edit sets `editing` as well, and
   // saveEdit() clearing `editing` is what drops it back to read-only.
@@ -60,6 +66,20 @@ let state = {
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+
+// The timeclock grace allowance, in hours per active hourly employee per week.
+// A policy number, so it is read from emailSettings rather than hardcoded, and
+// the stated default stands in for anything unusable — including a negative,
+// which is not a setting but a mistake. Zero IS a real setting: it switches the
+// policy off, so this can never be a truthiness test.
+//
+// Lives here rather than in ot-report.js because the OT report and the employee
+// profile card both state it, and a policy number two screens quote separately
+// is a policy number they will eventually quote differently.
+function graceHrs(){
+  const v=Number(state.emailSettings.graceHoursPerEmployee);
+  return isFinite(v)&&v>=0?v:EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee;
+}
 
 // Takes the whole employee, not a bare wage, because 'is this person salaried'
 // is no longer a fact about the wage column — see isSalaried below. A wage value

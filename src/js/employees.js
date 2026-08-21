@@ -528,7 +528,124 @@ function profileReadBody(e){
       pf('Days',e.days),
       pf('Break 1',e.break1),
       pf('Break 2',e.break2)
-    ])}`;
+    ])}
+    ${profilePreApproved(e)}`;
+}
+
+// ============================================================
+// PRE-APPROVED OT, on the profile card
+// ============================================================
+//
+// This is where the standing allowance is assigned, and it is keyed on this
+// employee's id. The old Pre-Approved Overtime tab typed a NAME into a free-text
+// box; the roster has two people called Smith, so a name key silently attaches
+// one person's allowance to another's record.
+//
+// IT SAVES ITSELF, one row at a time, and is deliberately NOT part of the card's
+// Edit / Save / Cancel flow. Two reasons, and the first is the load-bearing one:
+//
+//   1. It writes to a different table through a different endpoint. One Save
+//      button writing to two tables has to answer "what happens when the second
+//      write fails", and every answer is worse than not asking — a half-saved
+//      profile that reports as saved is the kind of thing nobody finds for weeks.
+//   2. One row at a time is the whole point of the restructure. The old tab
+//      saved by deleting the table and re-inserting it, which is how a
+//      byte-identical duplicate row got in and stayed for months.
+//
+// So each category has its own Save. `unique(employee_id, ot_type)` in the
+// database means saving twice updates rather than duplicating, whatever this
+// code does.
+function profilePreApproved(e){
+  const id=String(e&&e.id||'');
+  if(!id){
+    // A new hire that has not been saved yet has no id to key an allowance on.
+    return profileGroup('Pre-approved OT',[
+      pf('','<span style="color:var(--muted)">Save this employee first — the allowance is keyed on their record.</span>',{html:true})
+    ]);
+  }
+
+  if(!state.preLoaded&&!state.preLoading){
+    // Loaded on demand, the same way the Reports tab loads it. Not fetched on
+    // every page load: most profile views never look at it.
+    setTimeout(()=>loadPreApproved(),0);
+  }
+
+  if(state.preTableMissing){
+    return profileGroup('Pre-approved OT',[
+      pf('','<span style="color:#b8860b">The per-employee table does not exist yet — run SCHEMA_PHASE_C_PREAPPROVED_OT.sql. Until then the allowance is still read from the old name-keyed table and cannot be edited here.</span>',{html:true})
+    ]);
+  }
+
+  if(state.preLoading&&!state.preLoaded){
+    return profileGroup('Pre-approved OT',[
+      pf('','<span style="color:var(--muted)">Loading…</span>',{html:true})
+    ]);
+  }
+
+  const mine=preApprovedFor(id);
+  const total=PREAPPROVED_TYPES.reduce((t,k)=>t+(mine[k]?Number(mine[k].hours)||0:0),0);
+
+  const rows=PREAPPROVED_TYPES.map(type=>{
+    const row=mine[type]||null;
+    const hours=row?Number(row.hours)||0:0;
+    const desc=row?(row.description||''):'';
+    const hid='pre-h-'+type.replace(/[^A-Za-z]/g,'');
+    const did='pre-d-'+type.replace(/[^A-Za-z]/g,'');
+    return `<div style="display:grid;grid-template-columns:104px 88px 1fr auto auto;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:11.5px;font-weight:600">${esc(type)}
+        <div style="font-size:10px;color:var(--muted);font-weight:400">${esc(PREAPPROVED_TYPE_NOTE[type]||'')}</div></div>
+      <input id="${hid}" type="number" value="${hours}" min="0" max="40" step="0.25"
+        style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%">
+      <input id="${did}" type="text" value="${esc(desc)}" placeholder="what the work is"
+        style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 8px;width:100%">
+      <button class="btn btn-primary btn-sm" style="padding:2px 10px"
+        onclick="profileSavePreApproved('${jsStr(id)}','${jsStr(type)}','${hid}','${did}')">Save</button>
+      ${row
+        ? `<button class="btn btn-outline btn-sm" style="padding:2px 8px"
+             onclick="deletePreApproved('${jsStr(id)}','${jsStr(type)}','${jsStr(e.name||'')}')">✕</button>`
+        : '<span style="width:26px"></span>'}
+    </div>`;
+  }).join('');
+
+  const grace=graceHrs();
+  return `<div class="pf-group">
+    <div class="pf-group-title">Pre-approved OT — standing weekly allowance</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">
+      Hours per WEEK, not per day, and the same figure applies to every week — there is no week column.
+      The category says when the overtime happens; the description says what the work is, and it is the
+      part a manager can argue with. Each row saves on its own.
+    </div>
+    ${rows}
+    <div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:700;padding-top:7px">
+      <span>Standing total</span><span>${fmtHrs(total)} hrs/wk</span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px">
+      On top of this, every active hourly employee carries the ${fmtHrs(grace)} hrs/wk timeclock grace
+      allowance. That is policy for everyone and is not assigned here — it is a separate line item in the
+      OT report and is configured on the Settings tab.
+      ${(e.status&&e.status!=='Active')?'<br><strong style="color:#e67e22">This employee is not active, so any allowance here counts nowhere.</strong> An allowance is permission to work overtime, and somebody who has left cannot use it — crediting them would understate Net OT every week.':''}
+    </div>
+  </div>`;
+}
+
+// Reads the two inputs by id rather than threading values through the onclick
+// attribute: an apostrophe in a description would otherwise have to survive
+// being written into an HTML attribute AND parsed as a JS string literal, and
+// this codebase has already been bitten twice by that.
+async function profileSavePreApproved(employeeId, otType, hoursId, descId){
+  const h=document.getElementById(hoursId);
+  const d=document.getElementById(descId);
+  await savePreApproved(employeeId, otType, h?h.value:'', d?d.value:'');
+}
+
+// Deep link from the Pre-Approved OT report: open this person's card.
+function goToEmployeeProfile(employeeId){
+  const idx=(state.employees||[]).findIndex(x=>String(x.id)===String(employeeId));
+  if(idx<0){ toast('That employee is no longer on the roster','error'); return; }
+  // The roster may be filtered to something that excludes them; the card reads
+  // state.employees by index, not the filtered view, so it opens either way.
+  goToTab('employees');
+  openProfile(idx);
 }
 // The birthday input, shared by both edit surfaces so they cannot disagree about
 // what happens to a value the picker cannot show. See profileEditBody for why

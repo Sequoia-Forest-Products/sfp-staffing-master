@@ -78,6 +78,40 @@ async function loadGraceHours() {
   }
 }
 
+// ---- the standing pre-approved allowance ------------------------------
+//
+// Prefers `preapproved_ot`, which is keyed on employees.id, and falls back to
+// the name-keyed `overtime` table when that table does not exist yet.
+//
+// The fallback is what makes the deploy and the migration order-independent:
+// deploy first and the report keeps reading `overtime`; migrate first and the
+// old code keeps reading `overtime` too. Either way nobody sees a week with no
+// pre-approved OT, which would silently overstate Net OT by the whole allowance.
+//
+// A missing TABLE falls back. Anything else — auth, a 502, a network drop —
+// propagates, because "the database is unreachable" and "the migration has not
+// run" produce the same empty array and only one of them is a report worth
+// showing.
+function isMissingTableError(err) {
+  return /\b404\b|PGRST205|could not find the table|does not exist/i.test(
+    String((err && err.message) || ''));
+}
+
+async function loadStandingAllowance() {
+  try {
+    const rows = await payrollDb.fetchPreApprovedOt();
+    return { rows: rows || [], source: 'preapproved_ot' };
+  } catch (err) {
+    if (!isMissingTableError(err)) throw err;
+    console.warn(
+      'preapproved_ot does not exist — run SCHEMA_PHASE_C_PREAPPROVED_OT.sql. ' +
+      'Falling back to the name-keyed `overtime` table, so an inactive employee ' +
+      `still carries an allowance and a name variant still reports unmatched. (${err.message})`);
+    const rows = await payrollDb.fetchOvertime();
+    return { rows: rows || [], source: 'overtime' };
+  }
+}
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
@@ -141,8 +175,8 @@ exports.handler = async (event) => {
       : null;
     const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
 
-    const [overtimeRows, employees, graceHoursPerEmployee] = await Promise.all([
-      payrollDb.fetchOvertime(),
+    const [standing, employees, graceHoursPerEmployee] = await Promise.all([
+      loadStandingAllowance(),
       payrollDb.fetchEmployees(),
       loadGraceHours()
     ]);
@@ -157,7 +191,7 @@ exports.handler = async (event) => {
     const report = buildReport({
       weekStart,
       dailyRows,
-      overtimeRows: overtimeRows || [],
+      preApprovedRows: standing.rows,
       employees: employees || [],
       expectedDays,
       graceHoursPerEmployee
@@ -183,6 +217,10 @@ exports.handler = async (event) => {
         ok: true,
         report,
         availableWeeks,
+        // Which table the standing allowance came from. The UI says so when it is
+        // still the old one, because "pre-approved OT is not per-employee yet" is
+        // not something a reader can otherwise tell from the numbers.
+        preApprovedSource: standing.source,
         truncated: weekIndex.truncated || weekDetailTruncated,
         dataWindow
       })

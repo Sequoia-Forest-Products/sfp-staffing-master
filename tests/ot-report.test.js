@@ -1505,7 +1505,8 @@ function fakePage(rows, contentRange) {
 // for a different reason, and `urls` below is an assertion about how the week
 // index was paged. `settingsRows` supplies the row, `settingsError` makes the
 // read fail, and the default of no rows exercises the fallback.
-async function runReport({ pageFor, detailRows, settingsRows, settingsError }) {
+async function runReport({ pageFor, detailRows, settingsRows, settingsError,
+                            preApproved, preApprovedError, overtimeRows }) {
   const handler = loadPayrollReport().handler;
   const payrollDb = require('../netlify/functions/payroll-db');
   const db = require('../netlify/functions/db');
@@ -1513,15 +1514,26 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError }) {
   const realFetch = globalThis.fetch;
   const realDaily = payrollDb.fetchDailyHours;
   const realOt    = payrollDb.fetchOvertime;
+  const realPre   = payrollDb.fetchPreApprovedOt;
   const realEmp   = payrollDb.fetchEmployees;
   const realQuery = db.query;
 
   const urls = [];
   const detailCalls = [];
   const settingsCalls = [];
+  const preCalls = [];
+  const otCalls = [];
   globalThis.fetch = async (url) => { urls.push(String(url)); return pageFor(String(url), urls.length); };
   payrollDb.fetchDailyHours = async (from, to) => { detailCalls.push([from, to]); return detailRows(from, to); };
-  payrollDb.fetchOvertime   = async () => [];
+  // The standing allowance now comes from preapproved_ot, with `overtime` as the
+  // fallback for a database where the migration has not run. Both are stubbed so
+  // a test can choose which path it exercises.
+  payrollDb.fetchPreApprovedOt = async () => {
+    preCalls.push(true);
+    if (preApprovedError) throw preApprovedError;
+    return preApproved || [];
+  };
+  payrollDb.fetchOvertime   = async () => { otCalls.push(true); return overtimeRows || []; };
   payrollDb.fetchEmployees  = async () => EMPLOYEES;
   db.query = async (table, params) => {
     settingsCalls.push([table, params]);
@@ -1531,11 +1543,12 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError }) {
 
   try {
     const res = await handler(sessionEvent());
-    return { res, body: JSON.parse(res.body), urls, detailCalls, settingsCalls };
+    return { res, body: JSON.parse(res.body), urls, detailCalls, settingsCalls, preCalls, otCalls };
   } finally {
     globalThis.fetch = realFetch;
     payrollDb.fetchDailyHours = realDaily;
     payrollDb.fetchOvertime = realOt;
+    payrollDb.fetchPreApprovedOt = realPre;
     payrollDb.fetchEmployees = realEmp;
     db.query = realQuery;
   }
@@ -1733,4 +1746,238 @@ test('a settings read that fails does not take the report down with it', async (
   assert.strictEqual(body.report.preApproved.grace.headcount, 5,
     'the policy still applies at the default — a database problem is not a policy change');
   assert.strictEqual(body.report.preApproved.grace.hours, 2.5);
+});
+
+// ============================================================
+// Phase C task 4 — the standing allowance keyed on employees.id
+// ============================================================
+//
+// `overtime` matched on NAME. That is what let one person become two phantom
+// entries — the daily rows key on the payroll number, the allowance keyed on
+// whatever spelling somebody typed — and the roster has two employees named
+// Smith. `preapproved_ot` keys on employees.id.
+//
+// The loop takes BOTH shapes on purpose: id when the row has one, name when it
+// does not. One loop, one resolution step, so there is no second code path to
+// drift while the migration and the deploy happen in whichever order they happen.
+
+const PRE_EMPLOYEES = [
+  ...EMPLOYEES,
+  // Two people with the SAME name, which is the case a name key cannot resolve.
+  { id: 'e6', name: 'Sam Smith', employee_number: '0106', department: 'Production', wage: '25', status: 'Active' },
+  { id: 'e7', name: 'Sam Smith', employee_number: '0107', department: 'Shipping',   wage: '30', status: 'Active' },
+  // Left the company, still holding a standing allowance nobody deleted.
+  { id: 'e8', name: 'Gone Person', employee_number: '0108', department: null, wage: '20', status: 'Inactive' }
+];
+
+function preReport(standingRows, { employees = PRE_EMPLOYEES, dailyRows = [] } = {}) {
+  return buildReport({
+    weekStart: '2026-08-03',
+    dailyRows,
+    preApprovedRows: standingRows,
+    employees,
+    graceHoursPerEmployee: 0
+  });
+}
+
+test('an id-keyed allowance reaches the right one of two people with the same name', () => {
+  const r = preReport([
+    { id: 'p1', employee_id: 'e7', ot_type: 'Weekend', hours: 6, description: 'Weekend PM' }
+  ]);
+
+  assert.strictEqual(r.preApproved.standing.hours, 6);
+  const row = r.preApproved.rows[0];
+  assert.strictEqual(row.employeeId, 'e7');
+  assert.strictEqual(row.employeeNumber, '0107');
+  // Shipping, not Production — the two Sam Smiths are in different departments,
+  // so getting the wrong one is visible here and nowhere else.
+  assert.strictEqual(row.department, 'Shipping');
+  assert.deepStrictEqual(r.preApproved.byDepartment, [{ department: 'Shipping', hours: 6, dollars: 270 }]);
+});
+
+test('the same allowance keyed on the name is ambiguous, which is why it moved', () => {
+  // Pinning the old behaviour so the reason for the migration stays legible: the
+  // name resolves to whichever Sam Smith the roster listed first.
+  const r = preReport([{ id: 'p1', name: 'Sam Smith', ot_type: 'Weekend', hours: 6 }]);
+  assert.strictEqual(r.preApproved.rows[0].department, 'Production',
+    'a name key silently picks the first match');
+  assert.strictEqual(r.preApproved.keyedOnEmployeeId, false);
+});
+
+test('keyedOnEmployeeId is derived from the rows, not claimed by the caller', () => {
+  assert.strictEqual(preReport([{ employee_id: 'e1', ot_type: 'Weekend', hours: 1 }])
+    .preApproved.keyedOnEmployeeId, true);
+  assert.strictEqual(preReport([{ name: 'Ana Reyes', ot_type: 'Weekend', hours: 1 }])
+    .preApproved.keyedOnEmployeeId, false);
+  // A half-migrated table is NOT "keyed on employee id". Reporting it as such is
+  // how the UI would stop warning while some rows were still name-matched.
+  assert.strictEqual(preReport([
+    { employee_id: 'e1', ot_type: 'Weekend', hours: 1 },
+    { name: 'Ben Carter', ot_type: 'Weekend', hours: 1 }
+  ]).preApproved.keyedOnEmployeeId, false);
+  assert.strictEqual(preReport([]).preApproved.keyedOnEmployeeId, false,
+    'no rows is not evidence of anything');
+});
+
+test('an inactive employee\'s allowance is excluded from every total, and named', () => {
+  // This is Brian McDonald. He matched the roster by name, so nothing flagged
+  // him, and the loop had no status filter — 6 hours of pre-approved OT credited
+  // every week to somebody who had left, understating Net OT by the same amount.
+  const r = preReport([
+    { employee_id: 'e8', ot_type: 'Post-Shift', hours: 1, description: 'Ensure Start-up' },
+    { employee_id: 'e8', ot_type: 'Weekend',    hours: 5, description: 'Weekend PM' },
+    { employee_id: 'e1', ot_type: 'Post-Shift', hours: 2, description: 'Clean-up' }
+  ]);
+
+  assert.strictEqual(r.preApproved.standing.hours, 2, 'only the active person counts');
+  assert.strictEqual(r.summary.preApprovedHours, 2);
+  assert.strictEqual(r.preApproved.rows.length, 1);
+
+  // Named, with the whole withheld amount, so the row can be deleted rather than
+  // ignored forever.
+  assert.strictEqual(r.preApproved.inactiveSkipped.length, 1);
+  assert.deepStrictEqual(r.preApproved.inactiveSkipped[0],
+    { name: 'Gone Person', department: 'Unassigned', hours: 6 });
+
+  // And not smuggled in through any other breakdown.
+  assert.ok(!r.preApproved.byDepartment.some(d => d.hours === 6));
+  assert.strictEqual(Object.values(r.preApproved.byType).reduce((t, v) => t + v.hours, 0), 2);
+  assert.ok(!r.employees.some(e => e.name === 'Gone Person'));
+});
+
+test('an employee with a blank status is active, so their allowance counts', () => {
+  // The roster UI writes 'Active' when the field is blank, and isActiveEmployee
+  // already reads blank as active. The inactive filter must not disagree with it.
+  const r = preReport([{ employee_id: 'e9', ot_type: 'Weekend', hours: 4 }], {
+    employees: [...PRE_EMPLOYEES,
+      { id: 'e9', name: 'Blank Status', employee_number: '0109', department: 'Production', wage: '20', status: '' }]
+  });
+  assert.strictEqual(r.preApproved.standing.hours, 4);
+  assert.strictEqual(r.preApproved.inactiveSkipped.length, 0);
+});
+
+test('a row whose employee was deleted is reported, not dropped', () => {
+  const r = preReport([
+    { employee_id: 'no-such-id', ot_type: 'Weekend', hours: 6 },
+    { employee_id: 'e1', ot_type: 'Weekend', hours: 1 }
+  ]);
+  assert.strictEqual(r.preApproved.standing.hours, 1);
+  assert.deepStrictEqual(r.preApproved.unmatchedNames, ['(deleted employee no-such-id)']);
+});
+
+test('the roster spelling wins, so one person is not shown as two', () => {
+  // 'Tim Green' in the old table is Timothy Green on the roster. Reporting the
+  // old spelling next to the roster's is how somebody concludes there are two.
+  const r = preReport([{ employee_id: 'e1', name: 'A. Reyes', ot_type: 'Weekend', hours: 2 }]);
+  assert.strictEqual(r.preApproved.rows[0].name, 'Ana Reyes');
+});
+
+test('the description survives into the report', () => {
+  // The category says WHEN, the description says WHAT. Dropping it because the
+  // category is now structured would lose the only record of the actual work.
+  const r = preReport([
+    { employee_id: 'e1', ot_type: 'Post-Shift', hours: 0.5, description: 'Quad Saw Change' }
+  ]);
+  assert.strictEqual(r.preApproved.rows[0].description, 'Quad Saw Change');
+  const blank = preReport([{ employee_id: 'e1', ot_type: 'Post-Shift', hours: 0.5 }]);
+  assert.strictEqual(blank.preApproved.rows[0].description, null, 'absent, not an empty string');
+});
+
+test('pre-approved OT is broken out by category AND by department', () => {
+  const r = preReport([
+    { employee_id: 'e1', ot_type: 'Post-Shift', hours: 1 },   // Ana, Production
+    { employee_id: 'e6', ot_type: 'Post-Shift', hours: 2 },   // Sam Smith, Production
+    { employee_id: 'e2', ot_type: 'Weekend',    hours: 5 },   // Ben, Maintenance
+    { employee_id: 'e3', ot_type: 'Pre-Shift',  hours: 0.5 }  // Cara, Shipping
+  ]);
+
+  assert.strictEqual(r.preApproved.byType['Post-Shift'].hours, 3);
+  assert.strictEqual(r.preApproved.byType['Weekend'].hours, 5);
+  assert.strictEqual(r.preApproved.byType['Pre-Shift'].hours, 0.5);
+
+  assert.deepStrictEqual(
+    r.preApproved.byDepartment.map(d => [d.department, d.hours]),
+    [['Maintenance', 5], ['Production', 3], ['Shipping', 0.5]]);
+
+  // Both breakdowns sum to the same standing total, which is the only thing that
+  // makes them safe to show side by side.
+  const byType = Object.values(r.preApproved.byType).reduce((t, v) => t + v.hours, 0);
+  const byDept = r.preApproved.byDepartment.reduce((t, d) => t + d.hours, 0);
+  assert.strictEqual(byType, r.preApproved.standing.hours);
+  assert.strictEqual(byDept, r.preApproved.standing.hours);
+});
+
+test('the three components of pre-approved OT stay separable', () => {
+  // Net OT = All OT - (standing + grace). Three things feed the middle term and
+  // the report must not merge them: a single number cannot be argued with.
+  const r = buildReport({
+    weekStart: '2026-08-03',
+    dailyRows: DAILY_ROWS,
+    preApprovedRows: [{ employee_id: 'e1', ot_type: 'Post-Shift', hours: 1 }],
+    employees: PRE_EMPLOYEES,
+    graceHoursPerEmployee: 0.5
+  });
+  const s = r.summary;
+  const cents = (n) => Math.round(n * 100) / 100;
+  assert.strictEqual(
+    cents(r.preApproved.standing.hours + r.preApproved.grace.hours), s.preApprovedHours);
+  assert.strictEqual(cents(s.allOtHours - s.preApprovedHours), s.netOtHours);
+  assert.ok(r.preApproved.grace.hours > 0, 'grace is a separate line item, not folded in');
+  assert.strictEqual(r.preApproved.standing.hours, 1);
+});
+
+// ---- payroll-report.js: which table the allowance came from -----------
+
+test('the report reads preapproved_ot and says so', async () => {
+  const { res, body, preCalls, otCalls } = await runReport({
+    pageFor: (url) => fakePage([indexRow(windowEnd(url))], '0-0/1'),
+    detailRows: (from, to) => [
+      dailyRow({ work_date: to, employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+                 department: 'Production', pay_rate: 28, regular_hours: 10, ot_hours: 2,
+                 total_hours: 12, total_earnings: 364, regular_dollars: 280, ot_dollars: 84 })
+    ],
+    preApproved: [{ id: 'p1', employee_id: 'e1', ot_type: 'Post-Shift', hours: 1, description: 'Clean-up' }]
+  });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.preApprovedSource, 'preapproved_ot');
+  assert.strictEqual(preCalls.length, 1);
+  assert.strictEqual(otCalls.length, 0, 'the old table is not read when the new one exists');
+  assert.strictEqual(body.report.preApproved.standing.hours, 1);
+  assert.strictEqual(body.report.preApproved.keyedOnEmployeeId, true);
+});
+
+test('a missing preapproved_ot falls back to the old table rather than reporting no allowance', async () => {
+  // The deploy and the migration can happen in either order. Neither order may
+  // produce a week with no pre-approved OT, which would overstate Net OT by the
+  // whole allowance with nothing on screen explaining it.
+  const { res, body, preCalls, otCalls } = await runReport({
+    pageFor: (url) => fakePage([indexRow(windowEnd(url))], '0-0/1'),
+    detailRows: (from, to) => [
+      dailyRow({ work_date: to, employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+                 department: 'Production', pay_rate: 28, regular_hours: 10, ot_hours: 2,
+                 total_hours: 12, total_earnings: 364, regular_dollars: 280, ot_dollars: 84 })
+    ],
+    preApprovedError: new Error('{"code":"PGRST205","message":"Could not find the table \'public.preapproved_ot\' in the schema cache"}'),
+    overtimeRows: [{ id: 'o1', name: 'Ana Reyes', ot_type: 'Post-Shift', hours: 1, description: 'Clean-up' }]
+  });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.preApprovedSource, 'overtime');
+  assert.strictEqual(preCalls.length, 1);
+  assert.strictEqual(otCalls.length, 1);
+  assert.strictEqual(body.report.preApproved.standing.hours, 1);
+  assert.strictEqual(body.report.preApproved.keyedOnEmployeeId, false,
+    'so the UI can say the allowance is not per-employee yet');
+});
+
+test('an unreachable database does NOT fall back — it fails', async () => {
+  // "The migration has not run" and "the database is unreachable" both produce an
+  // empty array. Only one of them is a report worth showing.
+  const { res } = await runReport({
+    pageFor: (url) => fakePage([indexRow(windowEnd(url))], '0-0/1'),
+    detailRows: () => [],
+    preApprovedError: new Error('JWT expired')
+  });
+  assert.strictEqual(res.statusCode, 500);
 });

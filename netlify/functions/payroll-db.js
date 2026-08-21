@@ -247,6 +247,19 @@ function fetchOvertime() {
     'overtime?select=id,name,ot_type,hours,description&order=ot_type.asc,name.asc');
 }
 
+// The standing pre-approved OT allowance, keyed on employees.id. Superseded the
+// name-keyed `overtime` table in Phase C.
+//
+// Like fetchAllocations below, this does NOT swallow a missing table: the caller
+// distinguishes "the migration has not run" (fall back to `overtime`) from "the
+// database is unreachable" (fail), and those two produce very different reports
+// from the same empty array.
+function fetchPreApprovedOt() {
+  return requestRows('GET',
+    'preapproved_ot?select=id,employee_id,ot_type,hours,description,updated_at' +
+    '&order=ot_type.asc,employee_id.asc');
+}
+
 // Cost allocations: the departments a person's cost splits across, keyed on
 // employees.id. Absent rows mean 100% to the primary department, so most of the
 // roster has none — the table is the exception list, not a per-person record.
@@ -665,6 +678,7 @@ module.exports = {
   request,
   fetchEmployees,
   fetchAllocations,
+  fetchPreApprovedOt,
   // Exported so a test can assert the projection rather than the string that
   // builds it, and so the fallback boundary is nameable.
   EMPLOYEE_COLUMNS,

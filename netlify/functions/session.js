@@ -16,7 +16,7 @@ const SCRIPT_MODULES = [
   'data.js',
   'employees.js',
   'costs.js',
-  'overtime.js',
+  'preapproved.js',
   'points.js',
   'ot-report.js',
   'daily-hours.js',

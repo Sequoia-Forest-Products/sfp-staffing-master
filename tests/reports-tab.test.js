@@ -95,12 +95,32 @@ test('Reports offers exactly the three consolidated views', () => {
     ['preapproved', 'otreport', 'points']);
 });
 
-test('the default view needs no network call', () => {
-  // Opening Reports should not fire a request. Only the OT Report view loads,
-  // and only when it is selected.
+test('every view that reads an endpoint has a load hook', () => {
+  // This test used to assert the OPPOSITE for the default view — that opening
+  // Reports fired no request, because Pre-Approved OT rendered from state the
+  // page had already fetched. Task 4 moved that allowance onto its own endpoint
+  // (/api/preapproved-ot, keyed on employees.id), so it now loads like the OT
+  // Report does. The invariant that matters is not "no request" but "a view that
+  // needs data says so", since a view with no hook renders a shell that never
+  // fills — which reads as an empty week rather than a bug.
   const ctx = sandbox();
   assert.strictEqual(ctx.state.reportView, 'preapproved');
-  assert.strictEqual(ctx.reportView(ctx.state.reportView).load, undefined);
+  assert.strictEqual(typeof ctx.reportView('preapproved').load, 'function');
+  assert.strictEqual(typeof ctx.reportView('otreport').load, 'function');
+  // Points renders from state.points, loaded with the roster. No endpoint, no hook.
+  assert.strictEqual(ctx.reportView('points').load, undefined);
+});
+
+test('a load hook is guarded, so re-opening a view does not re-fetch', () => {
+  // switchTab and switchReportView both call load(). Without the guard, every
+  // click on the tab strip fires another request.
+  const ctx = sandbox();
+  const src = fs.readFileSync(path.join(SRC, 'reports.js'), 'utf8');
+  for (const guard of ['!state.preLoaded && !state.preLoading',
+                       '!state.otReport && !state.otReportLoading']) {
+    assert.ok(src.includes(guard), `load hook is missing the guard: ${guard}`);
+  }
+  void ctx;
 });
 
 test('an unknown view falls back to the first rather than rendering nothing', () => {
@@ -114,7 +134,7 @@ test('the container adds no reporting logic of its own', () => {
   // used. If this file starts computing anything, the OT report has two
   // implementations.
   const src = fs.readFileSync(path.join(SRC, 'reports.js'), 'utf8');
-  for (const fn of ['renderOT()', 'renderOTReport()', 'renderPoints()']) {
+  for (const fn of ['renderPreApproved()', 'renderOTReport()', 'renderPoints()']) {
     assert.ok(src.includes(fn), `reports.js should delegate to ${fn}`);
   }
   // No arithmetic, no data access, no fetches.

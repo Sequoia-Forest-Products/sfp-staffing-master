@@ -1,12 +1,15 @@
 // reports — the Reports tab, which is a container and nothing more.
 //
 // It consolidates three tabs that were top-level until Phase C: Pre-Approved
-// Overtime, the OT Report, and Points. Each one still renders through the exact
-// function it always did — renderOT(), renderOTReport(), renderPoints() — and
-// this file adds no reporting logic of its own. That is deliberate: the OT
-// report carries the scheduled/weekend split, department Net OT, completeness
-// tracking and the truncation banner, and the way to not regress any of that is
-// to not touch it.
+// Overtime, the OT Report, and Points. Each renders through its own function —
+// renderPreApproved(), renderOTReport(), renderPoints() — and this file adds no
+// reporting logic of its own. That is deliberate: the OT report carries the
+// scheduled/weekend split, department Net OT, completeness tracking and the
+// truncation banner, and the way to not regress any of that is to not touch it.
+//
+// Pre-Approved OT was renderOT() until task 4 rebuilt it on top of
+// /api/preapproved-ot. It now needs a `load` of its own for the same reason the
+// OT Report does: it reads its own endpoint.
 //
 // Shares one global scope with the other files in src/js (see core.js).
 
@@ -15,7 +18,12 @@
 // top-level tab: switchTab() used to call loadOTReport() when you opened
 // 'otreport', and that hook has to move here or the report silently never loads.
 const REPORT_VIEWS = [
-  { key: 'preapproved', label: 'Pre-Approved OT', render: () => renderOT() },
+  {
+    key: 'preapproved',
+    label: 'Pre-Approved OT',
+    render: () => renderPreApproved(),
+    load: () => { if (!state.preLoaded && !state.preLoading) loadPreApproved(); }
+  },
   {
     key: 'otreport',
     label: 'OT Report',
