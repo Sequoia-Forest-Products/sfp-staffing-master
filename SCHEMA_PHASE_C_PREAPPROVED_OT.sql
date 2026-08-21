@@ -24,6 +24,69 @@
 
 
 -- =====================================================================
+-- §0  PREFLIGHT — ARE YOU IN THE RIGHT PROJECT?
+--
+-- RUN THIS FIRST, ON ITS OWN. It writes nothing. It either returns one
+-- row of counts, or it raises an exception telling you to switch project.
+--
+-- There are four Supabase projects on this account and only one is the
+-- staffing database:
+--
+--     zwghbbyzrycpnesuuzgi   sfp-staffing        <- this one
+--     mwmgasvfyjcmkwdjbesj   Sequoia_Database
+--     kfjykimfkeyvuphkiouv   sequoia-maintenance
+--     inhixvjmvesynwqwsnrn   Sequoia_Accounting
+--
+-- This block exists because the comment at the top of this file saying
+-- "run this in the staffing project" did not stop §1 being run in
+-- Sequoia_Database. That attempt failed harmlessly — a create table whose
+-- foreign key references employees(id) cannot succeed where there is no
+-- employees table — but harmless was luck, not design:
+--
+--   * CREATE OR REPLACE FUNCTION succeeds anywhere. plpgsql bodies are
+--     not parsed at creation time, so a function referencing tables that
+--     do not exist is created without complaint, leaving a stray object
+--     in the wrong database.
+--   * An INSERT does not need a foreign key to a table it never mentions.
+--
+-- A warning a human has to read is not a guard. This is.
+-- =====================================================================
+
+do $$
+declare
+  found integer;
+  missing text;
+begin
+  select count(*) into found
+    from information_schema.tables
+   where table_schema = 'public'
+     and table_name in ('employees', 'overtime', 'daily_hours');
+
+  if found < 3 then
+    select string_agg(t, ', ') into missing
+      from unnest(array['employees', 'overtime', 'daily_hours']) as t
+     where not exists (
+       select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = t);
+
+    raise exception
+      E'WRONG PROJECT.\n\nThis database is missing: %.\n\n'
+      'You are not in the staffing database. Switch to the project named '
+      'sfp-staffing (ref zwghbbyzrycpnesuuzgi), then run this block again '
+      'before running anything else in this file.',
+      missing;
+  end if;
+end $$;
+
+-- Reached only if the block above did not raise. Confirms this is the
+-- staffing database AND that it holds what the migration expects.
+select
+  (select count(*) from employees)                         as employees_expect_74,
+  (select count(*) from employees where status = 'Active')  as active_expect_67,
+  (select count(*) from overtime)                           as overtime_rows_expect_30;
+
+
+-- =====================================================================
 -- §1  The table
 --
 -- One row per employee per category. `description` is kept and is NOT
