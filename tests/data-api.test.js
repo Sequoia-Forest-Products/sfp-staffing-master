@@ -92,22 +92,51 @@ test('wage is still returned — the roster renders it and economics computes fr
   assert.match(urls[0], /\bwage\b/);
 });
 
-test('a database without the v2 columns falls back instead of taking the app down', async () => {
-  let call = 0;
+// The projection degrades one rung at a time: full -> without the Phase B
+// additions -> pre-v2. It used to be a single binary fallback, which meant one
+// absent column (`position`, added to the live database by hand) dropped
+// pay_type, cost_class and position_group out of the payload too and took the
+// classification off every screen that reads it.
+//
+// `failFor` fails any request naming that column, so the stub does not have to
+// count calls to know which rung it is on.
+function stubFailingColumn(failFor) {
   const urls = [];
   global.fetch = async (url) => {
-    urls.push(decodeURIComponent(String(url)));
-    if (call++ === 0) {
-      return { ok: false, status: 400, text: async () => 'column employees.pay_type does not exist' };
+    const decoded = decodeURIComponent(String(url));
+    urls.push(decoded);
+    if (decoded.includes(failFor)) {
+      return { ok: false, status: 400, text: async () => `column employees.${failFor} does not exist` };
     }
     return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
   };
+  return urls;
+}
+
+test('a database without the Phase B columns keeps the v2 classification', async () => {
+  const urls = stubFailingColumn('position,');   // the trailing comma avoids position_group
+
+  const res = await get('employees');
+  assert.strictEqual(res.statusCode, 200, 'a missing Phase B column must not 500 the roster');
+  assert.strictEqual(urls.length, 2, 'expected exactly one retry');
+
+  assert.ok(!/address_street/.test(urls[1]), 'the retry drops the address columns');
+  assert.ok(/pay_type/.test(urls[1]), 'but KEEPS pay_type — this is the whole point of the middle rung');
+  assert.ok(/cost_class/.test(urls[1]) && /position_group/.test(urls[1]), 'and the other two axes');
+  assert.ok(!/annual_salary/.test(urls[1]), 'and still never asks for annual_salary');
+});
+
+test('a database without the v2 columns falls all the way back rather than taking the app down', async () => {
+  const urls = stubFailingColumn('pay_type');
 
   const res = await get('employees');
   assert.strictEqual(res.statusCode, 200, 'a missing v2 column must not 500 the roster');
-  assert.strictEqual(urls.length, 2, 'expected one retry');
-  assert.ok(!/pay_type/.test(urls[1]), 'the retry should drop the v2 columns');
-  assert.ok(!/annual_salary/.test(urls[1]), 'and must still not ask for annual_salary');
+  assert.strictEqual(urls.length, 3, 'one retry per rung: full, pre-Phase-B, pre-v2');
+
+  const last = urls[urls.length - 1];
+  assert.ok(!/pay_type/.test(last), 'the last attempt drops the v2 columns');
+  assert.ok(!/address_street/.test(last) && !/,position,/.test(last + ','), 'and the Phase B ones');
+  assert.ok(!/annual_salary/.test(last), 'and must still not ask for annual_salary');
 });
 
 test('an unrelated failure is not hidden behind a narrower read', async () => {

@@ -35,6 +35,10 @@ let state = {
   ot:{post:[],weekend:[],pre:[]}, points:[],
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, otEditing:false, ptEditing:false,
+  // Which employee's profile card is open, as {idx}, or null. Separate from
+  // `editing`: the card is read-only until Edit sets `editing` as well, and
+  // saveEdit() clearing `editing` is what drops it back to read-only.
+  profile:null,
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
@@ -154,8 +158,12 @@ const PAYROLL_DEPARTMENTS=COST_CLASSES.reduce((all,cc)=>all.concat(DEPARTMENTS_B
 // The planning layer. Nullable for everyone, and legitimately null for anybody who is
 // not manufacturing floor staff — that is NOT enforced against cost class here or in
 // the database, so the form offers a blank and leaves it blank.
+// 'Clean-up' is the tenth. It came in with the classification load and two people
+// hold it; the dropdown did not offer it, so opening either of their records and
+// saving would have written the value away — retiredOption() shows it and keeps it,
+// but only a real entry in this list stops it reading as retired.
 const POSITION_GROUPS=['Supervisors','Maintenance','Saw Filing','Log Yard','Sawmill Operators',
-  'Bakerville','Green Chain','Extras','Shipping'];
+  'Bakerville','Green Chain','Extras','Shipping','Clean-up'];
 
 // Any department is an assignment, so a row carrying one is DONE and must never be
 // counted as still needing a department. Every "is this row complete?" test goes
@@ -194,6 +202,115 @@ function waitedColor(ts){const d=daysSince(ts);return (d==null||d>=3)?'var(--bri
 // HTML attribute, so they have to survive both layers — JS first, then HTML.
 function jsStr(v){return esc(String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'"));}
 function fmtPct(f){return f==null?'—':(Number(f)*100).toFixed(1)+'%';}
+// ---------------------------------------------------------------------------
+// Birthdays.
+//
+// The column holds free text and has held three shapes: the full JS date string
+// the old form wrote ("Mon Nov 12 1990 00:00:00 GMT-0800 (Pacific Standard
+// Time)"), M/D/YYYY typed by hand, and YYYY-MM-DD. netlify/functions/
+// birthday-lib.js parseBirthday() already reads all three, and only ever uses
+// the MONTH AND DAY — the year is never read.
+//
+// This is the client-side twin of that parser and it exists for one reason: the
+// edit surface now uses <input type="date">, which shows nothing at all for a
+// value it cannot parse. Rendering an empty date picker over a stored birthday
+// and then saving would silently erase it, for a system that is live and
+// announcing to 66 people. So an unparseable value must be detectable HERE,
+// before the field is drawn, and shown as text instead.
+//
+// Deliberately not exhaustive: it accepts what the server parser accepts, and
+// nothing else. Anything it returns null for gets the text fallback.
+function parseBirthdayParts(value){
+  if(value==null) return null;
+  const raw=String(value).trim();
+  if(!raw||raw.toUpperCase().includes('ERROR')) return null;
+
+  // Already a plain date, which is where everything is headed.
+  let m=raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if(m) return validBirthday(+m[1],+m[2],+m[3]);
+
+  // Hand-typed M/D/YYYY or M-D-YYYY. A 2-digit or absent year cannot be turned
+  // into a date input value, so those take the text fallback rather than having
+  // a century guessed for them.
+  m=raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if(m) return validBirthday(+m[3],+m[1],+m[2]);
+
+  // The full JS date string. Read in UTC, exactly as the server parser does:
+  // every stored value is midnight Pacific, which is 08:00 UTC the SAME calendar
+  // day, so reading UTC parts cannot roll the date across midnight.
+  //
+  // GATED ON A 4-DIGIT YEAR BEING PRESENT IN THE TEXT, and that guard is
+  // load-bearing. Date.parse is not a validator, it is a guesser:
+  // Date.parse('3/15') returns March 15 2001 in V8. A bare 'M/D' is a real
+  // stored shape — the server parser reads it correctly, because it only ever
+  // wants month and day — but there is no year in it to put in a date input. If
+  // this trusted Date.parse, that record would render as 2001-03-15 and the next
+  // save would write an invented year into somebody's HR file as fact. A missing
+  // year is not an error to be filled in; it takes the text fallback.
+  if(/\b\d{4}\b/.test(raw)){
+    const t=Date.parse(raw);
+    if(!isNaN(t)){
+      const d=new Date(t);
+      return validBirthday(d.getUTCFullYear(),d.getUTCMonth()+1,d.getUTCDate());
+    }
+  }
+  return null;
+}
+
+function validBirthday(y,mo,da){
+  if(!(y>=1900&&y<=2200)) return null;
+  if(!(mo>=1&&mo<=12)) return null;
+  if(!(da>=1&&da<=31)) return null;
+  // Reject Feb 30 and friends by round-tripping through a UTC date.
+  const d=new Date(Date.UTC(y,mo-1,da));
+  if(d.getUTCMonth()+1!==mo||d.getUTCDate()!==da) return null;
+  return {year:y,month:mo,day:da};
+}
+
+// What <input type="date"> needs: YYYY-MM-DD, or '' when the stored value cannot
+// be represented as one.
+function birthdayInputValue(value){
+  const p=parseBirthdayParts(value);
+  if(!p) return '';
+  return p.year+'-'+String(p.month).padStart(2,'0')+'-'+String(p.day).padStart(2,'0');
+}
+
+// For DISPLAY, and deliberately more permissive than parseBirthdayParts.
+//
+// The notifier only ever reads month and day, so a value stored as '3/15' —
+// no year at all — is announced perfectly well. parseBirthdayParts rejects it
+// because a date input cannot represent it, and if the profile card reused that
+// stricter answer it would show "not set" for somebody the system announces
+// every year. The card has to agree with the notifier, not with the widget.
+//
+// This mirrors netlify/functions/birthday-lib.js parseBirthday(): month and day,
+// year optional and unused.
+function parseBirthdayMonthDay(value){
+  const full=parseBirthdayParts(value);
+  if(full) return {month:full.month,day:full.day};
+
+  const raw=String(value==null?'':value).trim();
+  if(!raw||raw.toUpperCase().includes('ERROR')) return null;
+
+  // M/D, M/D/YY — the shapes with no usable year.
+  const m=raw.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/);
+  if(!m) return null;
+  const mo=+m[1], da=+m[2];
+  if(!(mo>=1&&mo<=12)||!(da>=1&&da<=31)) return null;
+  // Leap year is the permissive answer: Feb 29 is a real birthday.
+  if(!validBirthday(2000,mo,da)) return null;
+  return {month:mo,day:da};
+}
+
+function fmtBirthday(value){
+  const p=parseBirthdayMonthDay(value);
+  if(!p) return null;
+  return MONTH_NAMES[p.month-1]+' '+p.day;
+}
+
+const MONTH_NAMES=['January','February','March','April','May','June','July',
+  'August','September','October','November','December'];
+
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);}
 
 // Fri/Sat/Sun work is normal here — maintenance crews run weekends — so this

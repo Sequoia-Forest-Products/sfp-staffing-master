@@ -34,7 +34,14 @@ async function loadData(){
       // — the projection in netlify/functions/data.js leaves it out until the
       // Salaries & Wages tier can gate it. Mapping it would read '' forever,
       // which is exactly how somebody later "fixes" it by re-adding the column.
-      positionGroup:r.position_group||''
+      positionGroup:r.position_group||'',
+      // Phase B. `position` is the specific job WITHIN a position group and
+      // applies to everyone: the CEO has a position and no position group. The
+      // address columns have existed since SCHEMA_V2_MODEL.sql section 4 and
+      // were simply never projected, so nothing could show them.
+      position:r.position||'',
+      addressStreet:r.address_street||'', addressCity:r.address_city||'',
+      addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
     }));
 
     // Economics
@@ -82,7 +89,12 @@ const OPTIONAL_EMPLOYEE_COLUMNS = {
   employee_number:'the payroll employee # needs SCHEMA_DAILY_HOURS.sql to persist',
   department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist',
   cost_class:'the cost class needs SCHEMA_V2_MODEL.sql section 2 to persist',
-  position_group:'the position group needs SCHEMA_V2_MODEL.sql section 3 to persist'
+  position_group:'the position group needs SCHEMA_V2_MODEL.sql section 3 to persist',
+  position:'the position needs SCHEMA_PHASE_B_POSITION.sql to persist',
+  address_street:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
+  address_city:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
+  address_state:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
+  address_postal_code:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist'
 };
 
 async function writeEmployeeRow(url, method, row){
@@ -173,7 +185,15 @@ async function syncToSheet(){
         // cleaned.
         name:e.name, wage:isSalaried(e)?null:(e.wage===''||e.wage==null?null:e.wage),
         pay_type:payTypeOf(e), status:e.status,
-        days:e.days, clock_in:e.clockIn, clock_out:e.clockOut,
+        // clock_in and clock_out are deliberately NOT written. Nothing reads them
+        // (audited across the frontend, every Netlify function and both report
+        // libraries), so the profile stopped offering them. The COLUMNS remain
+        // and are still projected, so the stored values stay readable — dropping
+        // them is a separate, later, deliberate act, the way `dept` was handled.
+        //
+        // Absent is not null: PostgREST leaves a column a PATCH does not name
+        // alone, so this loop re-writing every row does NOT blank them.
+        days:e.days,
         break_1:e.break1||'7:00 AM', break_2:e.break2||'12:45 PM',
         birthday:e.birthday, phone:e.phone, language:e.language,
         email:e.email, sms_opted_out:e.smsOptedOut===true,
@@ -182,7 +202,12 @@ async function syncToSheet(){
         // Written here too: this loop re-writes every row on the roster, so leaving
         // the two new axes out would not preserve them — it would just make Sync the
         // one path that never carries them.
-        cost_class:e.costClass||null, position_group:e.positionGroup||null
+        cost_class:e.costClass||null, position_group:e.positionGroup||null,
+        // Same reasoning for the Phase B fields: Sync must not be the one path
+        // that quietly stops carrying them.
+        position:e.position||null,
+        address_street:e.addressStreet||null, address_city:e.addressCity||null,
+        address_state:e.addressState||null, address_postal_code:e.addressPostalCode||null
       };
       if(e.id){
         await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
@@ -212,7 +237,14 @@ async function syncToSheet(){
       // — the projection in netlify/functions/data.js leaves it out until the
       // Salaries & Wages tier can gate it. Mapping it would read '' forever,
       // which is exactly how somebody later "fixes" it by re-adding the column.
-      positionGroup:r.position_group||''
+      positionGroup:r.position_group||'',
+      // Phase B. `position` is the specific job WITHIN a position group and
+      // applies to everyone: the CEO has a position and no position group. The
+      // address columns have existed since SCHEMA_V2_MODEL.sql section 4 and
+      // were simply never projected, so nothing could show them.
+      position:r.position||'',
+      addressStreet:r.address_street||'', addressCity:r.address_city||'',
+      addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
     }));
 
     state.dirty=false;

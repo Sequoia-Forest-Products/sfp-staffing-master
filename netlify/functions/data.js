@@ -28,8 +28,23 @@ const EMPLOYEE_COLUMNS = [
   'clock_in', 'clock_out', 'break_1', 'break_2',
   'birthday', 'phone', 'language', 'email',
   'sms_opted_out', 'text_bolt', 'drive_folder_id',
-  'employee_number', 'department', 'pay_type', 'cost_class', 'position_group'
+  'employee_number', 'department', 'pay_type', 'cost_class', 'position_group',
+  // Phase B. The address columns have existed since SCHEMA_V2_MODEL.sql section
+  // 4 but were never projected, so the profile card could not have shown them.
+  // `position` is the specific job within a position group, and unlike
+  // position_group it applies to everyone — the CEO has a position and no
+  // position group.
+  'position', 'address_street', 'address_city', 'address_state', 'address_postal_code'
 ];
+
+// The Phase B additions, listed separately so a database missing them degrades to
+// "no position and no address on the profile card" instead of falling all the way
+// back to pre-v2 and losing pay_type, cost_class and position_group from every
+// screen that reads them. The old fallback was binary; naming one absent column
+// took the whole classification model out of the payload with it.
+const EMPLOYEE_COLUMNS_PRE_PHASE_B = EMPLOYEE_COLUMNS.filter(
+  c => c !== 'position' && !c.startsWith('address_')
+);
 
 // pay_type, cost_class and position_group do not exist until
 // SCHEMA_V2_MODEL.sql has run. Naming a missing column is a 400 from PostgREST,
@@ -63,16 +78,40 @@ function isUndefinedColumnError(message) {
   return /\b42703\b|does not exist|could not find/i.test(String(message || ''));
 }
 
-async function queryEmployees() {
-  try {
-    const rows = await db.query('employees', `?select=${EMPLOYEE_COLUMNS.join(',')}&order=name.asc`);
-    return pickColumns(rows, EMPLOYEE_COLUMNS);
-  } catch (err) {
-    if (!isUndefinedColumnError(err.message)) throw err;
-    console.warn('employees is missing the v2 columns — run SCHEMA_V2_MODEL.sql. Falling back to the pre-v2 projection.');
-    const rows = await db.query('employees', `?select=${EMPLOYEE_COLUMNS_PRE_V2.join(',')}&order=name.asc`);
-    return pickColumns(rows, EMPLOYEE_COLUMNS_PRE_V2);
+// Widest projection first, then one step narrower, then pre-v2. Each rung drops
+// only what the rung above it added, so a missing column costs exactly the
+// screens that use it. Naming a column PostgREST does not have is a 400, which
+// would take the roster — and so the whole app — down.
+const EMPLOYEE_PROJECTIONS = [
+  { columns: EMPLOYEE_COLUMNS, missing: null },
+  {
+    columns: EMPLOYEE_COLUMNS_PRE_PHASE_B,
+    missing: 'employees is missing the Phase B columns (position, address_*) — run ' +
+             'SCHEMA_PHASE_B_POSITION.sql. The profile card will show no position and no address.'
+  },
+  {
+    columns: EMPLOYEE_COLUMNS_PRE_V2,
+    missing: 'employees is missing the v2 columns — run SCHEMA_V2_MODEL.sql. Falling back ' +
+             'to the pre-v2 projection.'
   }
+];
+
+async function queryEmployees() {
+  let lastErr = null;
+
+  for (const rung of EMPLOYEE_PROJECTIONS) {
+    try {
+      const rows = await db.query('employees', `?select=${rung.columns.join(',')}&order=name.asc`);
+      return pickColumns(rows, rung.columns);
+    } catch (err) {
+      if (!isUndefinedColumnError(err.message)) throw err;
+      lastErr = err;
+      const next = EMPLOYEE_PROJECTIONS[EMPLOYEE_PROJECTIONS.indexOf(rung) + 1];
+      if (next && next.missing) console.warn(next.missing);
+    }
+  }
+
+  throw lastErr;
 }
 
 function verifySession(token) {
