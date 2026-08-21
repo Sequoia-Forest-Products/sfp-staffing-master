@@ -195,10 +195,23 @@ employee was assigned by hand. The one-off bulk back-fill screen that existed fo
 has been removed now that it is done; departments are set per employee in the edit modal.
 
 ### economics
-`id, num, section, position, name, max_wage`
+`id, num, section, seat, name, max_wage, created_at, updated_at`
 
-The staffing plan that backed the **Staffing Economics** tab: a numbered list of positions, each
-with the employee assigned to it and a maximum hourly rate to compare against. Phase C replaced
+**`seat`, not `position`.** The two are different concepts that shared a name until they were
+separated:
+
+| | |
+|---|---|
+| `employees.position` | a person's **job title** — `Millwright`, `Debarker` |
+| `economics.seat` | a numbered **slot in the staffing plan** — `Millwright 1`, `Utility 1`–`7` |
+
+The row is the seat, not the person: `name` is whoever is assigned to it and is nullable, because
+an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **that seat**, and
+`section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
+per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
+
+The staffing plan that backed the **Staffing Economics** tab: 55 numbered seats, each with the
+employee assigned to it and a maximum hourly rate to compare against. Phase C replaced
 that tab with **Manufacturing Costs**, which reports in aggregate, because the old page rendered
 every position's holder next to their hourly rate and there is no permissions system — anything on
 screen is readable by every signed-in account.
