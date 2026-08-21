@@ -5,19 +5,68 @@
 -- safe. Section 3 WRITES.
 --
 -- ---------------------------------------------------------------------------
--- AUDIT PASSED — 2026-08-21. Section 3 is live below because of this, and for
--- no other reason. If you are reading this file against a DIFFERENT database,
--- section 3 is not authorised: re-run section 1 first.
+-- APPLIED — 2026-08-21, project zwghbbyzrycpnesuuzgi (sfp-staffing).
 --
+-- Sections 3a and 3b HAVE BEEN RUN against the live database. Section 4 has NOT.
+-- Do not re-run section 3 expecting it to do something; every statement in it is
+-- idempotent, so a second run is harmless but is also a no-op — 3a's WHERE skips
+-- rows that already have a backup, and 3b's first branch re-normalises an ISO
+-- value to itself.
+--
+-- THE AUDIT THAT AUTHORISED IT
 --   1a  69 JS date string, 4 M/D/YYYY, 1 empty string. 74 rows = the whole
 --       employees table (67 active + 7 inactive; 1a has no status filter).
---   1b  EMPTY. No value fails every shape the parser understands.
---   1c  EMPTY, implied by 1a reporting no 'M/D (no year)' and no 'M/D/YY'
---       bucket. So every non-empty value converts and there are no deliberate
---       leftovers — which also means section 4 becomes available afterwards.
---   1d  73 rows previewed (74 minus the empty string). Peter verified every
---       conversion independently: month, day and year preserved, zero
---       mismatches.
+--   1b  EMPTY. No value failed every shape the parser understands.
+--   1c  EMPTY, implied by 1a having no 'M/D (no year)' or 'M/D/YY' bucket, so
+--       every non-empty value converted and there are no leftovers.
+--   1d  73 rows previewed. Peter verified every conversion independently:
+--       month, day and year preserved, zero mismatches.
+--
+-- WHAT WAS RUN, AND WHAT IT RETURNED
+--   3a      birthday_raw_backup created; backed_up = 74. Verified separately:
+--           74 rows total, 0 rows where the backup differs from the live value,
+--           and `birthday` itself untouched (69 JS / 4 M/D/YYYY / 0 ISO).
+--   3b      73 rows rewritten. 69 + 4; the empty string is excluded by the WHERE,
+--           which is why this is 73 where the backup is 74.
+--   3c-i    ISO 73, empty string 1, still-JS 0, NULL 0, total 74.
+--   3c-ii   0 violations.
+--   3c-iii  0 violations.
+--
+-- THE ACCEPTANCE TEST
+--   A fingerprint was taken BEFORE the migration over all 73 non-empty rows —
+--   md5 of 'id:name:MM-DD', sorted — reading month and day out of the raw
+--   column the same way parseBirthday() does:
+--
+--       5ac19ef29711f2f475defafc5d0de23f, 73 people
+--
+--   Recomputed from the MIGRATED column: IDENTICAL. So every one of the 73 still
+--   reads as the same month and day. Not a sample.
+--
+--   The fingerprint was licensed by the endpoint, not assumed: 13 /api/birthday-test
+--   URLs were run before the migration and all 13 agreed with an independent
+--   derivation from the raw column, which established that this extraction reads
+--   the data the way the deployed parser does. Five of those URLs return people;
+--   all five returned the same names after the migration — Rollin Tolle,
+--   Peter Stroble, Craig Brownfield + Everardo Gonzalez, Jayce Coovert,
+--   Jason Lester + Jason Matthew Smith.
+--
+--   Spot-checked the two rows whose source data contradicts itself (see section 2):
+--   Howard Hoffman 'Mon Oct 05 1959 ... GMT-0800 (Pacific Daylight Time)' ->
+--   '1959-10-05', and Jaime Canizalez 'Fri Apr 07 1967 ... GMT-0800 (Pacific
+--   Daylight Time)' -> '1967-04-07'. Both landed on the date their TEXT says,
+--   which is the point of not casting through timestamptz.
+--
+--   Jacob Torres holds the one empty string and is correctly untouched.
+--
+-- birthday_raw_backup is deliberately LEFT IN PLACE. It is the rollback, it cost
+-- nothing, and dropping it is a separate deliberate act — the same way dept was
+-- handled. Rollback, if ever needed:
+--
+--     update employees set birthday = birthday_raw_backup
+--     where birthday_raw_backup is not null;
+--
+-- If you are reading this file against a DIFFERENT database, none of the above
+-- applies: re-run section 1 first and do not assume section 3 is safe.
 -- ---------------------------------------------------------------------------
 -- ============================================================================
 
@@ -344,9 +393,16 @@ where birthday_raw_backup ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}'
 -- ----------------------------------------------------------------------------
 --
 -- Do not run this in the same session as section 3. Run section 1a again first
--- and confirm every row is 'already ISO (YYYY-MM-DD)', 'NULL' or 'empty string'
--- — and note that the 'M/D (no year)' rows from 1c will still be there, so this
--- CANNOT run until those have been given a year by hand.
+-- and confirm every row is 'already ISO (YYYY-MM-DD)', 'NULL' or 'empty string'.
+--
+-- AS OF 2026-08-21 THAT CONDITION IS MET: 73 ISO, 1 empty string, nothing else,
+-- and 1c was empty so there are no year-less rows to fix first. So this is now
+-- available whenever it is wanted. It has not been run, and nothing needs it —
+-- see section 2 for why the format mattered and the type did not.
+--
+-- The nullif() is load-bearing: '' is not a valid date, and Jacob Torres holds
+-- an empty string. Without it this statement fails with
+-- 'invalid input syntax for type date: ""'.
 --
 -- alter table employees alter column birthday type date using nullif(btrim(birthday), '')::date;
 
