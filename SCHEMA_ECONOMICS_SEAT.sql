@@ -1,4 +1,17 @@
 -- =====================================================================
+-- APPLIED 2026-08-21 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- §0a: position 1, seat 0, 55 rows, 55 named. §0b: one trigger
+-- (economics_updated_at -> update_updated_at, body `new.updated_at = now();
+-- return new;`), no functions, no policies, no views. §1: renamed, comment
+-- attached. §2a: position 0, seat 1, 55 rows, 55 named. §2b: Millwright 1-5
+-- and Utility 1-7 intact. §2c: no rows.
+--
+-- Documentation updated in the same change: README's economics schema line
+-- (which also omitted created_at and updated_at) and section 4 of
+-- SCHEMA_PHASE_B_POSITION.sql, whose diagnostic queries selected the column by
+-- name and would have errored if re-run.
+-- =====================================================================
 -- SFP Staffing — rename economics.position to economics.seat
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 --

@@ -107,11 +107,18 @@ order by name;
 
 
 -- ----------------------------------------------------------------------------
--- 4. economics.position — READ ONLY. Do not change either column.
+-- 4. economics.seat (was economics.position) — READ ONLY.
 -- ----------------------------------------------------------------------------
 --
--- The economics table is `id, num, section, position, name, max_wage`, and it
--- already has a column called `position`. Two columns of that name in one
+-- RENAMED SINCE THIS WAS WRITTEN. The column this section calls
+-- `economics.position` is now `economics.seat`, renamed by
+-- SCHEMA_ECONOMICS_SEAT.sql on 2026-08-21 for exactly the reason set out
+-- below. The queries in 4a and 4b have been updated to the new name so they
+-- still run; the prose is left as it was, because it is the argument the
+-- rename was made on.
+--
+-- The economics table was `id, num, section, position, name, max_wage`, and it
+-- already had a column called `position`. Two columns of that name in one
 -- database is the shape of the dept / department problem, so it is worth being
 -- precise about what each one is before anybody "reconciles" them.
 --
@@ -121,7 +128,7 @@ order by name;
 --   employees.position   an attribute OF A PERSON. Their job title. One row per
 --                        human, null until somebody types it.
 --
---   economics.position   the name of a BUDGETED SEAT in the staffing plan. The
+--   economics.seat       the name of a BUDGETED SEAT in the staffing plan. The
 --                        row is the seat, not the person: `name` is the employee
 --                        assigned to it and is nullable (an unfilled seat is a
 --                        real and useful row), `max_wage` is the rate ceiling
@@ -141,23 +148,23 @@ order by name;
 -- 4a. Every economics seat, with whether its title is also used as a person's
 --     position. Exact match, case- and whitespace-insensitive.
 select e.section,
-       e.position                as economics_position,
+       e.seat                    as economics_seat,
        e.name                    as assigned_employee,
        e.max_wage,
        exists (
          select 1 from employees emp
-         where lower(btrim(emp.position)) = lower(btrim(e.position))
+         where lower(btrim(emp.position)) = lower(btrim(e.seat))
        )                         as title_also_a_person_position
 from economics e
-order by e.section, e.position;
+order by e.section, e.seat;
 
 -- 4b. The two vocabularies side by side: which titles are in both, which are
 --     only a seat, which are only a person. `only_a_seat` rows are budgeted
 --     positions nobody's record names; `only_a_person` rows are titles the
 --     staffing plan has no seat for.
 with econ as (
-  select distinct lower(btrim(position)) as title from economics
-  where position is not null and btrim(position) <> ''
+  select distinct lower(btrim(seat)) as title from economics
+  where seat is not null and btrim(seat) <> ''
 ), emp as (
   select distinct lower(btrim(position)) as title from employees
   where position is not null and btrim(position) <> ''
