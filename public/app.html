@@ -188,10 +188,11 @@
     <div class="sfp-tabs">
       <button class="sfp-tab active" data-tab="employees" onclick="switchTab('employees',this)">Employees</button>
       <button class="sfp-tab" data-tab="economics" onclick="switchTab('economics',this)">Staffing Economics</button>
-      <button class="sfp-tab" data-tab="overtime" onclick="switchTab('overtime',this)">Pre-Approved Overtime</button>
-      <button class="sfp-tab" data-tab="points" onclick="switchTab('points',this)">Points Tracker</button>
       <button class="sfp-tab" data-tab="dailyhours" onclick="switchTab('dailyhours',this)">Daily Hours</button>
-      <button class="sfp-tab" data-tab="otreport" onclick="switchTab('otreport',this)">OT Report</button>
+      <!-- Reports absorbs three former top-level tabs: Pre-Approved Overtime,
+           OT Report and Points Tracker. Placed after Daily Hours because that is
+           the order of work — hours are imported, then reported on. -->
+      <button class="sfp-tab" data-tab="reports" onclick="switchTab('reports',this)">Reports</button>
       <button class="sfp-tab" data-tab="settings" onclick="switchTab('settings',this)">Settings</button>
     </div>
   </div>

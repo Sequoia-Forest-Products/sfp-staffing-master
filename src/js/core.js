@@ -39,6 +39,10 @@ let state = {
   // `editing`: the card is read-only until Edit sets `editing` as well, and
   // saveEdit() clearing `editing` is what drops it back to read-only.
   profile:null,
+  // Which sub-view the Reports tab is showing. Defaults to Pre-Approved OT
+  // because it needs no network call — the OT Report loads on first open, the
+  // way it did as a top-level tab.
+  reportView:'preapproved',
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
@@ -342,7 +346,16 @@ function switchTab(tab,el){
   render();
   // The payroll tabs read their own endpoints, so they load on first open
   // rather than on every page load.
-  if(tab==='otreport'&&!state.otReport&&!state.otReportLoading) loadOTReport(state.otReportWeek);
+  //
+  // The OT Report's hook used to live here, keyed on tab==='otreport'. It is now
+  // a sub-view of Reports, so the hook moved to switchReportView() — and it also
+  // has to fire when Reports is opened while that sub-view is already the
+  // selected one, or a deep link from goToReport('otreport') would render the
+  // report shell and never load anything into it.
+  if(tab==='reports'){
+    const view=reportView(state.reportView);
+    if(view.load) view.load();
+  }
   if(tab==='dailyhours'&&!state.dailyLoaded&&!state.dailyLoading) loadDailyDays();
 }
 
@@ -351,10 +364,11 @@ function render(){
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
   else if(state.tab==='economics')el.innerHTML=renderEcon();
-  else if(state.tab==='overtime')el.innerHTML=renderOT();
-  else if(state.tab==='points')el.innerHTML=renderPoints();
+  // 'overtime', 'points' and 'otreport' are no longer tabs; they are sub-views
+  // of 'reports'. Their render functions are unchanged and are called from
+  // renderReports().
+  else if(state.tab==='reports')el.innerHTML=renderReports();
   else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
-  else if(state.tab==='otreport')el.innerHTML=renderOTReport();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }
 
