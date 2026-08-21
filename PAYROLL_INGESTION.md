@@ -536,15 +536,34 @@ synchronous `/api/payroll-email-test` endpoint returns 502 in a browser when it 
 wall — the function still completes and logs correctly, so read the function log rather
 than the HTTP response.
 
-The part that grows: `readPayrollMessages` downloads the workbook part for **every**
-descriptor it matched, and the `processed_emails` ledger is consulted afterwards, in the
-processing loop. So an already-imported message is re-downloaded on every run — it is only
-the parse and the write that get skipped. With a seven-day window and daily delivery that
-settles at seven downloads an hour, forever, rather than one.
+It used to be worse, and this is worth knowing because it explains the shape of the code.
+`fetchLabeledMessages` downloaded the workbook part for **every** descriptor it matched, and
+the `processed_emails` ledger was only consulted afterwards, in the classify phase. So an
+already-imported message was re-downloaded on every run — only the parse and the write were
+skipped — and the cost grew with the size of the window rather than with the number of new
+messages. With a seven-day window and daily delivery that settles at seven downloads an
+hour, for ever, to import one file.
 
-Moving the ledger lookup ahead of the download loop would make steady state one download
-instead of seven. Until then, treat the hourly run as having little headroom, and expect a
-backlog — several unprocessed days at once — to be the case that exceeds the wall.
+The ledger is now consulted **between** the two loops: list the window (one FETCH), ask
+which of those message IDs are already imported, then download only the rest. Steady state
+is one download per run instead of seven.
+
+Three things about that worth remembering:
+
+- **It fails open.** If the ledger cannot be reached the run downloads everything, exactly
+  as it did before. A slow run that imports correctly beats a fast one that skips a message
+  it only assumed was handled.
+- **A skipped download is marked, not blanked.** The attachment comes back with
+  `downloadSkipped: true` rather than empty content, and the classify phase checks that
+  flag *before* the empty-attachment check. Otherwise a `processed_emails` row disappearing
+  between the two reads would be reported as "carried no bytes", which is a lie about the
+  vendor's file and sends you looking in the wrong place.
+- **Dry runs do not benefit.** A dry run writes nothing, so the ledger stays empty and
+  every message is downloaded every time. `/api/payroll-email-test` will keep taking as
+  long as it always did, and keep 502-ing in a browser past its wall. Read the function log.
+
+A backlog — several unprocessed days arriving at once — is still the case most likely to
+exceed the wall, because those messages genuinely all have to be downloaded and parsed.
 
 ---
 
