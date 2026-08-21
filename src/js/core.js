@@ -357,11 +357,32 @@ function fmtBirthday(value){
 // afternoon break read as '1899-12-30T20:45:00.000Z'. Same class of bug as the
 // birthday column: a stored value shown without formatting.
 //
-// PARSED, NOT CAST. `new Date('1899-12-30T20:45:00.000Z')` then reading local
-// hours would shift the time by the viewer's UTC offset — 20:45Z becomes 12:45
-// in California — and the stored value was never an instant in the first place.
-// So the digits are pulled out with a regex and used as written. That is also
-// why nothing here touches a timezone: there is no instant to convert.
+// THE ISO VALUES ARE SHIFTED BY EIGHT HOURS AND THE TEXT ONES ARE NOT.
+//
+// Audited against all 74 rows. break_1 is '15:00' on 68 of them; break_2 is
+// '20:45' on 64. The four rows in each column that hold TEXT read '7:00 AM' and
+// '12:45 PM' — the mill's standard breaks, and what openAdd() defaults a new hire
+// to. 15:00 - 8h is 07:00 and 20:45 - 8h is 12:45: two independent values both
+// landing exactly on the known break times under the same offset.
+//
+// Read as written instead, 68 people's 7:00 AM break displays as 3:00 PM and 64
+// people's lunch as 8:45 PM, and the ISO rows would describe a different mill
+// from the text rows in the same column. Under the shift the whole roster reads
+// as one place: 7:00 AM and 12:45 PM for the bulk, a 1:00/1:30 PM lunch for four
+// people, and one later shift of two on 4:30 PM and 8:45 PM — the same two rows
+// in both columns. It also explains the 1899-12-31 dates: a time-only value
+// cannot roll past its own epoch day unless something shifted it.
+//
+// So the offset is applied to the ISO shape ONLY. Applying it to the text rows
+// would shift already-correct values a second time.
+//
+// PARSED, NOT CAST, and the offset is FIXED. `new Date(...)` then reading local
+// hours would shift by the VIEWER's offset — a different break time in
+// California, Berlin and on a UTC build server, none of them the stored one. And
+// no DST: 15:00 - 8 matching the text exactly means the export used a flat -8,
+// not a date-aware conversion. 1899 predates US DST anyway. There is no instant
+// here to convert, only digits to correct.
+const SPREADSHEET_UTC_OFFSET_MINUTES=-8*60;
 
 // The time part of any shape above, as {hour, minute} on a 24-hour clock, or
 // null when the value cannot be read as a time at all.
@@ -369,18 +390,36 @@ function parseTimeParts(value){
   const raw=String(value==null?'':value).trim();
   if(raw==='') return null;
 
-  // ISO-ish: take the time immediately after the 'T' and ignore the date and
-  // any zone marker. The zone is ignored deliberately — see the note above.
+  // The 1899 spreadsheet shape. The date is ignored — it is the epoch, not a
+  // date — and the time is corrected by the fixed offset above. Any zone marker
+  // in the string is ignored too: the correction is the same either way, and
+  // trusting a '+00:00' that the exporter wrote as boilerplate would be reading
+  // meaning into punctuation.
   let m=/^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/.exec(raw);
-  if(!m) m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*$/.exec(raw);
+  if(m){
+    const h=+m[1], min=+m[2];
+    if(h<0||h>23||min<0||min>59) return null;
+    // Wrapped into the day. 00:30 - 8h is 16:30 the day before, which is 4:30 PM
+    // — the point being that the DAY is meaningless and only the clock survives.
+    const mins=((h*60+min)+SPREADSHEET_UTC_OFFSET_MINUTES+1440)%1440;
+    return {hour:Math.floor(mins/60),minute:mins%60};
+  }
+
+  // A bare 'HH:MM'. Already local — this is what <input type="time"> emits and
+  // what everything writes from now on — so it is NOT shifted.
+  m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*$/.exec(raw);
   if(m){
     const h=+m[1], min=+m[2];
     if(h>=0&&h<=23&&min>=0&&min<=59) return {hour:h,minute:min};
     return null;
   }
 
-  // 12-hour with a meridiem. 12 AM is hour 0 and 12 PM is hour 12 — the one
-  // pair of cases that a naive (h % 12) + offset gets wrong in both directions.
+  // 12-hour with a meridiem, e.g. '7:00 AM'. Already local — four rows per
+  // column hold this shape and they are the reference the offset above was
+  // derived FROM — so it is not shifted either.
+  //
+  // 12 AM is hour 0 and 12 PM is hour 12: the one pair of cases that a naive
+  // (h % 12) + offset gets wrong in both directions.
   m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp])\.?[Mm]\.?\s*$/.exec(raw);
   if(m){
     let h=+m[1];
@@ -392,9 +431,15 @@ function parseTimeParts(value){
   }
 
   // A bare number is a spreadsheet serial: the fraction of a day. 0.53125 is
-  // 12:45. Accepted because the column may hold them, but only below 1 — a
-  // value of 45000 is a full date serial, which is not a break time and is
-  // more likely a column mix-up worth seeing as "unreadable".
+  // 12:45. NOT shifted — a raw fraction has no zone applied to it, unlike the
+  // ISO strings which were serialised through one.
+  //
+  // The audit found none of these in the column, so this branch is defensive
+  // rather than load-bearing. Kept because the same export that produced the
+  // ISO values produces this shape too, depending on the cell format.
+  //
+  // Only below 1: a value of 45000 is a full date serial, which is not a break
+  // time and is more likely a column mix-up worth seeing as "unreadable".
   m=/^(\d?\.\d+|0)$/.exec(raw);
   if(m){
     const frac=parseFloat(m[1]);

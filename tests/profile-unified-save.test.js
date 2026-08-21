@@ -461,9 +461,12 @@ test('removing an existing split IS written, as an empty array', async () => {
 test('the card formats break times instead of showing the stored string', () => {
   const ctx = openCard(sandbox());
   const html = ctx.renderProfile();
-  assert.match(html, /8:45 PM/, 'the 1899 serialisation must render as a time');
+  // PERSON holds break1 '1899-12-30T20:45:00.000Z' and break2 '12:45 PM'. The
+  // ISO one is eight hours ahead of what it means, so both render as 12:45 PM —
+  // which is the point: the same time stored two ways now displays one way.
   assert.match(html, /12:45 PM/);
   assert.ok(!html.includes('1899-12-30T20:45'), 'the raw stored value must not reach the screen');
+  assert.ok(!html.includes('8:45 PM'), 'the unshifted reading must not reach the screen');
 });
 
 test('an unreadable break time is called out, not shown blank or raw', () => {
@@ -484,7 +487,10 @@ test('edit mode gives a time picker for a readable value and text for an unreada
   ctx.startProfileEdit();
   const html = ctx.renderProfile();
 
-  assert.match(html, /type="time" value="20:45"/, 'a readable value gets a picker, pre-filled');
+  // 20:45Z means 12:45 local, so the picker must open on 12:45. Pre-filling it
+  // with 20:45 would show a lunch break as an evening one, and saving would then
+  // store that as fact.
+  assert.match(html, /type="time" value="12:45"/, 'a readable value gets a picker, pre-filled with the LOCAL time');
   // The blanking trap: a time input given a value it cannot represent renders
   // empty, and the next save writes that emptiness back as fact.
   assert.match(html, /type="text" value="after the whistle"/);
@@ -540,7 +546,8 @@ test('a save normalizes a readable break time and preserves an unreadable one', 
   await ctx.saveEdit();
 
   const write = ctx.__calls.find(c => c.url.startsWith('/api/data?table=employees') && c.method === 'PATCH');
-  assert.strictEqual(write.body.break_1, '20:45', 'readable values are stored as 24-hour HH:MM');
+  assert.strictEqual(write.body.break_1, '12:45',
+    'readable values are stored as 24-hour LOCAL HH:MM — the shift is removed on the way in');
   assert.strictEqual(write.body.break_2, 'after the whistle',
     'an unreadable value is kept — nulling it destroys the only copy');
 });

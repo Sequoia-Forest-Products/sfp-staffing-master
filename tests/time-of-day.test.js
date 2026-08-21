@@ -46,35 +46,75 @@ const { parseTimeParts, fmtTime, timeInputValue, timeStorageValue } = ctx;
 // the shape that caused the bug
 // ---------------------------------------------------------------------------
 
-test('the 1899 spreadsheet serialisation reads as its clock time', () => {
-  assert.strictEqual(fmtTime('1899-12-30T20:45:00.000Z'), '8:45 PM');
-  assert.strictEqual(fmtTime('1899-12-30T07:00:00.000Z'), '7:00 AM');
-  assert.strictEqual(fmtTime('1899-12-30T12:45:00.000Z'), '12:45 PM');
-  assert.strictEqual(fmtTime('1899-12-30T00:15:00.000Z'), '12:15 AM');
+test('the 1899 serialisation is EIGHT HOURS AHEAD of the time it means', () => {
+  // Audited across all 74 rows. break_1 is '15:00' on 68 of them, break_2 is
+  // '20:45' on 64, and the four TEXT rows in each column read '7:00 AM' and
+  // '12:45 PM' — the mill's standard breaks. 15:00 - 8h is 07:00 and 20:45 - 8h
+  // is 12:45: two independent values landing exactly on the known times under
+  // one offset.
+  //
+  // Read as written instead, 68 people's morning break displays as 3:00 PM and
+  // the ISO rows describe a different mill from the text rows beside them.
+  assert.strictEqual(fmtTime('1899-12-30T15:00:00.000Z'), '7:00 AM');
+  assert.strictEqual(fmtTime('1899-12-30T20:45:00.000Z'), '12:45 PM');
+  assert.strictEqual(fmtTime('1899-12-30T21:30:00.000Z'), '1:30 PM');
+  assert.strictEqual(fmtTime('1899-12-30T21:00:00.000Z'), '1:00 PM');
 });
 
-test('the digits are read as written, NOT cast through a Date', () => {
-  // This is the whole reason parseTimeParts uses a regex. new Date(...) then
-  // getHours() would shift 20:45Z to 12:45 in California and 21:45 in Berlin —
-  // three different break times for one stored value, none of them stored.
-  const viaDate = new Date('1899-12-30T20:45:00.000Z').getHours();
-  assert.strictEqual(parseTimeParts('1899-12-30T20:45:00.000Z').hour, 20);
-  if (viaDate !== 20) {
-    assert.notStrictEqual(viaDate, 20,
-      'this machine is not UTC, which is exactly the case the regex protects against');
+test('every ISO value actually in the column reads as a plausible break', () => {
+  // The complete distribution, so a future change to the offset fails here
+  // rather than on somebody's screen.
+  const actual = [
+    ['1899-12-30T15:00:00.000Z', '7:00 AM',  68],
+    ['1899-12-31T00:30:00.000Z', '4:30 PM',   2],
+    ['1899-12-30T20:45:00.000Z', '12:45 PM', 64],
+    ['1899-12-30T21:30:00.000Z', '1:30 PM',   3],
+    ['1899-12-31T04:45:00.000Z', '8:45 PM',   2],
+    ['1899-12-30T21:00:00.000Z', '1:00 PM',   1]
+  ];
+  for (const [stored, expected] of actual) {
+    assert.strictEqual(fmtTime(stored), expected, stored);
   }
-  // And the zone marker is ignored rather than applied.
-  assert.deepStrictEqual(parseTimeParts('1899-12-30T20:45:00.000Z'),
-                         parseTimeParts('1899-12-30T20:45:00'));
-  assert.deepStrictEqual(parseTimeParts('1899-12-30T20:45:00+05:00'),
-                         parseTimeParts('1899-12-30T20:45:00'));
+});
+
+test('a value past midnight UTC wraps back into the working day', () => {
+  // The 1899-12-31 rows exist BECAUSE of the shift: a time-only value cannot
+  // roll past its own epoch day on its own. 00:30 - 8h is 16:30 the previous
+  // day, and the day is meaningless — only the clock survives.
+  assert.strictEqual(fmtTime('1899-12-31T00:30:00.000Z'), '4:30 PM');
+  assert.strictEqual(fmtTime('1899-12-31T04:45:00.000Z'), '8:45 PM');
+  assert.strictEqual(fmtTime('1899-12-31T07:59:00.000Z'), '11:59 PM');
+  assert.strictEqual(fmtTime('1899-12-31T08:00:00.000Z'), '12:00 AM');
+});
+
+test('the offset is FIXED, not the viewer\'s and not DST-aware', () => {
+  // new Date(...) then getHours() applies whatever offset the machine happens to
+  // have: a different break time in California, Berlin and on a UTC build
+  // server, none of them the stored one. The correction has to be arithmetic on
+  // the digits, and the same everywhere.
+  assert.strictEqual(parseTimeParts('1899-12-30T20:45:00.000Z').hour, 12);
+  assert.strictEqual(parseTimeParts('1899-12-30T20:45:00.000Z').minute, 45);
+
+  // No DST either: 15:00 - 8 matching the text rows exactly means the export used
+  // a flat -8, and 1899 predates US daylight saving anyway. Every date gets the
+  // same treatment.
+  for (const d of ['1899-12-30', '1899-12-31', '1900-07-04', '2026-07-04']) {
+    assert.strictEqual(fmtTime(d + 'T15:00:00.000Z'), '7:00 AM', d);
+  }
+
+  // The zone marker in the string is ignored rather than honoured — the exporter
+  // wrote it as boilerplate, and reading meaning into punctuation would make the
+  // answer depend on which tool produced the row.
+  for (const suffix of ['.000Z', '', '+00:00', '+05:00', '-03:00']) {
+    assert.strictEqual(fmtTime('1899-12-30T15:00:00' + suffix), '7:00 AM', suffix);
+  }
 });
 
 test('the date part is ignored whatever it is', () => {
   // 1899-12-30 is the epoch we expect, but 1900-01-01 and 1970-01-01 turn up in
   // data exported by different tools. None of them is a real date here.
   for (const d of ['1899-12-30', '1899-12-31', '1900-01-01', '1970-01-01', '2026-08-21']) {
-    assert.strictEqual(fmtTime(d + 'T20:45:00.000Z'), '8:45 PM', d);
+    assert.strictEqual(fmtTime(d + 'T20:45:00.000Z'), '12:45 PM', d);
   }
 });
 
@@ -82,8 +122,10 @@ test('the date part is ignored whatever it is', () => {
 // the other shapes actually in the column
 // ---------------------------------------------------------------------------
 
-test('12-hour text with a meridiem reads back unchanged', () => {
-  // What the roster's Add form writes: openAdd() defaults break1 to '7:00 AM'.
+test('12-hour text with a meridiem is NOT shifted', () => {
+  // These four rows per column are the reference the offset was derived FROM.
+  // Shifting them too would move already-correct values a second time — 7:00 AM
+  // would become 11:00 PM the day before.
   assert.strictEqual(fmtTime('7:00 AM'), '7:00 AM');
   assert.strictEqual(fmtTime('12:45 PM'), '12:45 PM');
   assert.strictEqual(fmtTime('8:45 pm'), '8:45 PM');
@@ -103,11 +145,25 @@ test('midnight and noon are the cases a naive conversion gets wrong', () => {
   assert.strictEqual(fmtTime('23:59'), '11:59 PM');
 });
 
-test('24-hour HH:MM reads back, with or without seconds', () => {
+test('24-hour HH:MM is NOT shifted either — it is what we write from now on', () => {
   assert.strictEqual(fmtTime('20:45'), '8:45 PM');
   assert.strictEqual(fmtTime('07:00'), '7:00 AM');
   assert.strictEqual(fmtTime('7:00'), '7:00 AM');
   assert.strictEqual(fmtTime('20:45:00'), '8:45 PM');
+});
+
+test('a migrated value and its original render identically', () => {
+  // The migration rewrites each ISO value as its local HH:MM. If these two ever
+  // disagreed, running the migration would silently change everybody's break
+  // times — which is the one thing it must not do.
+  for (const iso of ['1899-12-30T15:00:00.000Z', '1899-12-31T00:30:00.000Z',
+                     '1899-12-30T20:45:00.000Z', '1899-12-30T21:30:00.000Z',
+                     '1899-12-31T04:45:00.000Z', '1899-12-30T21:00:00.000Z']) {
+    const migrated = timeStorageValue(iso);
+    assert.strictEqual(fmtTime(migrated), fmtTime(iso), iso);
+    // And migrating twice is a no-op, so a re-run cannot shift anything again.
+    assert.strictEqual(timeStorageValue(migrated), migrated, iso);
+  }
 });
 
 test('a spreadsheet day fraction reads as a time', () => {
@@ -151,8 +207,12 @@ test('13:00 PM is rejected rather than coerced', () => {
 // timeInputValue — the blanking trap
 // ---------------------------------------------------------------------------
 
-test('timeInputValue gives HH:MM for every readable shape', () => {
-  assert.strictEqual(timeInputValue('1899-12-30T20:45:00.000Z'), '20:45');
+test('timeInputValue gives LOCAL HH:MM for every readable shape', () => {
+  // The picker must open on the time the card displays. Handing it the unshifted
+  // 20:45 would show a 12:45 PM lunch as 8:45 PM, and saving would then store
+  // 8:45 PM as fact.
+  assert.strictEqual(timeInputValue('1899-12-30T20:45:00.000Z'), '12:45');
+  assert.strictEqual(timeInputValue('1899-12-30T15:00:00.000Z'), '07:00');
   assert.strictEqual(timeInputValue('8:45 PM'), '20:45');
   assert.strictEqual(timeInputValue('20:45'), '20:45');
   assert.strictEqual(timeInputValue('7:00 AM'), '07:00');
@@ -179,11 +239,12 @@ test('timeInputValue gives EMPTY for an unreadable value, and that is load-beari
 // the storage decision
 // ---------------------------------------------------------------------------
 
-test('everything is stored as 24-hour HH:MM going forward', () => {
+test('everything is stored as 24-hour LOCAL HH:MM going forward', () => {
   // Chosen because <input type="time"> emits exactly this, it sorts correctly as
-  // text, it needs no meridiem to be unambiguous, and it carries no fake 1899
-  // date for something later to misread as an instant.
-  assert.strictEqual(timeStorageValue('1899-12-30T20:45:00.000Z'), '20:45');
+  // text, it needs no meridiem to be unambiguous, and it carries neither a fake
+  // 1899 date nor a hidden eight-hour offset for something later to get wrong.
+  assert.strictEqual(timeStorageValue('1899-12-30T20:45:00.000Z'), '12:45');
+  assert.strictEqual(timeStorageValue('1899-12-30T15:00:00.000Z'), '07:00');
   assert.strictEqual(timeStorageValue('8:45 PM'), '20:45');
   assert.strictEqual(timeStorageValue('20:45'), '20:45');
   assert.strictEqual(timeStorageValue('7:00 AM'), '07:00');
@@ -201,7 +262,8 @@ test('an unstorable value is NULL, never a default and never an empty string', (
 test('storing then reading is stable, and stays stable on a second pass', () => {
   // A value that changed shape on every save would make the column impossible
   // to audit.
-  for (const v of ['1899-12-30T20:45:00.000Z', '8:45 PM', '20:45', '0.53125', '12:00 AM']) {
+  for (const v of ['1899-12-30T20:45:00.000Z', '1899-12-31T00:30:00.000Z',
+                   '8:45 PM', '20:45', '0.53125', '12:00 AM']) {
     const once = timeStorageValue(v);
     assert.strictEqual(timeStorageValue(once), once, v);
     assert.strictEqual(fmtTime(once), fmtTime(v), v);
