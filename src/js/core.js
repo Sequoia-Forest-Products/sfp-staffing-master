@@ -43,6 +43,10 @@ let state = {
   // made a replace-the-table save look reasonable.
   preRows:[], preLoaded:false, preLoading:false, preError:'',
   preTableMissing:false, preNote:'',
+  // Cost allocations. allocDrafts is keyed by employee id so a half-finished
+  // edit on one person is not disturbed by opening somebody else's card.
+  allocations:[], allocDrafts:{}, allocLoaded:false, allocLoading:false,
+  allocError:'', allocTableMissing:false, allocNote:'',
   filterName:'', filterDept:'all', filterStatus:'Active',
   editing:null, dirty:false, loading:true, ptEditing:false,
   // Which employee's profile card is open, as {idx}, or null. Separate from

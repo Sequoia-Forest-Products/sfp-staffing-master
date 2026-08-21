@@ -33,6 +33,10 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
   cost. See *Deferred to Phase D*.
 - **Daily Hours tab** — manual `.xlsx` payroll upload with preview-before-commit, imported-day
   history, department re-stamping, and the email pipeline's issue queue
+- **Cost allocation** — a person's cost can split across departments (Jeff Cook 50/50 Corporate /
+  Sales & Marketing; Axeri Ramirez thirds across HR / Corporate / Accounting). Cost only, never
+  hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the
+  profile card.
 - **Reports tab** — three sub-views: **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend),
   the weekly **OT Report** (All / Pre-Approved / Net OT, scheduled vs. weekend split, department
   breakdown, manager email), and the **Points Tracker** (attendance points, disciplinary flags)
@@ -87,6 +91,9 @@ sfp-staffing-master/
         ├── cost-lib.js         # Cost aggregation by cost class (pure), with
         │                       # small-bucket suppression
         ├── cost-report.js      # /api/cost-report — Manufacturing Costs + Overhead
+        ├── preapproved-ot.js   # /api/preapproved-ot — standing OT allowance,
+        │                       # one row per write, never replace-all
+        ├── allocations.js      # /api/allocations — cost splits, sum-to-100
         ├── week-index-lib.js   # The week picker and bounded window scan, shared
         │                       # by /api/payroll-report and /api/cost-report
         ├── documents.js        # Google Drive folder management
@@ -202,13 +209,47 @@ went with the tab and has no replacement. `position` here is NOT authoritative �
 is, loaded from the classification worksheet. The table stays allowlisted in `/api/data`, so it is
 still readable (and, via PUT, still replaceable) by a signed-in caller even though no screen asks.
 
-### overtime
+### preapproved_ot
+`id, employee_id -> employees(id), ot_type (Pre-Shift|Post-Shift|Weekend), hours, description, created_at, updated_at`
+`unique (employee_id, ot_type)`
+
+The standing weekly pre-approved OT allowance. **No week column** — the same figure applies to every
+week. Assigned per employee on the profile card, one row at a time, through `/api/preapproved-ot`;
+the unique constraint makes a duplicate impossible, which is what the old table could not do.
+
+An **inactive** employee's allowance counts nowhere. An allowance is permission to work overtime, so
+somebody who has left cannot use it; crediting them understates Net OT every week. The report lists
+those rows under `preApproved.inactiveSkipped` so they can be deleted rather than silently ignored.
+
+Created and migrated by `SCHEMA_PHASE_C_PREAPPROVED_OT.sql`.
+
+### employee_allocations
+`id, employee_id -> employees(id), department, percent, created_at, updated_at`
+`unique (employee_id, department)`
+
+Cost allocation **exceptions**: no rows means 100% to `employees.department`, which is why 65 of 67
+people are not in this table. Applies to **cost only, never to hours** — Axeri Ramirez works whole
+hours in Accounting and it is her cost that splits three ways.
+
+The percentages for one employee must sum to **exactly 100**, enforced by a deferred constraint
+trigger (a `CHECK` cannot span rows). Zero rows is valid and means no allocation. Writes go through
+`set_employee_allocations(uuid, jsonb)` so the whole set changes in one transaction — PostgREST gives
+each HTTP request its own, and an insert-then-delete would trip the check at over 100%.
+
+Created by `SCHEMA_PHASE_C_ALLOCATIONS.sql`.
+
+### overtime (superseded)
 `id, name, ot_type (Pre-Shift|Post-Shift|Weekend), hours, description`
 
-Pre-approved OT. Per-employee (keyed by `name`), but with **no week column and no dollars** — the
-Overtime tab replaces the whole table on save, so this is a *standing weekly allowance* applied to
-every week, not a per-week entry. The OT Report says so on the page and derives the dollars as
-`hours x rate x 1.5`.
+**Replaced by `preapproved_ot` in Phase C. Kept, not dropped:** it is the only record of the
+pre-migration state, and the migration's verification queries reconcile against it. Nothing in the
+app reads it except as a fallback while `preapproved_ot` does not exist.
+
+It matched employees by **name**, typed into a free-text box. The roster has two people called Smith,
+so a name key silently picks the first — which is how one person became two phantom entries, the
+hours on one and the allowance on the other, reported as "approved but never worked". It also saved
+by replacing the whole table, which is how a byte-identical duplicate row got in and was counted for
+months. Dollars are still derived as `hours x rate x 1.5`; they were never stored.
 
 Pre-approved OT has a **second component** that does not live in this table: a timeclock grace
 allowance of `graceHoursPerEmployee` per active hourly employee per week (default 0.5, editable on
@@ -485,6 +526,14 @@ answer to encode.
 **Staffing Economics comes back, gated.** With `economics.max_wage` and the wage-vs-max variance
 column, which have no replacement now. The table and its rows are intact; `economics` was removed
 from `/api/data`'s allowlist because nothing read it and `PUT` there is delete-and-replace.
+
+**Seeing what an allocation does.** Allocations are enforced and applied, but their effect is a
+department-level figure and the Overhead tab is totals only — so on the real roster (Corporate 1
+person, HR 0) every destination Axeri's split reaches has its cost withheld by the small-bucket rule.
+The split is correct and reconciles; it is simply not visible in the UI until the breakdown returns.
+
+**Dropping the `overtime` table.** Only after `preapproved_ot` has reconciled for a few weeks, and
+never in the same change as the migration.
 
 **The SG&A department breakdown.** The Overhead tab is totals only. SG&A is 7 active people across
 5 departments — Corporate 1, Procurement 1, Accounting 2, Sales & Marketing 3 — so at any

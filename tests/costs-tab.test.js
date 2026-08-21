@@ -423,3 +423,48 @@ test('no per-person cost figure appears in the rendered page', async () => {
     assert.ok(!html.includes(forbidden), `the page renders ${forbidden}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// allocations on the tab
+// ---------------------------------------------------------------------------
+
+test('the People column shows allocated-in cost separately from headcount', async () => {
+  const ctx = sandbox({
+    costBody: {
+      ok: true,
+      report: reportFixture({
+        byDepartment: [
+          { key: 'Accounting', headcount: 3, allocatedFrom: 0, hours: 120, cost: 2400,
+            burdenedCost: 3456, costPerHour: 20, burdenedCostPerHour: 28.8, costPerThousand: null,
+            gaps: [], suppressed: false },
+          // HR has no employees at all — a third of one person's cost lands here.
+          { key: 'HR', headcount: 0, allocatedFrom: 1, hours: 0, cost: null,
+            burdenedCost: null, costPerHour: null, burdenedCostPerHour: null, costPerThousand: null,
+            gaps: [], suppressed: true,
+            suppressedReason: 'only 1 person contributes cost to this grouping, so a figure here would be an individual rate' }
+        ],
+        hasSuppressedBuckets: true
+      }),
+      availableWeeks: [], week: { start: '2026-08-17', end: '2026-08-23' },
+      truncated: false, dataWindow: {},
+      allocations: { available: true, count: 3, note: null }
+    }
+  });
+  const html = await renderedCosts(ctx);
+
+  assert.match(html, /\+1</, 'allocated-in cost must be shown as a separate +n');
+  assert.match(html, /everyone whose money is in the row/);
+  assert.match(html, /and none of their time/);
+  // HR shows, withheld, rather than being hidden — hiding it loses the money.
+  assert.match(html, /HR/);
+  assert.match(html, /withheld/);
+});
+
+test('the suppression banner no longer claims the total is never suppressed', async () => {
+  // It said exactly that in the commit that ADDED totals suppression. A UI
+  // sentence that contradicts the code is worse than no sentence.
+  const html = await renderedCosts(sandbox());
+  assert.ok(!html.includes('never suppressed'));
+  const src = fs.readFileSync(path.join(SRC, 'costs.js'), 'utf8');
+  assert.ok(!src.includes('never suppressed'));
+});

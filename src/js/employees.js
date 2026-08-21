@@ -529,7 +529,8 @@ function profileReadBody(e){
       pf('Break 1',e.break1),
       pf('Break 2',e.break2)
     ])}
-    ${profilePreApproved(e)}`;
+    ${profilePreApproved(e)}
+    ${profileAllocation(e)}`;
 }
 
 // ============================================================

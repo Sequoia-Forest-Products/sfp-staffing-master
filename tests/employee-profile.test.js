@@ -21,12 +21,12 @@ const SRC = path.join(__dirname, '..', 'src', 'js');
 
 // The load order the session function uses. Only the modules the roster needs.
 //
-// preapproved.js is here because the profile card is where the standing OT
-// allowance is assigned (Phase C task 4), so the card calls into it —
-// preApprovedFor, PREAPPROVED_TYPES, savePreApproved. It is loaded AFTER
-// employees.js, matching the manifest, so the TDZ ordering the real page has is
-// the ordering these tests exercise.
-const MODULES = ['core.js', 'employees.js', 'preapproved.js'];
+// preapproved.js and allocations.js are here because the profile card is where
+// both are assigned (Phase C tasks 4 and 5), so the card calls into them —
+// preApprovedFor, PREAPPROVED_TYPES, savePreApproved, profileAllocation. They are
+// loaded AFTER employees.js, matching the manifest, so the TDZ ordering the real
+// page has is the ordering these tests exercise.
+const MODULES = ['core.js', 'employees.js', 'preapproved.js', 'allocations.js'];
 
 // Enough of an element for the top-level DOM writes in core.js and for the
 // handful of render paths that poke at one.

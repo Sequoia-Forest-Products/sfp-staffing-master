@@ -142,10 +142,15 @@ function costWeekLabel(view){
 function costSuppressionNote(report){
   if(!report||!report.hasSuppressedBuckets) return '';
   const k=report.minBucketHeadcount;
+  const anyAllocated=(report.byDepartment||[]).some(b=>(Number(b.allocatedFrom)||0)>0);
   return `<div class="cost-note cost-warn"><strong>Some groupings show hours but no cost.</strong>
     A grouping with fewer than ${k} people has no meaningful average — its cost per hour would be an individual's pay rate,
     and every signed-in account can open this tab. Those rows keep their headcount and hours and withhold their money,
-    so the visible rows deliberately do not add up to the total. The total itself is never suppressed.</div>`;
+    so the visible rows deliberately do not add up to the total.
+    ${anyAllocated?`<br><br>The count that decides this is <strong>everyone whose money is in the row</strong>, not
+    everyone who works there — the <span style="color:var(--muted)">+n</span> beside a headcount. A department can
+    hold a share of somebody's cost and none of their time, and judging it on employees alone would publish that
+    one share as the department's cost.`:''}</div>`;
 }
 
 // When the cost class itself is too small, the total is an individual figure and
@@ -207,10 +212,15 @@ function costTable(title, buckets, report, opts){
   const rows=(buckets||[]).map(b=>{
     const cls='cost-row'+(b.suppressed?' cost-sup':'');
     const gaps=(b.gaps||[]).length;
+    // headcount is people whose PRIMARY this is, so the column sums to the total
+    // row. allocatedFrom is people whose COST lands here from elsewhere, shown as
+    // a separate +n rather than added in — a department can hold somebody's money
+    // and none of their time, and HR on the real roster has no employees at all.
+    const alloc=Number(b.allocatedFrom)||0;
     return `<div class="${cls}" ${b.suppressed?`title="${esc(b.suppressedReason||'')}"`:''}>
       <div class="cost-key">${esc(b.key)}${b.suppressed?'<span class="cost-sup-tag">withheld</span>':''}
         ${gaps?`<span class="cost-sup-tag" style="color:var(--brick)">${gaps} no rate</span>`:''}</div>
-      <div class="cost-num">${b.headcount}</div>
+      <div class="cost-num">${b.headcount}${alloc?`<span title="cost allocated in from ${alloc} ${alloc===1?'person':'people'} in another department" style="color:var(--muted);font-size:10px"> +${alloc}</span>`:''}</div>
       <div class="cost-num">${costNum(b.hours)}</div>
       <div class="cost-num">${costMoney(b.cost)}</div>
       <div class="cost-num">${costMoney(b.burdenedCost)}</div>
@@ -224,7 +234,7 @@ function costTable(title, buckets, report, opts){
     <div class="cost-panel">
       <div class="cost-row cost-hdr">
         <div>${esc((opts&&opts.keyLabel)||'Grouping')}</div>
-        <div class="cost-num">People</div>
+        <div class="cost-num" title="People whose primary department this is. +n is cost allocated in from elsewhere.">People</div>
         <div class="cost-num">Hours</div>
         <div class="cost-num">Cost</div>
         <div class="cost-num">Burdened</div>

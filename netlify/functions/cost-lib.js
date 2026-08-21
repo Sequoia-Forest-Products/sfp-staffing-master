@@ -122,7 +122,14 @@ function costPerThousand(burdenedCost, hours, mbfPerHour) {
 function emptyBucket(key) {
   return {
     key,
+    // People whose PRIMARY this bucket is. Sums to the report headcount across
+    // buckets, which is what lets the People column reconcile with its total.
     headcount: 0,
+    // Additional people whose COST is allocated in from elsewhere. Held apart
+    // from headcount because they are not in this department — Axeri Ramirez
+    // works in Accounting and a third of her cost lands in HR, and counting her
+    // as an HR employee made the department headcounts sum to 5 for 3 people.
+    allocatedFrom: 0,
     hours: 0,
     cost: 0,
     burdenedCost: 0,
@@ -132,8 +139,16 @@ function emptyBucket(key) {
   };
 }
 
-function addTo(bucket, person, amount, burdenPct) {
-  bucket.headcount += 1;
+// `primary` says whether this bucket is the person's own department or a
+// destination their cost was allocated into. It decides which counter moves, and
+// getting it wrong in either direction is a real fault: counting an allocation as
+// headcount breaks the column total, and NOT counting it at all would leave a
+// department with somebody's money in it and a headcount of zero — which reads as
+// "no people" to the suppression rule and would publish that one person's share
+// as the department's cost. See disclosureHeadcount below.
+function addTo(bucket, person, amount, burdenPct, primary = true) {
+  if (primary) bucket.headcount += 1;
+  else bucket.allocatedFrom += 1;
   bucket.hours = round2(bucket.hours + num(person.hours));
   if (person.cost === null) {
     bucket.gaps.push({ name: person.name, reason: person.gap });
@@ -141,6 +156,15 @@ function addTo(bucket, person, amount, burdenPct) {
   }
   bucket.cost = round2(bucket.cost + num(amount));
   bucket.burdenedCost = round2(bucket.burdenedCost + num(burdened(amount, burdenPct)));
+}
+
+// How many people's money is in this bucket, which is the only headcount the
+// suppression rule can defensibly use. HR has no employees at all on the real
+// roster; a third of one person's cost is allocated into it. Judged on headcount
+// alone that bucket has 0 people, reads as "nothing to protect", and publishes
+// exactly one third of a named individual's pay.
+function disclosureHeadcount(bucket) {
+  return bucket.headcount + bucket.allocatedFrom;
 }
 
 // SMALL-BUCKET SUPPRESSION, and it is not optional politeness.
@@ -163,11 +187,13 @@ function addTo(bucket, person, amount, burdenPct) {
 const DEFAULT_MIN_BUCKET = 3;
 
 function finishBucket(bucket, mbfPerHour, minBucket) {
-  const suppressed = bucket.headcount > 0 && bucket.headcount < minBucket;
+  const people = disclosureHeadcount(bucket);
+  const suppressed = people > 0 && people < minBucket;
 
   const base = {
     key: bucket.key,
     headcount: bucket.headcount,
+    allocatedFrom: bucket.allocatedFrom,
     hours: bucket.hours,
     gaps: bucket.gaps,
     suppressed
@@ -182,8 +208,8 @@ function finishBucket(bucket, mbfPerHour, minBucket) {
       burdenedCostPerHour: null,
       costPerThousand: null,
       suppressedReason:
-        `only ${bucket.headcount} ${bucket.headcount === 1 ? 'person' : 'people'} in this ` +
-        `grouping, so a cost figure here would be an individual rate`
+        `only ${people} ${people === 1 ? 'person contributes' : 'people contribute'} cost to ` +
+        `this grouping, so a figure here would be an individual rate`
     };
   }
 
@@ -288,9 +314,10 @@ function buildCostReport({
       if (!byDepartment.has(dept)) byDepartment.set(dept, emptyBucket(dept));
       // Hours belong to the primary department only. Axeri works whole hours in
       // one place; it is her COST that splits three ways.
-      const hoursForThisBucket = (i === primaryIndex) ? person.hours : 0;
+      const isPrimary = (i === primaryIndex);
+      const hoursForThisBucket = isPrimary ? person.hours : 0;
       addTo(byDepartment.get(dept), { ...person, hours: hoursForThisBucket },
-        shares[i] === null ? null : shares[i], burden);
+        shares[i] === null ? null : shares[i], burden, isPrimary);
     });
 
     // ---- position group ----
@@ -374,6 +401,7 @@ function buildCostReport({
 
 module.exports = {
   buildCostReport,
+  disclosureHeadcount,
   DEFAULT_MIN_BUCKET,
   personCost,
   costedHours,
