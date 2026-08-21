@@ -352,25 +352,89 @@ where birthday_raw_backup ~ '^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{4}'
 
 
 -- ----------------------------------------------------------------------------
--- 5. The acceptance test — the part that actually proves it worked
+-- 5. The acceptance test
 -- ----------------------------------------------------------------------------
 --
--- Column contents matching is necessary and not sufficient. What matters is that
--- the same people are announced. Run this from a shell, BEFORE and AFTER, and
--- diff the two.
+-- There is NO BIRTHDAY_TRIGGER_SECRET in Netlify. birthday-test.js accepts a
+-- valid sfp_session cookie as well, so the endpoint is reachable from a browser
+-- that is already signed in. That is how this is run: paste URLs, read the JSON.
 --
---   for d in 2026-08-11 2026-09-03 2026-11-12 2026-12-25 2026-02-29; do
---     echo "== $d"
---     curl -s "https://seq-staffing.netlify.app/api/birthday-test?date=$d" \
---       -H "x-birthday-secret: $BIRTHDAY_TRIGGER_SECRET" \
---       | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sorted(p["name"] for p in d.get("people",[])))'
---   done
+-- WHAT EACH HALF OF THE CHECK ACTUALLY COVERS — worth being straight about,
+-- because it is easy to overclaim for the clicking half:
 --
--- Pick dates that currently RETURN SOMEBODY — a spread of empty days proves
--- nothing. Rollin Tolle on 2026-08-11 is a known-good case verified earlier in
--- this project, so 2026-08-11 must be in the list.
+--   3c-ii and 3c-iii are the COMPLETE check. They compare every one of the 73
+--   migrated rows against its own backup, per row, and 3c-iii checks the day
+--   number without reusing the month-name conversion. Nothing is sampled.
 --
--- The dry-run endpoint composes and logs without sending; it does not need
--- ?send=true and must not be given it.
+--   This section is a SYSTEMIC check, and it is a spot check by nature. What it
+--   catches that SQL cannot is the pipeline breaking as a whole — the parser no
+--   longer matching the stored format, the query no longer selecting the column,
+--   the function erroring. Every one of those failures is ALL-OR-NOTHING: if
+--   ISO stopped parsing, every date would come back empty. So a handful of dates
+--   that currently return somebody is enough to detect it, and clicking all ~55
+--   anchor dates twice would buy almost nothing over clicking eight.
 --
--- Same names before and after, for every date, or roll back with 3d.
+-- Do not read this as "the migration is verified because five dates matched".
+-- Per-row correctness is 3c's job; this proves the thing still runs.
+--
+-- THE WINDOW. buildTargetDates() returns NULL for Friday, Saturday and Sunday —
+-- it short-circuits before looking at anybody, so a weekend date proves nothing
+-- whatever the data says. Monday to Wednesday cover one day. THURSDAY COVERS
+-- FOUR (itself plus three, which is how Fri/Sat/Sun birthdays get announced).
+-- So every usable URL is a Mon-Thu date, and Thursdays are worth four times as
+-- much per click.
+--
+-- 5a. Emits the URLs to use, best first. Every birthday is mapped onto the
+--     Mon-Thu date whose window would surface it: itself if it already falls
+--     Mon-Thu, otherwise the Thursday before it. Ordered by how many people each
+--     one covers, so the first few URLs reach the most of the roster.
+--
+--     Run this BEFORE the migration and AFTER, and the URL list must be
+--     identical both times — if an anchor date changes, a month or day moved.
+with bdays as (
+  select id, name,
+         -- Month and day only; the year is irrelevant and 2026 is just a frame
+         -- to do weekday arithmetic in.
+         make_date(2026,
+           coalesce(
+             nullif(substring(birthday from '^\d{4}-(\d{1,2})-'), '')::int,
+             nullif(substring(birthday from '^(\d{1,2})[/-]'), '')::int,
+             (select extract(month from to_date(substring(birthday from '^[A-Za-z]{3} ([A-Za-z]{3})'), 'Mon'))::int)
+           ),
+           coalesce(
+             nullif(substring(birthday from '^\d{4}-\d{1,2}-(\d{1,2})'), '')::int,
+             nullif(substring(birthday from '^\d{1,2}[/-](\d{1,2})'), '')::int,
+             nullif(substring(birthday from '^[A-Za-z]{3} [A-Za-z]{3} +(\d{1,2})'), '')::int
+           )
+         ) as bday_2026
+  from employees
+  where status = 'Active'
+    and birthday is not null and btrim(birthday) <> ''
+), anchored as (
+  select name, bday_2026,
+         -- isodow: 1=Mon .. 7=Sun. Mon-Thu anchor to themselves; Fri/Sat/Sun
+         -- anchor to the Thursday whose 3-day look-ahead reaches them.
+         case extract(isodow from bday_2026)
+           when 5 then bday_2026 - 1
+           when 6 then bday_2026 - 2
+           when 7 then bday_2026 - 3
+           else bday_2026
+         end as anchor
+  from bdays
+)
+select to_char(anchor, 'YYYY-MM-DD')                as run_this_date,
+       to_char(anchor, 'Dy')                        as weekday,
+       count(*)                                     as people_covered,
+       string_agg(name, ', ' order by name)         as who,
+       'https://seq-staffing.netlify.app/api/birthday-test?date='
+         || to_char(anchor, 'YYYY-MM-DD')           as url
+from anchored
+group by anchor
+order by people_covered desc, anchor;
+
+-- 5b. Reduce each snapshot to just the names, so before and after can be
+--     compared by eye. In the browser the response is JSON; the field to read is
+--     `people`, and each entry has a `name`.
+--
+--     Same names, per date, before and after. Any difference and roll back
+--     with 3d.
