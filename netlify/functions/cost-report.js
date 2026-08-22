@@ -16,10 +16,31 @@
 // aggregate — the only names in it are on the rate-gap and bullpen lists, which
 // are data-quality findings and carry no money.
 //
-// There is still no permissions system, so anything here is readable by every
-// signed-in sequoiafp.com account. cost-lib.js suppresses money for any grouping
-// small enough that its average IS somebody's rate; see the note there.
+// PHASE D. There IS a permissions system now, and it changes exactly one thing
+// here: the suppression floor.
+//
+// cost-lib.js withholds money for any grouping small enough that its average IS
+// somebody's rate. That protects a figure the reader is not allowed to see —
+// so for a reader who IS allowed to see it, the same dashes protect nothing and
+// cost everything. Somebody holding the salaries tier can open Salaries & Wages
+// and read every annual_salary by name; hourly rates are base-tier and visible
+// to everyone on the roster. There is no figure a small bucket could leak to
+// them that they cannot already read directly.
+//
+// So the floor is 1 for the salaries tier and DEFAULT_MIN_BUCKET for everybody
+// else, and it is decided HERE, server-side, from the caller's own tiers. A
+// base-tier caller's payload still arrives with the money nulled out — the
+// dashes are in the response, not in the rendering.
+//
+// THIS IS SLIGHTLY WIDER THAN "SHOW THE SG&A BREAKDOWN". It lifts suppression on
+// every cost class for that tier, not only on Overhead, because the argument
+// above does not stop at a class boundary — a one-person Manufacturing bucket
+// leaks the same salary/2080 to the same reader. Narrowing it to SG&A would
+// leave dashes on Manufacturing that protect nothing from the person looking at
+// them.
 
+const db = require('./db');
+const perms = require('./permissions-lib');
 const payrollDb = require('./payroll-db');
 const { weekStartFor, weekDates } = require('./ot-report-lib');
 const { verifySession, getCookies } = require('./session-lib');
@@ -111,12 +132,11 @@ exports.handler = async (event) => {
   }
 
   // The suppression threshold is a disclosure judgement, so it is settable — but
-  // only upward from the default. A caller must not be able to talk the endpoint
-  // into publishing a one-person bucket by asking for minBucket=1.
-  const requestedMin = parseDecimal(params.minBucket, { min: 1, max: 100, fallback: DEFAULT_MIN_BUCKET });
-  const minBucketHeadcount = requestedMin === null
-    ? DEFAULT_MIN_BUCKET
-    : Math.max(DEFAULT_MIN_BUCKET, Math.floor(requestedMin));
+  // only upward from the caller's FLOOR. A caller must not be able to talk the
+  // endpoint into publishing a one-person bucket by asking for minBucket=1;
+  // whether 1 is even a floor for them is decided below, from their tiers, and
+  // never from anything in the query string.
+  const requestedMin = parseDecimal(params.minBucket, { min: 1, max: 100, fallback: null });
 
   const requestedWeek = String(params.week || '').trim();
   let snappedWeek = null;
@@ -132,6 +152,15 @@ exports.handler = async (event) => {
   }
 
   try {
+    // Fails closed to the base tier, which here means full suppression — the
+    // safe direction. A permissions read that breaks costs somebody their
+    // breakdown; it cannot publish one.
+    const tiers = await perms.fetchTiers(session.email, db);
+    const floor = perms.has(tiers, perms.TIER_SALARIES) ? 1 : DEFAULT_MIN_BUCKET;
+    const minBucketHeadcount = requestedMin === null
+      ? floor
+      : Math.max(floor, Math.floor(requestedMin));
+
     const today = todayInZone(new Date(), TIME_ZONE);
 
     // Same window, same snapping and the same week list as /api/payroll-report,
@@ -178,6 +207,14 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         ok: true,
         report,
+        // So the page can say WHY a figure is missing, and stop offering a
+        // breakdown it would only render as dashes. Not a gate — the gate
+        // already happened, above, and the money is already null in `report`.
+        disclosure: {
+          minBucketHeadcount,
+          suppressionLifted: floor === 1,
+          tiers: Array.from(tiers)
+        },
         availableWeeks,
         week: { start: weekStart, end: dates[6], dates },
         truncated: weekIndex.truncated || weekDetailTruncated,

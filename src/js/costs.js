@@ -12,10 +12,17 @@
 // in wage-sync.js, which never reaches a browser. That is the whole reason the
 // endpoint exists — see the note at the top of netlify/functions/cost-lib.js.
 //
-// This file replaced Staffing Economics, which rendered each position's holder
-// alongside their hourly rate. There is still no permissions system, so anything
-// on screen is readable by every signed-in sequoiafp.com account, and a page of
-// per-person rates is exactly what this phase set out to stop rendering.
+// This file replaced Staffing Economics, which rendered each seat's holder
+// alongside their hourly rate and a budgeted ceiling. THESE TWO NOW COEXIST and
+// answer different questions: this one is the aggregate cost of a cost class,
+// and Staffing Economics — back in Phase D, read-only and behind the salaries
+// tier — is whether the person in a seat is inside the ceiling budgeted for it.
+//
+// This tab stays UNGATED, and stays an aggregate for that reason: it is opened
+// by every signed-in sequoiafp.com account, so a per-person rate on it would be
+// published to all of them. What Phase D changed here is only the suppression
+// FLOOR, which /api/cost-report now sets from the caller's tiers — see the note
+// at the top of that file.
 
 const COST_CLASS_MANUFACTURING = 'Manufacturing';
 const COST_CLASS_MILL_OVERHEAD = 'Mill Overhead';
@@ -26,7 +33,12 @@ const OVERHEAD_CLASSES = [COST_CLASS_MILL_OVERHEAD, COST_CLASS_SGA];
 
 function emptyCostView(){
   return {report:null, weeks:[], week:'', loading:false, error:'',
-          truncated:false, window:null, allocations:null, loaded:false};
+          truncated:false, window:null, allocations:null, loaded:false,
+          // Phase D. The suppression posture the server applied to THIS view.
+          // null until a load lands, and null reads as 'suppressed', which is
+          // the safe direction for a field that decides whether a breakdown is
+          // drawn.
+          disclosure:null};
 }
 
 // One view per cost class, keyed by the class itself so the tab cannot ask for
@@ -67,9 +79,14 @@ async function loadCostReport(costClass, week){
     view.truncated=json.truncated===true;
     view.window=json.dataWindow||null;
     view.allocations=json.allocations||null;
+    // The suppression posture the SERVER applied, reported so the page can say
+    // why a figure is missing and stop offering a breakdown it would only draw
+    // as dashes. Reading it is not a permission check — the money is already
+    // null in `report` for anyone who may not see it.
+    view.disclosure=json.disclosure||null;
   }catch(err){
     view.report=null; view.error=err.message;
-    view.truncated=false; view.window=null;
+    view.truncated=false; view.window=null; view.disclosure=null;
     toast('Could not load '+costClass+' costs: '+err.message,'error');
   }
   view.loaded=true; view.loading=false; render();
@@ -145,8 +162,9 @@ function costSuppressionNote(report){
   const anyAllocated=(report.byDepartment||[]).some(b=>(Number(b.allocatedFrom)||0)>0);
   return `<div class="cost-note cost-warn"><strong>Some groupings show hours but no cost.</strong>
     A grouping with fewer than ${k} people has no meaningful average — its cost per hour would be an individual's pay rate,
-    and every signed-in account can open this tab. Those rows keep their headcount and hours and withhold their money,
+    and this tab is open to every signed-in account. Those rows keep their headcount and hours and withhold their money,
     so the visible rows deliberately do not add up to the total.
+    The threshold is set from your own access: it is 1 for the salaries tier, which can read the underlying figures by name anyway.
     ${anyAllocated?`<br><br>The count that decides this is <strong>everyone whose money is in the row</strong>, not
     everyone who works there — the <span style="color:var(--muted)">+n</span> beside a headcount. A department can
     hold a share of somebody's cost and none of their time, and judging it on employees alone would publish that
@@ -322,11 +340,16 @@ function costSection(costClass, classes, opts){
 
   const r=view.report;
 
-  // TOTALS ONLY on Overhead, by decision, not by omission. SG&A is seven people
-  // across five departments — Corporate 1, Procurement 1, Accounting 2,
-  // Sales & Marketing 3 — so a department breakdown would withhold almost every
-  // row it drew, and a table of dashes is worse than no table. The breakdown
-  // comes back in Phase D behind permissions, where it can show real figures.
+  // TOTALS ONLY on Overhead WITHOUT THE SALARIES TIER, by decision, not by
+  // omission. SG&A is seven people across five departments — Corporate 1,
+  // Procurement 1, Accounting 2, Sales & Marketing 3 — so at the base tier's
+  // suppression floor a department breakdown withholds almost every row it
+  // draws, and a table of dashes is worse than no table.
+  //
+  // With the salaries tier the floor is 1 and those rows carry real figures, so
+  // the breakdown is drawn. The decision is made server-side and this only
+  // follows it: for a base-tier caller the money is already null in the payload,
+  // so rendering the table anyway would produce the dashes, not a leak.
   //
   // The bullpen is dropped here for a different reason: a null position group is
   // NORMAL for non-mill staff, so on Overhead it would list the entire class as
@@ -338,7 +361,9 @@ function costSection(costClass, classes, opts){
     + costTotalsNote(r)
     + costRateGapNote(r);
 
-  if(opts&&opts.totalsOnly) return head;
+  // `totalsOnly` asks for totals; `suppressionLifted` overrides it, because the
+  // only reason it was asked for was that the rows would have been dashes.
+  if(opts&&opts.totalsOnly&&!(view.disclosure&&view.disclosure.suppressionLifted)) return head;
 
   return head
     + costSuppressionNote(r)
@@ -370,9 +395,9 @@ function renderOverhead(){
         Mill Overhead is the salaried staff whose cost belongs to the mill but not to a board foot;
         SG&A is everything corporate. Neither carries a cost per MBF — they are not production cost,
         which is the point of separating them.
-        There is no department breakdown here on purpose: SG&A is seven people across five departments,
-        so nearly every row would have to withhold its cost anyway. The breakdown returns in Phase D,
-        behind permissions, where it can show real numbers instead of dashes.</div>`
+        ${canSeeSalaries()
+          ? 'The department breakdown below is shown because you hold the salaries tier. Small-bucket suppression is lifted for that tier — not as a favour, but because it would be protecting figures you can already read by name on Salaries &amp; Wages. Everybody else sees these two totals and nothing under them.'
+          : 'There is no department breakdown here: SG&amp;A is seven people across five departments, so nearly every row would have to withhold its cost. A table of dashes is worse than no table. The breakdown is visible to the salaries tier, which can read the underlying figures anyway.'}</div>`
     + OVERHEAD_CLASSES.map(c=>
         `<div class="cost-section-title" style="font-size:15px;border-bottom:2px solid var(--rust);padding-bottom:4px">${esc(c)}</div>`
         + costSection(c, classes, {showMbf:false, totalsOnly:true})

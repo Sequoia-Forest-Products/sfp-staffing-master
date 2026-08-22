@@ -10,8 +10,15 @@
 //   2. `table` is checked against an allowlist before the method dispatch, so
 //      neither a read nor a write can reach a table the app does not use.
 //
-// Both matter because every sequoiafp.com account currently has full access:
-// anything in the payload is readable by any employee with the app open.
+// Both mattered because every sequoiafp.com account had the same access:
+// anything in the payload was readable by any employee with the app open.
+//
+// PHASE D CHANGED WHO, NOT HOW. There are tiers now, and the projection is
+// built from the caller's own — but the mechanism these tests pin is unchanged
+// and still the reason it works: a column the caller may not read is never
+// NAMED in the query, so it does not cross the wire even once. The base tier is
+// the default here, because it is what almost everybody holds and it is the
+// case where a leak would matter.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -191,22 +198,30 @@ test('the three tables the app uses are permitted', async () => {
   }
 });
 
-test('economics is refused now that nothing reads it, including on PUT', async () => {
-  // It backed Staffing Economics, which Manufacturing Costs replaced. What made
-  // this worth closing rather than leaving: PUT maps to db.replaceAll, which
-  // deletes every row before inserting, so an allowlisted table nothing renders
-  // is a live delete path with no screen that would show it had been emptied.
-  // max_wage is the only per-position rate ceiling recorded anywhere.
-  for (const method of ['GET', 'PUT', 'POST', 'PATCH', 'DELETE']) {
-    const urls = stubFetch([]);
-    const res = await data.handler({
-      httpMethod: method,
-      headers: { cookie: cookie() },
-      queryStringParameters: { table: 'economics' },
-      body: JSON.stringify({ rows: [] })
-    });
-    assert.strictEqual(res.statusCode, 400, `economics reachable via ${method}`);
-    assert.strictEqual(urls.length, 0, `economics reached the database via ${method}`);
+test('economics is not reachable through this endpoint at all, by any method', async () => {
+  // It came off the allowlist in Phase C because PUT maps to db.replaceAll,
+  // which deletes every row before inserting — over the only record of a
+  // per-seat rate ceiling, with no screen that would show it had been emptied.
+  //
+  // Phase D brought the PAGE back and briefly put the table back here too,
+  // read-only behind an exception list. Once seat assignment had to be
+  // editable that stopped being the right shape: a generic table endpoint with
+  // per-table exceptions is one edit away from re-exposing the write path. The
+  // table now has one owner, /api/economics, and this endpoint does not know
+  // about it — which needs no machinery to hold.
+  for (const grants of [[], [{ email: 'someone@sequoiafp.com', tier: 'salaries' }],
+                        [{ email: 'someone@sequoiafp.com', tier: 'admin' }]]) {
+    for (const method of ['GET', 'PUT', 'POST', 'PATCH', 'DELETE']) {
+      const urls = stubFetch([], { permissionGrants: grants });
+      const res = await data.handler({
+        httpMethod: method,
+        headers: { cookie: cookie() },
+        queryStringParameters: { table: 'economics', id: '00000000-0000-0000-0000-000000000000' },
+        body: JSON.stringify({ rows: [] })
+      });
+      assert.strictEqual(res.statusCode, 400, `economics reachable via ${method}`);
+      assert.strictEqual(urls.length, 0, `economics reached the database via ${method}`);
+    }
   }
 });
 

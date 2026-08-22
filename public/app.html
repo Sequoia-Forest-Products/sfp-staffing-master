@@ -190,6 +190,12 @@
       <button class="sfp-tab" data-tab="costs" onclick="switchTab('costs',this)">Manufacturing Costs</button>
       <button class="sfp-tab" data-tab="overhead" onclick="switchTab('overhead',this)">Overhead</button>
       <button class="sfp-tab" data-tab="dailyhours" onclick="switchTab('dailyhours',this)">Daily Hours</button>
+      <!-- HIDDEN BY DEFAULT and revealed by applyTabVisibility() once
+           /api/permissions answers. Hidden-then-shown is the right way round: a
+           tab that appears and then vanishes has already told everybody that a
+           salaries page exists and that they are not allowed in it. -->
+      <button class="sfp-tab" data-tab="salaries" hidden onclick="switchTab('salaries',this)">Salaries &amp; Wages</button>
+      <button class="sfp-tab" data-tab="economics" hidden onclick="switchTab('economics',this)">Staffing Economics</button>
       <!-- Reports absorbs three former top-level tabs: Pre-Approved Overtime,
            OT Report and Points Tracker. Placed after Daily Hours because that is
            the order of work — hours are imported, then reported on. -->

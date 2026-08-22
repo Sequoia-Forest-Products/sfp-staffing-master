@@ -4,10 +4,11 @@
 // every figure arrives already aggregated from /api/cost-report. What is worth
 // testing is that this tab cannot render an individual's pay:
 //
-//   * Staffing Economics rendered every position's holder next to their hourly
-//     rate and a max. There is no permissions system, so that page was readable
-//     by every signed-in account. It is gone, and these tests fail if it or its
-//     helpers come back.
+//   * Staffing Economics rendered every seat's holder next to their hourly rate
+//     and a ceiling, which was unpublishable while every signed-in account had
+//     the same access. Phase D brought it back behind the salaries tier and
+//     READ-ONLY; these tests fail if its WRITE path comes back with it, because
+//     that path replaced the whole table.
 //   * A suppressed bucket must still SHOW — headcount, hours, and a visible
 //     marker — because a table whose rows do not sum to its total with nothing
 //     saying why is worse than one that explains itself.
@@ -71,7 +72,7 @@ function reportFixture(overrides = {}) {
   };
 }
 
-function sandbox({ costBody } = {}) {
+function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
   const calls = { fetches: [] };
   const ctx = {
     console,
@@ -91,6 +92,11 @@ function sandbox({ costBody } = {}) {
     },
     fetch: async (url, opts) => {
       calls.fetches.push({ url: String(url), opts });
+      if (String(url).startsWith('/api/permissions')) {
+        return { ok: true, status: 200, json: async () => ({
+          ok: true, email: 'me@sequoiafp.com', tiers,
+          isAdmin: tiers.includes('admin'), grants: null }) };
+      }
       if (String(url).startsWith('/api/cost-report')) {
         const body = costBody || {
           ok: true,
@@ -99,7 +105,12 @@ function sandbox({ costBody } = {}) {
           week: { start: '2026-08-17', end: '2026-08-23', dates: [] },
           truncated: false,
           dataWindow: {},
-          allocations: { available: false, count: 0, note: 'No allocations table yet — every person is costed 100% to their primary department.' }
+          allocations: { available: false, count: 0, note: 'No allocations table yet — every person is costed 100% to their primary department.' },
+          // Mirrors what the endpoint reports: the floor it actually applied.
+          // The money in `report` is nulled or not by the SERVER; this only
+          // says which happened.
+          disclosure: { minBucketHeadcount: tiers.includes('salaries') ? 1 : 3,
+                        suppressionLifted: tiers.includes('salaries'), tiers }
         };
         return { ok: true, status: 200, json: async () => body };
       }
@@ -128,31 +139,58 @@ function sandbox({ costBody } = {}) {
 // Staffing Economics is gone, and cannot come back by accident
 // ---------------------------------------------------------------------------
 
-test('the Staffing Economics module and its per-person wage helpers no longer exist', () => {
+test('the Staffing Economics REPLACE-ALL stays gone, though assignment is back', () => {
+  // Phase C deleted the whole module. Phase D restored the page, and then the
+  // assignment dropdown — but not the thing that made the old one unsafe.
+  //
+  // The distinction is exact: econAssign is back and PATCHes one row through
+  // /api/economics; saveEconomics is the one that wrote the whole table with
+  // PUT, over the only record of a per-seat rate ceiling, and it must not
+  // return. /api/data does not know the table exists any more.
   const ctx = sandbox();
-  for (const gone of ['renderEcon', 'econAssign', 'econUnassign', 'saveEconomics',
-                      'getEmpWage', 'calcDollarPerM']) {
-    assert.strictEqual(typeof ctx[gone], 'undefined',
-      `${gone} is back — it rendered an individual's hourly rate on a costing page`);
-  }
-  assert.ok(!__SCRIPT_MODULES.includes('economics.js'), 'economics.js is still in the manifest');
+  assert.strictEqual(typeof ctx.saveEconomics, 'undefined',
+    'saveEconomics is back — it saved by replacing the whole table');
+  assert.strictEqual(typeof ctx.econAssign, 'function', 'per-seat assignment is the replacement');
+  assert.ok(__SCRIPT_MODULES.includes('economics.js'), 'the page is back in the manifest');
   assert.ok(__SCRIPT_MODULES.includes('costs.js'), 'costs.js must be in the manifest');
+
+  // No source file reaches the table through the generic endpoint, in either
+  // direction, and none uses PUT against the dedicated one.
+  for (const f of fs.readdirSync(SRC)) {
+    const src = fs.readFileSync(path.join(SRC, f), 'utf8');
+    assert.ok(!/table=economics/.test(src), `${f} reaches economics through /api/data`);
+    assert.ok(!/method:\s*'PUT'[^}]*economics|economics[^}]*method:\s*'PUT'/.test(src),
+      `${f} PUTs economics`);
+  }
 });
 
-test('the app no longer reads the economics table', () => {
-  // The table itself is untouched in the database, deliberately. What must not
-  // happen is the app fetching a table nothing renders.
+test('the roster load does not fetch the staffing plan — that would 403 for most people', () => {
+  // /api/economics is refused without the salaries tier, so fetching it in
+  // loadData would fail on every boot for almost everybody. It is loaded on
+  // first open of its own tab instead, the way the cost reports are.
   const src = fs.readFileSync(path.join(SRC, 'data.js'), 'utf8');
-  assert.ok(!/fetch\('\/api\/data\?table=economics'\)/.test(src));
-  assert.ok(!/state\.economics\s*=/.test(src));
+  assert.ok(!/api\/economics/.test(src), 'data.js must not touch the staffing plan');
+  const econ = fs.readFileSync(path.join(SRC, 'economics.js'), 'utf8');
+  assert.match(econ, /'\/api\/economics'/, 'its own module does the fetch');
 });
 
-test('app.html offers Manufacturing Costs and Overhead, and not Staffing Economics', () => {
+test('the two gated tabs ship HIDDEN, and the ungated ones do not', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
-  assert.ok(!html.includes('Staffing Economics'));
-  assert.ok(!html.includes("data-tab=\"economics\""));
   assert.match(html, /data-tab="costs"[^>]*>Manufacturing Costs</);
   assert.match(html, /data-tab="overhead"[^>]*>Overhead</);
+
+  // Hidden in the markup and revealed by applyTabVisibility(), rather than the
+  // other way round. A tab that appears and then vanishes has already told
+  // everybody that a salaries page exists and that they are not allowed in it.
+  for (const tab of ['salaries', 'economics']) {
+    const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
+    assert.ok(m, `no ${tab} tab in app.html`);
+    assert.match(m[0], /\bhidden\b/, `the ${tab} tab must ship hidden`);
+  }
+  for (const tab of ['employees', 'costs', 'overhead', 'reports', 'settings']) {
+    const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
+    assert.ok(m && !/\bhidden\b/.test(m[0]), `${tab} is not gated and must not ship hidden`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -323,10 +361,10 @@ test('Overhead renders both sections and no cost per MBF', async () => {
   assert.match(html, /not production cost/);
 });
 
-test('Overhead is totals only — no department or position-group breakdown', async () => {
-  // SG&A is seven people across five departments, so a breakdown would withhold
-  // nearly every row it drew. A table of dashes is worse than no table; the
-  // breakdown returns in Phase D behind permissions.
+test('Overhead is totals only WITHOUT the salaries tier', async () => {
+  // SG&A is seven people across five departments, so at the base tier's
+  // suppression floor a breakdown withholds nearly every row it draws. A table
+  // of dashes is worse than no table.
   const ctx = sandbox();
   ctx.switchTab('overhead', null);
   await new Promise(r => setImmediate(r));
@@ -336,7 +374,38 @@ test('Overhead is totals only — no department or position-group breakdown', as
   assert.ok(!html.includes('Bullpen'), 'a null position group is normal for non-mill staff');
   // The totals still render, and the omission is stated rather than silent.
   assert.match(html, /totals only/);
-  assert.match(html, /returns in Phase D/);
+  assert.match(html, /worse than no table/);
+});
+
+test('Overhead shows the breakdown WITH the salaries tier', async () => {
+  // The gate is the server's: it set the suppression floor to 1 from the
+  // caller's own tiers, so the figures in this payload are real. The page is
+  // only declining to draw a table it would otherwise fill with dashes.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  ctx.switchTab('overhead', null);
+  await new Promise(r => setImmediate(r));
+  const html = ctx.renderOverhead();
+  assert.match(html, /By department/);
+  assert.match(html, /By position group/);
+  // And it says why it is visible, so nobody assumes everyone sees this.
+  assert.match(html, /because you hold the salaries tier/);
+});
+
+test('the breakdown follows the SERVER, not the browser', async () => {
+  // A client that thinks it holds the tier while the server disagrees must get
+  // the base-tier page. The disclosure posture in the payload is what decides,
+  // and it is the server's answer — this is the assertion that stops the gate
+  // quietly becoming a client-side one.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  ctx.switchTab('overhead', null);
+  await new Promise(r => setImmediate(r));
+  // Same tiers in state, but the server said it suppressed.
+  for (const c of ctx.OVERHEAD_CLASSES) {
+    ctx.state.cost[c].disclosure = { minBucketHeadcount: 3, suppressionLifted: false, tiers: [] };
+  }
+  const html = ctx.renderOverhead();
+  assert.ok(!html.includes('By department'),
+    'the payload said suppressed, so no breakdown — whatever the browser believes');
 });
 
 test('Manufacturing keeps both breakdowns and the bullpen', async () => {

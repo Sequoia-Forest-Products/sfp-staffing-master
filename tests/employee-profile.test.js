@@ -5,11 +5,12 @@
 // into a sandbox in that same order and call the render functions directly.
 //
 // Worth the setup for one reason above all others: the profile card MUST NOT
-// show compensation. There is no permissions system, so every signed-in
-// sequoiafp.com account can open every profile. annual_salary is not even in the
-// API payload, and wage — which is in the payload and on the roster — must not be
-// extended onto this new surface. That is a requirement about rendered output, so
-// asserting it against rendered output is the only way to hold it.
+// show compensation. Every signed-in sequoiafp.com account can open every
+// profile, and Phase D did not change that — what it added is a tier deciding
+// whether annual_salary is in their payload at all. The card shows neither that
+// nor wage in either case, because compensation lives on Salaries & Wages: one
+// page to look at, one place to change. That is a requirement about rendered
+// output, so asserting it against rendered output is the only way to hold it.
 
 const test = require('node:test');
 const assert = require('node:assert');

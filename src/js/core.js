@@ -66,7 +66,22 @@ let state = {
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,
-  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{}
+  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{},
+  // Phase D. Deny by default on this side too: the base tier until /api/permissions
+  // answers, so an unloaded state can never look like access. defaultPerms() is in
+  // permissions.js, which is loaded after this file — hence the literal here.
+  perms:{tiers:['hourly_wages'],isAdmin:false,grants:null,email:'',loaded:false,loading:false,error:'',busy:false},
+  // Salaries & Wages. Keyed by employee id, so a half-typed figure on one person
+  // survives a re-render caused by somebody else's row.
+  salaryDrafts:{}, salarySaving:false,
+  // Staffing Economics. Loaded on first open like the cost reports, not on every
+  // page load: /api/data refuses the table to most of the roster, so fetching it
+  // eagerly would 403 for almost everybody on every boot.
+  economics:[], econLoaded:false, econLoading:false, econError:'', econNote:'',
+  // The seat currently being saved, or null. One at a time: an assignment is a
+  // single PATCH and there is no draft to hold, so this only stops a second
+  // click landing while the first is in flight.
+  econBusy:null
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -581,18 +596,16 @@ function switchTab(tab,el){
   // loads on first open rather than on every page load.
   if(tab==='costs') loadCostsOnce([COST_CLASS_MANUFACTURING]);
   if(tab==='overhead') loadCostsOnce(OVERHEAD_CLASSES);
+  // Same rule, and here it also matters for a reason the cost tabs do not have:
+  // /api/data refuses the economics table without the salaries tier, so loading
+  // it on boot would 403 for most of the roster on every page load.
+  if(tab==='economics'&&!state.econLoaded&&!state.econLoading) loadEconomics();
 }
 
 function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  // 'economics' is gone. Staffing Economics assigned people to positions and
-  // showed each one's hourly rate next to a max, which is precisely what this
-  // phase stopped rendering — there is no permissions system, so that page was
-  // readable by every signed-in account. Manufacturing Costs answers the costing
-  // question in aggregate; the position/max reference data is still in the
-  // `economics` table, untouched, with nothing reading it.
   else if(state.tab==='costs')el.innerHTML=renderCosts();
   else if(state.tab==='overhead')el.innerHTML=renderOverhead();
   // 'overtime', 'points' and 'otreport' are no longer tabs; they are sub-views
@@ -600,6 +613,11 @@ function render(){
   // renderReports().
   else if(state.tab==='reports')el.innerHTML=renderReports();
   else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
+  // Phase D. renderSalaries() refuses to draw without the tier as well — the
+  // hidden tab button is a courtesy, not the gate, and a deep link or a
+  // hand-typed switchTab() in the console has to land somewhere honest.
+  else if(state.tab==='salaries')el.innerHTML=renderSalaries();
+  else if(state.tab==='economics')el.innerHTML=renderEconomics();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }
 

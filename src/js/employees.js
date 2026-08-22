@@ -302,11 +302,15 @@ function smsCell(e) {
 // writes through the existing saveEdit(), Cancel discards.
 //
 // COMPENSATION IS NOT ON THIS CARD. Neither annual_salary nor wage appears, in
-// either mode. There is no permissions system yet, so every signed-in
-// sequoiafp.com account can open every profile; annual_salary is not even in the
-// payload (see the projection in netlify/functions/data.js) and wage, although it
-// is in the payload and on the roster, is not extended onto a new surface. That
-// waits for the Salaries & Wages tier.
+// either mode, and Phase D did not change that — it is a decision about where
+// compensation lives, not a consequence of there being no tiers.
+//
+// Every signed-in sequoiafp.com account can open every profile. annual_salary is
+// not in their payload at all unless they hold the salaries tier (the projection
+// is built from the caller's tiers — see netlify/functions/data.js), and wage,
+// although it is in the payload and on the roster, is not extended onto a new
+// surface. Both live on Salaries & Wages, which is one page to look at and one
+// place to change.
 //
 // state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
 // state.editing is what saveEdit() reads, and it clears it on success, which
@@ -871,23 +875,31 @@ const profileStyle=`<style>
   .pf-value{font-size:13px;color:var(--text);line-height:1.4;word-break:break-word}
 </style>`;
 
+// THE TWO EDIT SURFACES ARE NOW ONE. The roster's Edit opens the profile card
+// in edit mode; it no longer opens a modal with its own field list.
+//
+// The modal existed because it was the only place an hourly wage could be set.
+// Phase D removed that input — BBSI owns the column and the server refuses it
+// on write — and with it the modal's last reason to be a second field list.
+//
+// NOTHING IS LOST IN THE COLLAPSE, which was checked field by field rather than
+// assumed. The card is a strict superset: it has everything the modal had, plus
+// break times, the four address fields and the HR file link, and it offers the
+// schedule as a select where the modal had a free-text box.
+//
+// The modal survives for ADD ALONE. A person who does not exist yet has no
+// profile card to open, and the card reads state.employees by index.
 function openEdit(idx){
-  // The roster's own Edit modal. It used to be kept alongside the profile card
-  // because it was the only surface with an hourly wage input; Phase D removed
-  // that input, since BBSI owns the column and the server refuses it on write.
-  // What still justifies the modal is Add — a person who does not exist yet has
-  // no profile card to open. Neither surface has a compensation field now.
-  state.profile=null;
-  state.editing={...state.employees[idx],_idx:idx,_isNew:false};
-  render();
-  // Load Drive folder link after render
-  setTimeout(()=>loadDriveLink(state.employees[idx].name), 50);
+  openProfile(idx);
+  startProfileEdit();
 }
 
 // Every taxonomy field starts BLANK on a new employee — no cost class implied by a
 // department, no department implied by a position group. Each is a decision about a
 // real person, and a default that follows from another field is the coupling the v2
 // model exists to remove.
+// The one remaining caller of renderModal. state.profile stays null, which is
+// what routes this to the modal rather than the card — see renderEmployees.
 function openAdd(){state.profile=null;state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',days:'MON-THU',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',addressStreet:'',addressCity:'',addressState:'',addressPostalCode:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
@@ -997,6 +1009,15 @@ async function saveEdit(){
   }
 }
 
+// THE ADD FORM. Not an edit surface any more: openEdit() opens the profile card,
+// so this is reached only from openAdd(). The title is fixed rather than
+// conditional, because the branch that said "Edit — <name>" had no way of being
+// reached and a dead branch reads as a live one.
+//
+// It is deliberately NOT the card. A person who does not exist yet has no card
+// to open — the card reads state.employees by index — and the three sections
+// the card carries beyond the roster row (pre-approved OT, cost allocation, the
+// HR file link) all need a saved employee id to point at.
 function renderModal(){
   const e=state.editing;
   // Asked once, through the shared predicate, so the disabled state of the wage
@@ -1006,7 +1027,7 @@ function renderModal(){
     <div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal">
         <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
-          <span>${e._isNew?'Add employee':'Edit — '+(state.employees[e._idx]?.name||'')}</span>
+          <span>Add employee</span>
           <button class="close-btn" onclick="closeModal()">×</button>
         </div>
 

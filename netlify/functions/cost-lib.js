@@ -176,6 +176,14 @@ function disclosureHeadcount(bucket) {
 // every signed-in account can open. A two-member bucket is barely better —
 // anyone who knows one figure derives the other.
 //
+// PHASE D DID NOT WEAKEN THIS; it made the threshold answer to the reader. The
+// figure above is protected FROM SOMEBODY WHO MAY NOT SEE IT, so for a reader
+// holding the salaries tier — who can open Salaries & Wages and read the same
+// 105,000 by name — the dashes protect nothing and cost the page its use.
+// /api/cost-report therefore passes minBucketHeadcount = 1 for that tier and the
+// default for everybody else. This file has no opinion about tiers and should
+// not gain one: it applies the threshold it is given.
+//
 // So a bucket below the threshold still SHOWS — headcount, hours, and that it is
 // suppressed — and withholds every money figure. Hiding the bucket entirely
 // would be worse: the totals would stop adding up with nothing explaining why,

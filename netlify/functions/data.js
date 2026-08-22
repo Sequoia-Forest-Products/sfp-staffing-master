@@ -12,25 +12,35 @@ const perms = require('./permissions-lib');
 // every row in the table before inserting, so `PUT /api/data?table=daily_hours`
 // with an empty rows array would have emptied the table.
 //
-// `economics` came OFF this list in Phase C. It backed the Staffing Economics
-// tab, which was replaced by Manufacturing Costs; nothing in the app reads it
-// now. Leaving it allowlisted meant a signed-in caller could still PUT it, and
-// PUT is delete-and-replace — a live write path to the only record of a per
-// position rate ceiling, with no screen that would show it had been emptied.
-// The table and its rows are untouched in the database; they are simply no
-// longer reachable through this endpoint. Phase D can add it back, read-only,
-// when the page that needs it is gated.
+// `economics` came OFF this list in Phase C, because leaving it allowlisted
+// meant a signed-in caller could PUT it — delete-and-replace against the only
+// record of a per-seat rate ceiling, with no screen that would show it had been
+// emptied.
+//
+// PHASE D BROUGHT THE PAGE BACK AND THE TABLE DID NOT COME BACK HERE WITH IT.
+// It briefly did: while Staffing Economics was read-only, `economics` sat on
+// this list behind a READ_ONLY_TABLES exception. The moment seat assignment had
+// to be editable that stopped being the right shape — a generic table endpoint
+// with a per-table exception list is one edit away from re-exposing the
+// delete-and-replace path that got the table removed in the first place.
+//
+// So the table has ONE owner: /api/economics, which serves the read and the one
+// write that exists (assign a person to a seat: one column, one row, no
+// replace-all). Nothing about `economics` is reachable through this endpoint,
+// which is a stronger statement than "read-only here" and needs no machinery to
+// hold. The exception Sets are gone with it rather than left empty.
 const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 
 // An explicit projection, not a denylist. A column added to `employees` later
 // is excluded until somebody deliberately lists it here, which is the right
 // default for a table that holds compensation.
 //
-// annual_salary is the reason this exists and is deliberately absent. Without a
-// select, PostgREST returns every column, so the salary would sit in the roster
-// payload of every signed-in user's browser whether or not anything rendered
-// it — and today every sequoiafp.com account has full access. It stays out
-// until the Salaries & Wages tier exists to gate it.
+// annual_salary is the reason this exists. Without a select, PostgREST returns
+// every column, so the salary would sit in the roster payload of every
+// signed-in user's browser whether or not anything rendered it. It is no longer
+// absent unconditionally — Phase D put the salaries tier behind it — but the
+// mechanism is unchanged and still the point: what a caller may not read is
+// never NAMED in the query, so it does not cross the wire even once.
 //
 // PHASE D: THE LIST NO LONGER LIVES HERE. permissions-lib.js is the one place
 // that decides who may see and write which columns, and the projection is built
@@ -199,7 +209,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    // GET /api/data?table=employees
+    // GET /api/data?table=employees|overtime|points
     if (method === 'GET' && table) {
       let orderBy = '';
       if (table === 'employees') orderBy = '?order=name.asc';

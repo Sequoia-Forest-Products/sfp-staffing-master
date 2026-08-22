@@ -252,17 +252,47 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 `section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
-The staffing plan that backed the **Staffing Economics** tab: 55 numbered seats, each with the
-employee assigned to it and a maximum hourly rate to compare against. Phase C replaced
-that tab with **Manufacturing Costs**, which reports in aggregate, because the old page rendered
-every position's holder next to their hourly rate and there is no permissions system — anything on
-screen is readable by every signed-in account.
+The staffing plan behind the **Staffing Economics** tab: 55 numbered seats, each with the employee
+assigned to it and a maximum hourly rate to compare against. `seat` here is NOT a job title —
+`employees.position` is, loaded from the classification worksheet.
 
-**Nothing in the app reads or writes this table now.** The rows are intact, including `max_wage`,
-which is the only place a rate ceiling per position is recorded; the wage-vs-max variance column
-went with the tab and has no replacement. `position` here is NOT authoritative — `employees.position`
-is, loaded from the classification worksheet. The table stays allowlisted in `/api/data`, so it is
-still readable (and, via PUT, still replaceable) by a signed-in caller even though no screen asks.
+**Phase C deleted the tab; Phase D brought it back, read-only and gated.** It was deleted because it
+rendered every seat's holder next to their hourly rate and a ceiling, and with no permissions system
+that was readable by every signed-in account. Manufacturing Costs answered the costing question in
+aggregate but not this one — "is the person in this seat inside the ceiling budgeted for it" — and
+`max_wage` and the variance column had no replacement anywhere.
+
+**The table has one owner: `/api/economics`.** It is off the `/api/data` allowlist entirely — not
+"read-only there", not reachable there. It briefly was allowlisted behind a read-only exception,
+but the moment seat assignment had to be editable that stopped being the right shape: a generic
+table endpoint with per-table exceptions is one edit away from re-exposing the write path that got
+the table removed in the first place.
+
+| | |
+|---|---|
+| `GET /api/economics` | every seat, in `num` order. Needs the **salaries tier**, all-or-nothing — unlike the employees projection, which narrows a row, every column here is part of the same compensation view. |
+| `PATCH /api/economics` `{id, name}` | assign or unassign **one** seat. Needs the salaries tier. |
+
+**Only `name` is writable.** `num`, `section`, `seat` and `max_wage` are the plan; moving a ceiling
+is a budgeting decision rather than a staffing one, and a body naming any of them is **refused, not
+filtered** — a 200 that silently dropped `max_wage` would report a ceiling change that did not
+happen. There is no create and no delete: adding or removing a seat changes the size of the plan.
+
+**No replace-all, ever.** The old page saved the whole table with `PUT` → `db.replaceAll`, which
+DELETEs every row and re-inserts, over the only record of a per-seat rate ceiling, with no screen
+that would have shown it had been emptied. The unit of change is one seat, and nothing here can
+touch a row the caller did not name.
+
+**Assignment is validated against the roster.** `economics.name` is TEXT, not a foreign key, and
+free-text names are how `Tim Green` and `Timothy Green` became two people earlier in this project.
+An assignment is refused unless it matches an **active hourly** employee exactly, and the stored
+value is the roster's canonical spelling rather than what was typed. Somebody in two seats is
+allowed and reported — refusing would make a straight swap impossible without unassigning first —
+and the page flags it.
+
+> **Known gap, deliberately not fixed quietly.** The real answer is an `employee_id` column with a
+> foreign key, which would make a rename impossible to get wrong and let a seat survive one. That
+> is a migration and belongs in its own change.
 
 ### preapproved_ot
 `id, employee_id -> employees(id), ot_type (Pre-Shift|Post-Shift|Weekend), hours, description, created_at, updated_at`
@@ -579,22 +609,33 @@ seeded (`SCHEMA_PHASE_D_PERMISSIONS.sql`), and `netlify/functions/permissions-li
 reads and writes of `employees`. What remains is the Salaries & Wages page itself, the admin grant
 surface, and the three items below that were waiting on the answer.
 
-**Staffing Economics comes back, gated.** With `economics.max_wage` and the wage-vs-max variance
-column, which have no replacement now. The table and its rows are intact; `economics` was removed
-from `/api/data`'s allowlist because nothing read it and `PUT` there is delete-and-replace.
+**~~Staffing Economics comes back, gated~~ — DONE.** The page is back behind the salaries tier with
+`max_wage` and the wage-vs-max variance column, and seat assignment works from the app again — as a
+PATCH of one column on one row through `/api/economics`, not the whole-table `PUT` that made the old
+one unsafe. See the `economics` schema section above for what that endpoint will and will not do.
 
-**Seeing what an allocation does.** Allocations are enforced and applied, but their effect is a
-department-level figure and the Overhead tab is totals only — so on the real roster (Corporate 1
-person, HR 0) every destination Axeri's split reaches has its cost withheld by the small-bucket rule.
-The split is correct and reconciles; it is simply not visible in the UI until the breakdown returns.
+**~~Seeing what an allocation does~~ — DONE for the salaries tier.** Allocations are enforced and
+applied, and their effect is a department-level figure. With the salaries tier the suppression floor
+is 1, so the Overhead breakdown shows every destination Axeri's split reaches. Without it the
+small-bucket rule still withholds those costs (Corporate 1 person, HR 0), which is unchanged and
+correct — the split reconciles either way, it is simply not itemised for a reader who may not see
+the underlying figures.
 
 **Dropping the `overtime` table.** Only after `preapproved_ot` has reconciled for a few weeks, and
 never in the same change as the migration.
 
-**The SG&A department breakdown.** The Overhead tab is totals only. SG&A is 7 active people across
-5 departments — Corporate 1, Procurement 1, Accounting 2, Sales & Marketing 3 — so at any
-defensible suppression threshold nearly every row would withhold its cost. A table of dashes is
-worse than no table. Behind permissions it can show real figures.
+**~~The SG&A department breakdown~~ — DONE, gated.** The Overhead tab is totals only at the base
+tier, for the reason it always was: SG&A is 7 active people across 5 departments — Corporate 1,
+Procurement 1, Accounting 2, Sales & Marketing 3 — so at a defensible suppression threshold nearly
+every row would withhold its cost, and a table of dashes is worse than no table.
+
+With the **salaries tier** the breakdown is shown, because the suppression floor drops to 1 for
+that tier. Not a favour: suppression protects a figure the reader may not see, and that reader can
+open Salaries & Wages and read every annual_salary by name. `/api/cost-report` decides this
+server-side from the caller's own tiers and reports the posture it applied in `disclosure`; the
+page only declines to draw a table it would otherwise fill with dashes. The lift applies to every
+cost class rather than only Overhead — the argument does not stop at a class boundary, since a
+one-person Manufacturing bucket leaks the same salary/2080 to the same reader.
 
 **A salaried person is costed into every week you can pick.** `hire_date` now EXISTS
 (`SCHEMA_PHASE_D_PERMISSIONS.sql` §4) but is deliberately empty — no backfill, because a guessed
@@ -615,6 +656,16 @@ The tolerant fallback stays in all three `isSalaried()` implementations and is s
 restored backup would carry the marker — but no live row does. `parseFloat(wage)` on a salaried
 person is still `NaN` rather than a number, because the column is now NULL for them, so the rule
 is unchanged: no code may read `wage` for a salaried person.
+
+**~~Two edit surfaces~~ — collapsed, 2026-08-22.** The roster's Edit now opens the profile card in
+edit mode; the modal survives for **Add alone**, because a person who does not exist yet has no card
+to open (the card reads `state.employees` by index) and the three sections it carries beyond the
+roster row — pre-approved OT, cost allocation, the HR file link — all need a saved employee id.
+
+Nothing was lost, and that was checked rather than assumed: the card is a strict superset. It has
+everything the modal had, plus break times, the four address fields and the HR file link, and it
+offers the schedule as a select where the modal had a free-text box. A test compares the two
+RENDERED surfaces field by field and fails if anything is bound on the modal alone.
 
 **One `verifySession`, and it compares with `!==`.** The eleven copies are consolidated into
 `netlify/functions/session-lib.js`. The signature comparison was deliberately left as `!==` rather
