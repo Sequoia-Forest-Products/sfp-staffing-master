@@ -171,11 +171,13 @@ async function syncToSheet(){
   try{
     for(const e of state.employees){
       const row={
-        // A salaried person's wage is NULL, never '' and never the retired
-        // 'Salary' sentinel — this loop re-writes every row on the roster, so an
-        // empty string here would put junk back into a column the migration just
-        // cleaned.
-        name:e.name, wage:isSalaried(e)?null:(e.wage===''||e.wage==null?null:e.wage),
+        // WAGE IS NOT WRITTEN HERE. This loop re-writes every row on the roster,
+        // which made it the worst possible place to send a column the app does not
+        // own: employees.wage comes from BBSI's daily file via
+        // payroll-db.updateEmployeeWage, and one Sync would have stamped the
+        // browser's stale copy over every rate in the table. permissions-lib now
+        // refuses the column on this path as well, for every tier.
+        name:e.name,
         pay_type:payTypeOf(e), status:e.status,
         // clock_in and clock_out are deliberately NOT written. Nothing reads them
         // (audited across the frontend, every Netlify function and both report

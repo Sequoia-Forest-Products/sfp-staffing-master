@@ -148,8 +148,18 @@ sfp-staffing-master/
 ## Database Schema (Supabase)
 
 ### employees
-`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, sms_opted_out, drive_folder_id, employee_number, department`  
+`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, sms_opted_out, drive_folder_id, employee_number, department, hire_date`  
+Plus the four axes below, and `annual_salary`.  
 `text_bolt` — deprecated, no longer read or written; kept one release as a fallback.
+
+`wage` is an **hourly rate and nothing else**, and it belongs to BBSI: `payroll-db.updateEmployeeWage`
+rewrites it from the daily file with the service key. It is NULL for salaried people — the literal
+`'Salary'` sentinel was retired 2026-08-22. Nothing in the app may write this column; the gate in
+`permissions-lib.js` refuses it for every tier, and both client writers stopped sending it, because
+a value typed in the app would be replaced by the next morning's import with nobody told.
+
+`hire_date` (DATE) exists and is **empty**. Added by `SCHEMA_PHASE_D_PERMISSIONS.sql` §4 with no
+backfill: a guessed start date reads as a fact. BBSI likely has the real ones.
 
 `employee_number` is the payroll system's id, **TEXT and zero-padded** (`0319`). An integer
 column destroys the padding, which is why an older install's `INTEGER` column is converted by
@@ -193,6 +203,38 @@ reads it functionally and nothing writes to it; it is dropped by `SCHEMA_DROP_DE
 There was **no automatic migration between the two** — the value sets do not correspond, so every
 employee was assigned by hand. The one-off bulk back-fill screen that existed for that migration
 has been removed now that it is done; departments are set per employee in the edit modal.
+
+### user_permissions
+`id, email, tier, granted_by, granted_at, note` — `SCHEMA_PHASE_D_PERMISSIONS.sql`
+
+Who holds which permission tier. **Membership is data**: granting access is an INSERT, not a
+deploy. What a tier *means* — which columns it unlocks — is in `netlify/functions/permissions-lib.js`,
+because that is a decision about the shape of the app and belongs where it can be tested.
+
+| tier | stored? | unlocks |
+|---|---|---|
+| `hourly_wages` | **never** | the base. Every signed-in user holds it. `wage` is readable by everyone by decision. |
+| `salaries` | yes | `annual_salary`, read and write |
+| `admin` | yes | may grant and revoke the other two. Does not by itself unlock compensation. |
+
+A missing row means the base tier, **not no access** — which is why `hourly_wages` is refused by a
+CHECK rather than merely ignored by the code. A row asserting it would make presence and absence
+mean the same thing. `email` is stored lowercased and trimmed, enforced by a CHECK, and unique per
+(email, tier); Ryley and Peter each hold two tiers, so two rows.
+
+RLS is enabled with **no policies** — that is the intended state, not a gap: with none defined, RLS
+denies everything to every role subject to it. The Netlify functions reach Supabase with the service
+key, which bypasses RLS; no browser talks to PostgREST directly.
+
+**The last admin cannot be revoked.** A statement-level trigger refuses it, and refuses `TRUNCATE`
+separately, because a delete trigger does not fire on TRUNCATE. Handing over means grant first, then
+revoke — each statement is judged on its own. `DROP TABLE` is the one case no trigger can cover, and
+§7 of the migration documents the recovery: one INSERT in the Supabase SQL editor. There is
+deliberately **no hardcoded fallback admin** in the code, because a permanent grant no revoke can
+reach is a worse failure than the one it prevents.
+
+Resolution **fails closed** in every mode — no grant row, no table, or a read that errors all give
+the base tier. That costs an admin their admin until it recovers, which is the correct trade.
 
 ### economics
 `id, num, section, seat, name, max_wage, created_at, updated_at`
@@ -532,9 +574,10 @@ Google OAuth restricted to `sequoiafp.com`. Non-domain users can be added via `A
 Recorded here rather than in a comment nobody will find, because each one is a decision that was
 taken deliberately and each one has a visible consequence today.
 
-**Permissions, and the Salaries & Wages page.** Everything below waits on this. Today every
-signed-in `sequoiafp.com` account has full access, so "who may see a compensation figure" has no
-answer to encode.
+**~~Permissions~~ — the enforcement is DONE; the pages are not.** `user_permissions` exists and is
+seeded (`SCHEMA_PHASE_D_PERMISSIONS.sql`), and `netlify/functions/permissions-lib.js` gates both
+reads and writes of `employees`. What remains is the Salaries & Wages page itself, the admin grant
+surface, and the three items below that were waiting on the answer.
 
 **Staffing Economics comes back, gated.** With `economics.max_wage` and the wage-vs-max variance
 column, which have no replacement now. The table and its rows are intact; `economics` was removed
@@ -553,17 +596,25 @@ never in the same change as the migration.
 defensible suppression threshold nearly every row would withhold its cost. A table of dashes is
 worse than no table. Behind permissions it can show real figures.
 
-**A salaried person is costed into every week you can pick.** `employees` has no start or end date,
+**A salaried person is costed into every week you can pick.** `hire_date` now EXISTS
+(`SCHEMA_PHASE_D_PERMISSIONS.sql` §4) but is deliberately empty — no backfill, because a guessed
+start date reads as a fact. So this is unchanged in behaviour and now blocked only on the data.
+`employees` has no populated start or end date,
 and a salaried person's cost is `annual_salary / 2080 x standard hours`, which does not consult the
 payroll file. So selecting a week before somebody was hired, or a week in the future, shows their
 cost. This is a consequence of the roster having no employment dates, not of the arithmetic — the
 fix is a `hire_date` (and eventually a termination date), not a change to the cost basis.
 `tests/cost-report-api.test.js` pins the current behaviour explicitly as pinned-not-endorsed.
 
-**`employees.wage` still holds the literal string `'Salary'` for all 10 salaried people.** The v2
-model retired that sentinel and it was never cleared. Nothing breaks: `isSalaried()` falls back to
-it and `effectiveHourlyRate()` decides salaried *before* reading any rate. But `parseFloat(wage)`
-on a salaried person is `NaN`, so no new code may read `wage` for them.
+**~~`employees.wage` still holds the literal string `'Salary'`~~ — DONE, 2026-08-22.** Cleared on
+all **11** salaried people (10 active) by `SCHEMA_PHASE_D_PERMISSIONS.sql` §5, which is STEP 2 of
+`SCHEMA_V2_HOTFIX_SENTINEL.sql` finally run. The count in the original note said 10; it was 11,
+because it was written before `SCHEMA_V2_ROSTER_CLEANUP.sql` activated the salaried staff.
+
+The tolerant fallback stays in all three `isSalaried()` implementations and is still tested — a
+restored backup would carry the marker — but no live row does. `parseFloat(wage)` on a salaried
+person is still `NaN` rather than a number, because the column is now NULL for them, so the rule
+is unchanged: no code may read `wage` for a salaried person.
 
 **One `verifySession`, and it compares with `!==`.** The eleven copies are consolidated into
 `netlify/functions/session-lib.js`. The signature comparison was deliberately left as `!==` rather

@@ -31,10 +31,27 @@ function cookie(email = 'someone@sequoiafp.com') {
 }
 
 // Records every URL the handler asks Supabase for, and answers with `rows`.
-function stubFetch(rows = [], { fail = null } = {}) {
+//
+// The user_permissions read that Phase D added is answered separately and is
+// NOT recorded in `urls`. Every assertion in this file is about the data query
+// the handler makes on the caller's behalf — how it is projected, whether the
+// allowlist stopped it, how many times it retried — and folding an unrelated
+// permissions lookup into those counts would make `urls[0]` mean something
+// different depending on which gate ran first.
+//
+// `permissionGrants` defaults to none, so these tests exercise the BASE tier —
+// which is the right default: it is what almost every user holds, and it is the
+// case where annual_salary must be absent.
+function stubFetch(rows = [], { fail = null, permissionGrants = [] } = {}) {
   const urls = [];
   global.fetch = async (url) => {
-    urls.push(decodeURIComponent(String(url)));
+    const u = decodeURIComponent(String(url));
+    if (u.includes('user_permissions')) {
+      return { ok: true, status: 200,
+               json: async () => permissionGrants,
+               text: async () => JSON.stringify(permissionGrants) };
+    }
+    urls.push(u);
     if (fail) return { ok: false, status: 400, text: async () => fail, json: async () => ({ message: fail }) };
     return { ok: true, status: 200, json: async () => rows, text: async () => JSON.stringify(rows) };
   };
@@ -108,6 +125,11 @@ function stubFailingColumn(failFor) {
   const urls = [];
   global.fetch = async (url) => {
     const decoded = decodeURIComponent(String(url));
+    // Same exclusion as stubFetch: the permissions lookup is not one of the
+    // projection attempts these tests are counting.
+    if (decoded.includes('user_permissions')) {
+      return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+    }
     urls.push(decoded);
     if (decoded.includes(failFor)) {
       return { ok: false, status: 400, text: async () => `column employees.${failFor} does not exist` };
@@ -122,12 +144,19 @@ test('a database without the Phase B columns keeps the v2 classification', async
 
   const res = await get('employees');
   assert.strictEqual(res.statusCode, 200, 'a missing Phase B column must not 500 the roster');
-  assert.strictEqual(urls.length, 2, 'expected exactly one retry');
+  // THREE attempts, not two. Phase D added a rung above the Phase B one for
+  // hire_date, which does not exist until SCHEMA_PHASE_D_PERMISSIONS.sql runs.
+  // Without its own rung a missing hire_date would drop straight past Phase B
+  // and cost `position` and the addresses for everybody.
+  assert.strictEqual(urls.length, 3, 'full, then without hire_date, then without the Phase B columns');
+  assert.ok(/hire_date/.test(urls[0]) && /position,/.test(urls[0]));
+  assert.ok(!/hire_date/.test(urls[1]) && /position,/.test(urls[1]), 'the first retry drops only hire_date');
 
-  assert.ok(!/address_street/.test(urls[1]), 'the retry drops the address columns');
-  assert.ok(/pay_type/.test(urls[1]), 'but KEEPS pay_type — this is the whole point of the middle rung');
-  assert.ok(/cost_class/.test(urls[1]) && /position_group/.test(urls[1]), 'and the other two axes');
-  assert.ok(!/annual_salary/.test(urls[1]), 'and still never asks for annual_salary');
+  const landed = urls[2];
+  assert.ok(!/address_street/.test(landed), 'the rung that lands drops the address columns');
+  assert.ok(/pay_type/.test(landed), 'but KEEPS pay_type — this is the whole point of the middle rung');
+  assert.ok(/cost_class/.test(landed) && /position_group/.test(landed), 'and the other two axes');
+  assert.ok(!/annual_salary/.test(landed), 'and still never asks for annual_salary');
 });
 
 test('a database without the v2 columns falls all the way back rather than taking the app down', async () => {
@@ -135,7 +164,7 @@ test('a database without the v2 columns falls all the way back rather than takin
 
   const res = await get('employees');
   assert.strictEqual(res.statusCode, 200, 'a missing v2 column must not 500 the roster');
-  assert.strictEqual(urls.length, 3, 'one retry per rung: full, pre-Phase-B, pre-v2');
+  assert.strictEqual(urls.length, 4, 'one attempt per rung: full, pre-Phase-D, pre-Phase-B, pre-v2');
 
   const last = urls[urls.length - 1];
   assert.ok(!/pay_type/.test(last), 'the last attempt drops the v2 columns');
