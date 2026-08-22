@@ -30,12 +30,16 @@
 
 function econRows(){ return state.economics || []; }
 
-// The hourly rate behind a seat's occupant. A salaried person has no hourly
-// rate at all — employees.wage is NULL for them since Phase D retired the
-// sentinel — so they contribute nothing here rather than a rate of zero. The
-// plan is a plan for hourly seats.
-function econWageFor(name){
-  const emp=(state.employees||[]).find(e=>e.name===name);
+// The hourly rate behind a seat's occupant, looked up BY ID. A salaried person
+// has no hourly rate at all — employees.wage is NULL for them since Phase D
+// retired the sentinel — so they contribute nothing here rather than a rate of
+// zero. The plan is a plan for hourly seats.
+//
+// By id and not by name, which is the point of the whole change: a rename moves
+// the name and leaves the id alone, so nothing here has to notice.
+function econWageFor(employeeId){
+  if(!employeeId) return null;
+  const emp=(state.employees||[]).find(e=>String(e.id)===String(employeeId));
   if(!emp||isSalaried(emp)) return null;
   const n=parseFloat(String(emp.wage==null?'':emp.wage).replace(/[$,]/g,''));
   return isFinite(n)?n:null;
@@ -62,7 +66,12 @@ async function loadEconomics(){
         : (d.error||('Request failed ('+res.status+')')));
     }
     state.economics=d.seats||[];
-    state.econNote=d.tableMissing?(d.note||''):'';
+    // Whether the server can accept an assignment at all. False before
+    // SCHEMA_ECONOMICS_EMPLOYEE_ID.sql has run: the page still READS, and says
+    // why the dropdowns are inert rather than letting somebody discover it by
+    // clicking one.
+    state.econAssignable=d.assignable!==false;
+    state.econNote=d.note||'';
     state.econError='';
   }catch(err){
     state.economics=[];
@@ -79,15 +88,15 @@ async function loadEconomics(){
 // The row is replaced from what the SERVER returned, not from what was picked.
 // It canonicalises the name against the roster, and showing the picked value
 // instead would hide a mismatch rather than surface it.
-async function econAssign(seatId, name){
-  if(state.econBusy) return;
+async function econAssign(seatId, employeeId){
+  if(state.econBusy||!state.econAssignable) return;
   const seat=(state.economics||[]).find(s=>String(s.id)===String(seatId));
-  const before=seat?seat.name:null;
+  const before=seat?{...seat}:null;
   state.econBusy=seatId; render();
   try{
     const res=await fetch('/api/economics',{
       method:'PATCH',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({id:seatId,name:name||''})
+      body:JSON.stringify({id:seatId,employeeId:employeeId||''})
     });
     if(res.status===401){location.href='/';return;}
     const d=await res.json().catch(()=>({}));
@@ -110,9 +119,11 @@ async function econAssign(seatId, name){
       toast(d.seat.name+' assigned to '+d.seat.seat,'success');
     }
   }catch(err){
-    // Put the row back to what the database still holds, so the screen never
-    // shows an assignment that did not happen.
-    if(seat) seat.name=before;
+    // Put the WHOLE row back to what the database still holds, so the screen
+    // never shows an assignment that did not happen. The name and the id have
+    // to move together — restoring one and not the other is how a row comes to
+    // show a person it does not point at.
+    if(seat&&before) Object.assign(seat,before);
     toast(err.message,'error');
   }
   state.econBusy=null; render();
@@ -140,36 +151,40 @@ function renderEconomics(){
   const eligible=(state.employees||[]).filter(e=>e.status==='Active'&&!isSalaried(e));
 
   // A person in two seats is a plan error, not a data error, and it is the thing
-  // this page has always been best at catching.
+  // this page has always been best at catching. Counted by ID, which also
+  // catches what a name count could not: the same person in two seats under two
+  // spellings.
   const count={};
-  rows.forEach(p=>{ if(p.name) count[p.name]=(count[p.name]||0)+1; });
+  rows.forEach(p=>{ if(p.employeeId) count[p.employeeId]=(count[p.employeeId]||0)+1; });
   const dupes=new Set(Object.keys(count).filter(k=>count[k]>1));
 
-  const assigned=new Set(rows.map(p=>p.name).filter(Boolean));
-  const unassigned=eligible.filter(e=>!assigned.has(e.name));
+  const assigned=new Set(rows.map(p=>String(p.employeeId)).filter(x=>x!=='null'&&x!==''));
+  const unassigned=eligible.filter(e=>!assigned.has(String(e.id)));
 
-  // Somebody named in a seat who is not on the active hourly roster. Separate
-  // from a duplicate and separate from an empty seat: it means the plan is
-  // pointing at somebody who left, changed pay type, or is spelled differently.
-  const unknown=rows.filter(p=>p.name&&!eligible.some(e=>e.name===p.name));
+  // A seat whose occupant is not linked to anybody on the roster. Post-migration
+  // that means the backfill could not match the recorded name — the rows section
+  // 4b of SCHEMA_ECONOMICS_EMPLOYEE_ID.sql lists — and it is a decision for a
+  // person, not a fault. It is also what a seat looks like before the migration
+  // has run at all.
+  const unknown=rows.filter(p=>p.unlinked);
 
   let totalWage=0, totalDpm=0, priced=0;
   for(const p of rows){
-    const w=p.name?econWageFor(p.name):null;
+    const w=econWageFor(p.employeeId);
     if(w==null) continue;
     priced++; totalWage+=w;
     const d=econDollarPerM(w); if(d!=null) totalDpm+=d;
   }
 
   const overs=rows.filter(p=>{
-    const w=p.name?econWageFor(p.name):null;
+    const w=econWageFor(p.employeeId);
     return w!=null&&p.max_wage!=null&&w>Number(p.max_wage);
   });
 
   const sections=[...new Set(rows.map(p=>p.section))];
 
   const seatRow=(p)=>{
-    const wage=p.name?econWageFor(p.name):null;
+    const wage=econWageFor(p.employeeId);
     const max=p.max_wage==null?null:Number(p.max_wage);
     const dpm=econDollarPerM(wage);
     const variance=(wage!=null&&max!=null)?Math.round((wage-max)*100)/100:null;
@@ -180,18 +195,30 @@ function renderEconomics(){
     const varStr=variance==null?'—'
       :(variance===0?fmt$(0)
       :(variance>0?'+'+fmt$(variance):'-'+fmt$(Math.abs(variance))));
-    const isDupe=p.name&&dupes.has(p.name);
-    const isUnknown=p.name&&!eligible.some(e=>e.name===p.name);
+    const isDupe=p.employeeId&&dupes.has(String(p.employeeId));
+    // A seat whose occupant is LINKED but is not somebody the select offers —
+    // Eduardo Rivera is salaried and sits in Production Lead, and the options
+    // are active hourly people only.
+    //
+    // Without an option of their own the browser finds nothing selected and
+    // falls back to the first one, so the seat renders as "— vacant —" when it
+    // is not, and one stray change on that select clears somebody who is
+    // actually in the job. The migration's own §2c is what surfaced this.
+    //
+    // Distinct from `unlinked`: this row HAS a key and resolves fine. It just
+    // cannot be reassigned from here, and the option says so.
+    const notOfferable=p.employeeId&&!eligible.some(e=>String(e.id)===String(p.employeeId));
     return `<div class="econ-row"${isDupe?' style="border-color:#e67e22;background:rgba(230,126,34,.06)"':''}>
       <div class="econ-num">${esc(String(p.num==null?'':p.num))}</div>
       <div class="econ-seat">${esc(p.seat||'')}</div>
       <div class="econ-name">
         <select class="econ-select${isDupe?' econ-select-dupe':''}"
-          ${state.econBusy?'disabled':''}
+          ${state.econBusy||!state.econAssignable?'disabled':''}
           onchange="econAssign('${jsStr(p.id)}',this.value)">
-          <option value=""${p.name?'':' selected'}>— vacant —</option>
-          ${isUnknown?`<option value="${esc(p.name)}" selected>${esc(p.name)} — not on the active hourly roster</option>`:''}
-          ${eligible.map(e=>`<option value="${esc(e.name)}"${p.name===e.name?' selected':''}>${esc(e.name)}</option>`).join('')}
+          <option value=""${p.employeeId||p.unlinked?'':' selected'}>— vacant —</option>
+          ${p.unlinked?`<option value="" selected>${esc(p.name||'unknown')} — not linked to anybody on the roster</option>`:''}
+          ${notOfferable?`<option value="${esc(String(p.employeeId))}" selected>${esc(p.name||'unknown')} — ${p.occupantSalaried?'salaried':'not active'}, cannot be reassigned here</option>`:''}
+          ${eligible.map(e=>`<option value="${esc(String(e.id))}"${String(p.employeeId)===String(e.id)?' selected':''}>${esc(e.name)}</option>`).join('')}
         </select>${
         isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>
       <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}</div>

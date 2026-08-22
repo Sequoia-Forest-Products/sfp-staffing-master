@@ -283,16 +283,33 @@ DELETEs every row and re-inserts, over the only record of a per-seat rate ceilin
 that would have shown it had been emptied. The unit of change is one seat, and nothing here can
 touch a row the caller did not name.
 
-**Assignment is validated against the roster.** `economics.name` is TEXT, not a foreign key, and
-free-text names are how `Tim Green` and `Timothy Green` became two people earlier in this project.
-An assignment is refused unless it matches an **active hourly** employee exactly, and the stored
-value is the roster's canonical spelling rather than what was typed. Somebody in two seats is
-allowed and reported — refusing would make a straight swap impossible without unassigning first —
-and the page flags it.
+**A seat points at a person, not at a string.** `economics.employee_id` is a foreign key to
+`employees(id)` and is the only thing that decides who is in a seat; the occupant's name is resolved
+through it on every read. Renaming somebody on the Employees tab moves their seat with them.
 
-> **Known gap, deliberately not fixed quietly.** The real answer is an `employee_id` column with a
-> foreign key, which would make a rename impossible to get wrong and let a seat survive one. That
-> is a migration and belongs in its own change.
+It used to be the text column `economics.name`, which is how `Tim Green` and `Timothy Green` became
+two people earlier in this project. Validating the incoming name against the roster stopped a bad
+name going **in** and could do nothing about a good one going **stale** afterwards — the seat
+silently read as "not on the roster", their rate dropped out of the wage pool, and nothing reported
+that a rename had done it. `SCHEMA_ECONOMICS_EMPLOYEE_ID.sql` added the key.
+
+`ON DELETE SET NULL`, and both alternatives are wrong: `RESTRICT` would make removing a leaver
+depend on the staffing plan, and `CASCADE` would delete the **seat**, taking `max_wage` — the one
+figure here with no other copy — with it. A seat outlives its occupant.
+
+No unique constraint on `employee_id`: somebody in two seats is allowed and reported, because
+refusing would make a straight swap impossible without unassigning first. The page flags it, and the
+check is by id, so it catches what a name comparison could not — the same person in two seats under
+two spellings.
+
+`name` is retained and **no longer read**. It holds the only record of the occupant for any row the
+backfill could not match, and the endpoint writes it alongside the key purely as a last-known
+spelling. Dropping it is a later, deliberate change — see §5 of the migration.
+
+**Works either side of the migration**, so there is no deploy order to get right. The read asks for
+`employee_id` and falls back a rung on 42703, resolving from the stored name as before; the write
+requires the column and answers 503 naming the file, because an assignment landing in the text
+column would be a write no build that reads the key would ever show.
 
 ### preapproved_ot
 `id, employee_id -> employees(id), ot_type (Pre-Shift|Post-Shift|Weekend), hours, description, created_at, updated_at`
