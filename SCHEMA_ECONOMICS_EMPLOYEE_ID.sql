@@ -1,4 +1,25 @@
 -- =====================================================================
+-- APPLIED 2026-08-22 to zwghbbyzrycpnesuuzgi (sfp-staffing), in full.
+--
+-- §0b: 55 seats, 55 filled, 0 vacant, no employee_id. §2a: 55 will backfill,
+-- 0 unmatched, 0 ambiguous — the plan and the roster agree on spelling
+-- throughout. §2c: one row, Eduardo Rivera (Active, Salaried) in Production
+-- Lead, which found a real UI bug before this file wrote anything — see the
+-- note at §2c. §3: 55 linked. §4a: 55 / 55 / 0 / 0. §4b: no rows. §4c: 55
+-- rows, every note blank. §4d: FOREIGN KEY (employee_id) REFERENCES
+-- employees(id) ON DELETE SET NULL.
+--
+-- A CORRECTION TO THE DEPLOY-ORDER CLAIM BELOW, recorded because it was stated
+-- too broadly. "Order-free" is true of the code that SHIPS WITH this migration:
+-- it reads either shape and refuses to write the wrong one. It was NOT true of
+-- the code deployed BEFORE it, whose PATCH writes `name` alone and never
+-- touches employee_id. So between this migration running and that deploy
+-- landing, a seat assignment made in the app updates the text and leaves the
+-- key pointing at the previous person — after which the seat displays the
+-- previous occupant, silently. The window was minutes and nobody assigned a
+-- seat in it. The general lesson is the one this file is about: "works before
+-- and after" has to be asserted of BOTH builds, not just the new one.
+-- =====================================================================
 -- economics.employee_id — make a seat point at a PERSON, not at a string
 --
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY. §0a refuses to
@@ -62,6 +83,14 @@
 -- So: deploy whenever, run this whenever. The only window is one where seat
 -- assignment reports "run the migration", which is a sentence rather than a
 -- symptom.
+--
+-- THAT HOLDS FOR THIS BUILD ONWARDS, and not for the one before it. The
+-- previous build's PATCH wrote `name` alone; run against a database that has
+-- the key, it leaves employee_id stale and the seat then displays whoever was
+-- there before. See the correction in the APPLIED header. Any future migration
+-- that adds a column the WRITE path must maintain has the same shape, and the
+-- question to ask is not "does the new code cope" but "what does the OLD code
+-- do to a migrated database".
 -- =====================================================================
 
 
