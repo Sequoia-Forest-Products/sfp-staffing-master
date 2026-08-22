@@ -443,6 +443,12 @@ begin
      and btrim(lower(coalesce(wage,''))) = 'salary';
 
   get diagnostics cleared = row_count;
+  -- The Supabase SQL editor DOES NOT SURFACE NOTICES. Confirmed on the live run
+  -- of this section: it reported only 'Success. No rows returned.' and the count
+  -- never appeared. The notice is kept because psql and any other client show
+  -- it, but it cannot be the thing a section is verified by — §6d is, and every
+  -- future migration in this repo should assume the same and verify with a
+  -- SELECT rather than a RAISE.
   raise notice 'Cleared the wage sentinel on % row(s).', cleared;
 end $$;
 
