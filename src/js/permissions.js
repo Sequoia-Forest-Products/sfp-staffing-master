@@ -75,14 +75,20 @@ async function loadPermissions(){
 // The Salaries & Wages tab button lives in app.html with hidden set, because a
 // tab that appears and then vanishes when permissions load is worse than one
 // that appears a moment late.
+// Both tabs behind the salaries tier, hidden together. Listed rather than
+// derived from anything, so adding a gated tab is one edit in one place and
+// forgetting it leaves the tab visible-but-empty rather than silently open.
+const SALARIES_TABS=['salaries','economics'];
+
 function applyTabVisibility(){
-  const tab=document.querySelector('.sfp-tab[data-tab="salaries"]');
-  if(!tab) return;
   const allowed=canSeeSalaries();
-  tab.hidden=!allowed;
-  // If they were looking at it when a grant was revoked in another window,
-  // do not leave them on a tab that no longer has anything to show.
-  if(!allowed&&state.tab==='salaries') goToTab('employees');
+  for(const name of SALARIES_TABS){
+    const tab=document.querySelector('.sfp-tab[data-tab="'+name+'"]');
+    if(tab) tab.hidden=!allowed;
+  }
+  // If they were looking at one when a grant was revoked in another window, do
+  // not leave them on a tab that no longer has anything to show.
+  if(!allowed&&SALARIES_TABS.includes(state.tab)) goToTab('employees');
 }
 
 // ------------------------------------------------------------------------

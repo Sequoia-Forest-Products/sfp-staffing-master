@@ -191,23 +191,71 @@ test('the three tables the app uses are permitted', async () => {
   }
 });
 
-test('economics is refused now that nothing reads it, including on PUT', async () => {
-  // It backed Staffing Economics, which Manufacturing Costs replaced. What made
-  // this worth closing rather than leaving: PUT maps to db.replaceAll, which
-  // deletes every row before inserting, so an allowlisted table nothing renders
-  // is a live delete path with no screen that would show it had been emptied.
-  // max_wage is the only per-position rate ceiling recorded anywhere.
-  for (const method of ['GET', 'PUT', 'POST', 'PATCH', 'DELETE']) {
-    const urls = stubFetch([]);
-    const res = await data.handler({
-      httpMethod: method,
-      headers: { cookie: cookie() },
-      queryStringParameters: { table: 'economics' },
-      body: JSON.stringify({ rows: [] })
-    });
-    assert.strictEqual(res.statusCode, 400, `economics reachable via ${method}`);
-    assert.strictEqual(urls.length, 0, `economics reached the database via ${method}`);
+test('economics is WRITABLE BY NOBODY, whatever tier they hold', async () => {
+  // It was removed from the allowlist entirely in Phase C, for one reason: PUT
+  // maps to db.replaceAll, which deletes every row before inserting, so an
+  // allowlisted table nothing renders was a live delete path with no screen
+  // that would show it had been emptied. max_wage is the only per-seat rate
+  // ceiling recorded anywhere.
+  //
+  // Phase D puts it back READ-ONLY. This is the half that keeps the reason it
+  // left from coming back with it — and it holds for the salaries tier and the
+  // admin tier too, because read-only is a property of the table here, not a
+  // permission somebody can be given.
+  for (const grants of [[], [{ email: 'someone@sequoiafp.com', tier: 'salaries' }],
+                        [{ email: 'someone@sequoiafp.com', tier: 'admin' }]]) {
+    for (const method of ['PUT', 'POST', 'PATCH', 'DELETE']) {
+      const urls = stubFetch([], { permissionGrants: grants });
+      const res = await data.handler({
+        httpMethod: method,
+        headers: { cookie: cookie() },
+        queryStringParameters: { table: 'economics', id: '00000000-0000-0000-0000-000000000000' },
+        body: JSON.stringify({ rows: [] })
+      });
+      assert.strictEqual(res.statusCode, 405, `economics writable via ${method}`);
+      assert.strictEqual(urls.length, 0, `economics reached the database via ${method}`);
+      assert.match(JSON.parse(res.body).error, /read-only/);
+    }
   }
+});
+
+test('reading economics needs the salaries tier, and the base tier never touches the table', async () => {
+  // All-or-nothing rather than a narrowed projection: every column of a
+  // staffing plan is part of the same compensation view — the seat, who is in
+  // it, and the ceiling for it — so there is no useful subset to return.
+  const urls = stubFetch([{ id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1',
+                            name: 'Ana Reyes', max_wage: 38.5 }]);
+  const res = await get('economics');
+
+  assert.strictEqual(res.statusCode, 403);
+  assert.strictEqual(urls.length, 0, 'refused before the query, not after it');
+  // The figures are not in the response in any form.
+  assert.ok(!res.body.includes('38.5'));
+  assert.ok(!res.body.includes('Millwright'));
+  assert.match(JSON.parse(res.body).detail, /salaries tier/);
+});
+
+test('with the salaries tier economics reads, ordered by seat number', async () => {
+  const rows = [{ id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1',
+                  name: 'Ana Reyes', max_wage: 38.5 }];
+  const urls = stubFetch(rows, {
+    permissionGrants: [{ email: 'someone@sequoiafp.com', tier: 'salaries' }] });
+  const res = await get('economics');
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(JSON.parse(res.body).data.length, 1);
+  assert.strictEqual(urls.length, 1);
+  // num.asc, because the staffing plan has an order and alphabetical is not it:
+  // 'Utility 10' sorts before 'Utility 2'.
+  assert.match(urls[0], /order=num\.asc/);
+});
+
+test('the admin tier alone does not open economics', async () => {
+  const urls = stubFetch([], {
+    permissionGrants: [{ email: 'someone@sequoiafp.com', tier: 'admin' }] });
+  const res = await get('economics');
+  assert.strictEqual(res.statusCode, 403);
+  assert.strictEqual(urls.length, 0);
 });
 
 test('a table the app does not use is refused, and never reaches Supabase', async () => {
@@ -219,7 +267,7 @@ test('a table the app does not use is refused, and never reaches Supabase', asyn
     assert.strictEqual(urls.length, 0, `${table} reached the database anyway`);
     const body = JSON.parse(res.body);
     assert.match(body.error, new RegExp(table));
-    assert.deepStrictEqual(body.allowed, ['employees', 'overtime', 'points']);
+    assert.deepStrictEqual(body.allowed, ['employees', 'overtime', 'points', 'economics']);
   }
 });
 

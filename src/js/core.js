@@ -73,7 +73,11 @@ let state = {
   perms:{tiers:['hourly_wages'],isAdmin:false,grants:null,email:'',loaded:false,loading:false,error:'',busy:false},
   // Salaries & Wages. Keyed by employee id, so a half-typed figure on one person
   // survives a re-render caused by somebody else's row.
-  salaryDrafts:{}, salarySaving:false
+  salaryDrafts:{}, salarySaving:false,
+  // Staffing Economics. Loaded on first open like the cost reports, not on every
+  // page load: /api/data refuses the table to most of the roster, so fetching it
+  // eagerly would 403 for almost everybody on every boot.
+  economics:[], econLoaded:false, econLoading:false, econError:''
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -588,6 +592,10 @@ function switchTab(tab,el){
   // loads on first open rather than on every page load.
   if(tab==='costs') loadCostsOnce([COST_CLASS_MANUFACTURING]);
   if(tab==='overhead') loadCostsOnce(OVERHEAD_CLASSES);
+  // Same rule, and here it also matters for a reason the cost tabs do not have:
+  // /api/data refuses the economics table without the salaries tier, so loading
+  // it on boot would 403 for most of the roster on every page load.
+  if(tab==='economics'&&!state.econLoaded&&!state.econLoading) loadEconomics();
 }
 
 function render(){
@@ -611,6 +619,7 @@ function render(){
   // hidden tab button is a courtesy, not the gate, and a deep link or a
   // hand-typed switchTab() in the console has to land somewhere honest.
   else if(state.tab==='salaries')el.innerHTML=renderSalaries();
+  else if(state.tab==='economics')el.innerHTML=renderEconomics();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }
 

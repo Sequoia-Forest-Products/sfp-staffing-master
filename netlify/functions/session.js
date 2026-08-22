@@ -20,6 +20,7 @@ const SCRIPT_MODULES = [
   'data.js',
   'employees.js',
   'salaries.js',
+  'economics.js',
   'costs.js',
   'preapproved.js',
   'allocations.js',

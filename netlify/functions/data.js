@@ -12,15 +12,35 @@ const perms = require('./permissions-lib');
 // every row in the table before inserting, so `PUT /api/data?table=daily_hours`
 // with an empty rows array would have emptied the table.
 //
-// `economics` came OFF this list in Phase C. It backed the Staffing Economics
-// tab, which was replaced by Manufacturing Costs; nothing in the app reads it
-// now. Leaving it allowlisted meant a signed-in caller could still PUT it, and
-// PUT is delete-and-replace — a live write path to the only record of a per
-// position rate ceiling, with no screen that would show it had been emptied.
-// The table and its rows are untouched in the database; they are simply no
-// longer reachable through this endpoint. Phase D can add it back, read-only,
-// when the page that needs it is gated.
-const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
+// `economics` came OFF this list in Phase C, because leaving it allowlisted
+// meant a signed-in caller could PUT it — delete-and-replace against the only
+// record of a per-seat rate ceiling, with no screen that would show it had been
+// emptied.
+//
+// PHASE D PUTS IT BACK, READ-ONLY AND GATED. Two separate restrictions, and
+// both are enforced below rather than by anybody remembering:
+//
+//   READ_ONLY_TABLES     every write method is 405 here, so the delete-and-
+//                        replace path that got it removed cannot come back by
+//                        somebody adding a table to the allowlist and not
+//                        noticing PUT exists.
+//   SALARIES_ONLY_TABLES a GET requires the salaries tier. max_wage is a
+//                        budgeted ceiling per seat, and the page that reads it
+//                        puts that ceiling next to a named person's rate. That
+//                        is a compensation view, whatever the individual
+//                        columns are.
+const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points', 'economics']);
+
+// Readable through this endpoint, never writable through it. Checked before the
+// method dispatch, so it covers POST, PATCH, DELETE and PUT together — listing
+// a table here is the whole statement, with nothing to keep in sync.
+const READ_ONLY_TABLES = new Set(['economics']);
+
+// A GET here needs the salaries tier. Unlike the employees projection, which
+// narrows a row, this is all-or-nothing: every column of the table is part of
+// the same compensation view, so there is no useful subset to hand somebody
+// without the tier.
+const SALARIES_ONLY_TABLES = new Set(['economics']);
 
 // An explicit projection, not a denylist. A column added to `employees` later
 // is excluded until somebody deliberately lists it here, which is the right
@@ -199,12 +219,40 @@ exports.handler = async (event) => {
   }
 
   try {
-    // GET /api/data?table=employees
+    // Read-only tables. BEFORE the method dispatch on purpose: one check covers
+    // POST, PATCH, DELETE and PUT together, so a method added to this handler
+    // later is refused here by default rather than by somebody remembering.
+    if (READ_ONLY_TABLES.has(table) && method !== 'GET') {
+      return {
+        statusCode: 405, headers,
+        body: JSON.stringify({
+          error: `${table} is read-only through this endpoint`,
+          detail: 'It is reference data maintained in the database. The write path was removed ' +
+                  'because PUT here replaces the whole table, and nothing in the app writes it.'
+        })
+      };
+    }
+
+    // Tables whose every column is part of a compensation view. Unlike the
+    // employees projection, which narrows a row, this is all-or-nothing: there
+    // is no useful subset of a staffing plan to hand somebody without the tier.
+    if (SALARIES_ONLY_TABLES.has(table) && !perms.has(await callerTiers(), perms.TIER_SALARIES)) {
+      return {
+        statusCode: 403, headers,
+        body: JSON.stringify({
+          error: `Not permitted to read ${table}`,
+          detail: 'This needs the salaries tier. An administrator can grant it under Settings → Access.'
+        })
+      };
+    }
+
+    // GET /api/data?table=employees|overtime|points|economics
     if (method === 'GET' && table) {
       let orderBy = '';
       if (table === 'employees') orderBy = '?order=name.asc';
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
+      if (table === 'economics') orderBy = '?order=num.asc';
       const rows = table === 'employees'
         ? await queryEmployees(await callerTiers())
         : await db.query(table, orderBy);

@@ -138,31 +138,56 @@ function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
 // Staffing Economics is gone, and cannot come back by accident
 // ---------------------------------------------------------------------------
 
-test('the Staffing Economics module and its per-person wage helpers no longer exist', () => {
+test('the Staffing Economics WRITE path stays gone, though the page is back', () => {
+  // Phase C deleted the whole module. Phase D restores the page — max_wage and
+  // the variance column had no replacement anywhere — but NOT the parts that
+  // made it unsafe. These names are the assignment dropdown and its save, which
+  // wrote by replacing the entire economics table, over the only record of a
+  // per-seat rate ceiling. /api/data now answers any write there with 405 for
+  // every tier, so this pins that the client cannot grow one back either.
   const ctx = sandbox();
-  for (const gone of ['renderEcon', 'econAssign', 'econUnassign', 'saveEconomics',
-                      'getEmpWage', 'calcDollarPerM']) {
+  for (const gone of ['econAssign', 'econUnassign', 'saveEconomics']) {
     assert.strictEqual(typeof ctx[gone], 'undefined',
-      `${gone} is back — it rendered an individual's hourly rate on a costing page`);
+      `${gone} is back — it saved by replacing the whole table`);
   }
-  assert.ok(!__SCRIPT_MODULES.includes('economics.js'), 'economics.js is still in the manifest');
+  assert.ok(__SCRIPT_MODULES.includes('economics.js'), 'the page is back in the manifest');
   assert.ok(__SCRIPT_MODULES.includes('costs.js'), 'costs.js must be in the manifest');
+
+  // And no source file writes the table by any route.
+  for (const f of fs.readdirSync(SRC)) {
+    const src = fs.readFileSync(path.join(SRC, f), 'utf8');
+    assert.ok(!/table=economics'[^)]*\{\s*method/.test(src), `${f} writes economics`);
+    assert.ok(!/method:\s*'(PUT|POST|PATCH|DELETE)'[^}]*economics/.test(src), `${f} writes economics`);
+  }
 });
 
-test('the app no longer reads the economics table', () => {
-  // The table itself is untouched in the database, deliberately. What must not
-  // happen is the app fetching a table nothing renders.
+test('the roster load does not fetch economics — that would 403 for most people', () => {
+  // The table is refused without the salaries tier, so fetching it in loadData
+  // would fail on every boot for almost everybody. It is loaded on first open of
+  // its own tab instead, the way the cost reports are.
   const src = fs.readFileSync(path.join(SRC, 'data.js'), 'utf8');
-  assert.ok(!/fetch\('\/api\/data\?table=economics'\)/.test(src));
-  assert.ok(!/state\.economics\s*=/.test(src));
+  assert.ok(!/table=economics/.test(src), 'data.js must not touch the economics table');
+  const econ = fs.readFileSync(path.join(SRC, 'economics.js'), 'utf8');
+  assert.match(econ, /table=economics/, 'its own module does the fetch');
 });
 
-test('app.html offers Manufacturing Costs and Overhead, and not Staffing Economics', () => {
+test('the two gated tabs ship HIDDEN, and the ungated ones do not', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
-  assert.ok(!html.includes('Staffing Economics'));
-  assert.ok(!html.includes("data-tab=\"economics\""));
   assert.match(html, /data-tab="costs"[^>]*>Manufacturing Costs</);
   assert.match(html, /data-tab="overhead"[^>]*>Overhead</);
+
+  // Hidden in the markup and revealed by applyTabVisibility(), rather than the
+  // other way round. A tab that appears and then vanishes has already told
+  // everybody that a salaries page exists and that they are not allowed in it.
+  for (const tab of ['salaries', 'economics']) {
+    const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
+    assert.ok(m, `no ${tab} tab in app.html`);
+    assert.match(m[0], /\bhidden\b/, `the ${tab} tab must ship hidden`);
+  }
+  for (const tab of ['employees', 'costs', 'overhead', 'reports', 'settings']) {
+    const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
+    assert.ok(m && !/\bhidden\b/.test(m[0]), `${tab} is not gated and must not ship hidden`);
+  }
 });
 
 // ---------------------------------------------------------------------------

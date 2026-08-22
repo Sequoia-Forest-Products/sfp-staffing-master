@@ -252,17 +252,28 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 `section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
-The staffing plan that backed the **Staffing Economics** tab: 55 numbered seats, each with the
-employee assigned to it and a maximum hourly rate to compare against. Phase C replaced
-that tab with **Manufacturing Costs**, which reports in aggregate, because the old page rendered
-every position's holder next to their hourly rate and there is no permissions system — anything on
-screen is readable by every signed-in account.
+The staffing plan behind the **Staffing Economics** tab: 55 numbered seats, each with the employee
+assigned to it and a maximum hourly rate to compare against. `seat` here is NOT a job title —
+`employees.position` is, loaded from the classification worksheet.
 
-**Nothing in the app reads or writes this table now.** The rows are intact, including `max_wage`,
-which is the only place a rate ceiling per position is recorded; the wage-vs-max variance column
-went with the tab and has no replacement. `position` here is NOT authoritative — `employees.position`
-is, loaded from the classification worksheet. The table stays allowlisted in `/api/data`, so it is
-still readable (and, via PUT, still replaceable) by a signed-in caller even though no screen asks.
+**Phase C deleted the tab; Phase D brought it back, read-only and gated.** It was deleted because it
+rendered every seat's holder next to their hourly rate and a ceiling, and with no permissions system
+that was readable by every signed-in account. Manufacturing Costs answered the costing question in
+aggregate but not this one — "is the person in this seat inside the ceiling budgeted for it" — and
+`max_wage` and the variance column had no replacement anywhere.
+
+Two restrictions in `/api/data`, both enforced rather than remembered:
+
+| | |
+|---|---|
+| `READ_ONLY_TABLES` | every write method is **405**, for every tier. Read-only is a property of the table here, not a permission anyone can be given. |
+| `SALARIES_ONLY_TABLES` | a GET needs the **salaries tier**, all-or-nothing. Unlike the employees projection, which narrows a row, every column here is part of the same compensation view — the seat, who is in it, and the ceiling for it. |
+
+Read-only because the old assignment dropdown saved with `PUT`, which is delete-and-replace over
+the only record of these ceilings, with no screen that would have shown the table had been emptied.
+That was the reason it came off the allowlist in the first place, and it does not come back with the
+page. **Restoring assignment means a per-row endpoint** — deliberate work, not a side effect of
+showing a table.
 
 ### preapproved_ot
 `id, employee_id -> employees(id), ot_type (Pre-Shift|Post-Shift|Weekend), hours, description, created_at, updated_at`
@@ -579,14 +590,18 @@ seeded (`SCHEMA_PHASE_D_PERMISSIONS.sql`), and `netlify/functions/permissions-li
 reads and writes of `employees`. What remains is the Salaries & Wages page itself, the admin grant
 surface, and the three items below that were waiting on the answer.
 
-**Staffing Economics comes back, gated.** With `economics.max_wage` and the wage-vs-max variance
-column, which have no replacement now. The table and its rows are intact; `economics` was removed
-from `/api/data`'s allowlist because nothing read it and `PUT` there is delete-and-replace.
+**~~Staffing Economics comes back, gated~~ — DONE, with one thing not restored.** The page is back
+behind the salaries tier with `max_wage` and the wage-vs-max variance column. It is **read-only**:
+the old assignment dropdown saved by replacing the whole table, so `economics` is allowlisted for
+GET only and every write method is 405. Assigning somebody to a seat is now done in the database,
+and giving that back to the app needs a per-row endpoint.
 
-**Seeing what an allocation does.** Allocations are enforced and applied, but their effect is a
-department-level figure and the Overhead tab is totals only — so on the real roster (Corporate 1
-person, HR 0) every destination Axeri's split reaches has its cost withheld by the small-bucket rule.
-The split is correct and reconciles; it is simply not visible in the UI until the breakdown returns.
+**~~Seeing what an allocation does~~ — DONE for the salaries tier.** Allocations are enforced and
+applied, and their effect is a department-level figure. With the salaries tier the suppression floor
+is 1, so the Overhead breakdown shows every destination Axeri's split reaches. Without it the
+small-bucket rule still withholds those costs (Corporate 1 person, HR 0), which is unchanged and
+correct — the split reconciles either way, it is simply not itemised for a reader who may not see
+the underlying figures.
 
 **Dropping the `overtime` table.** Only after `preapproved_ot` has reconciled for a few weeks, and
 never in the same change as the migration.
