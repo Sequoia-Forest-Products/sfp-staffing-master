@@ -13,8 +13,13 @@ const { sessionFrom } = require('./session-lib');
 //   bootstrap last    — the only top-level calls, so nothing runs early
 const SCRIPT_MODULES = [
   'core.js',
+  // Before every feature file, because the tab dispatcher and the Settings page
+  // both ask it what this user may see. It reads /api/permissions itself and
+  // holds the base tier until that answers.
+  'permissions.js',
   'data.js',
   'employees.js',
+  'salaries.js',
   'costs.js',
   'preapproved.js',
   'allocations.js',

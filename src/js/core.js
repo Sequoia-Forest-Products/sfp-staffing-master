@@ -66,7 +66,14 @@ let state = {
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,
-  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{}
+  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{},
+  // Phase D. Deny by default on this side too: the base tier until /api/permissions
+  // answers, so an unloaded state can never look like access. defaultPerms() is in
+  // permissions.js, which is loaded after this file — hence the literal here.
+  perms:{tiers:['hourly_wages'],isAdmin:false,grants:null,email:'',loaded:false,loading:false,error:'',busy:false},
+  // Salaries & Wages. Keyed by employee id, so a half-typed figure on one person
+  // survives a re-render caused by somebody else's row.
+  salaryDrafts:{}, salarySaving:false
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -600,6 +607,10 @@ function render(){
   // renderReports().
   else if(state.tab==='reports')el.innerHTML=renderReports();
   else if(state.tab==='dailyhours')el.innerHTML=renderDailyHours();
+  // Phase D. renderSalaries() refuses to draw without the tier as well — the
+  // hidden tab button is a courtesy, not the gate, and a deep link or a
+  // hand-typed switchTab() in the console has to land somewhere honest.
+  else if(state.tab==='salaries')el.innerHTML=renderSalaries();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }
 

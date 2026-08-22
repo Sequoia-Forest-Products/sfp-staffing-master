@@ -53,6 +53,8 @@ function renderSettings(){
     <div style="max-width:800px;margin:0 auto;padding:20px">
       <h2 style="font-size:24px;font-weight:700;margin-bottom:32px;color:var(--text)">Settings</h2>
 
+      ${renderAccessSection()}
+
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:24px">
         <div style="font-size:16px;font-weight:700;margin-bottom:20px">📧 Email Notifications</div>
 

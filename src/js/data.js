@@ -37,10 +37,13 @@ async function loadData(){
       payType:r.pay_type||'', costClass:r.cost_class||'',
       // The third axis of the v2 model. Legitimately null for anyone who is not
       // manufacturing floor staff, so a blank here is a real answer, not a gap.
-      // annual_salary is deliberately NOT mapped. /api/data does not return it
-      // — the projection in netlify/functions/data.js leaves it out until the
-      // Salaries & Wages tier can gate it. Mapping it would read '' forever,
-      // which is exactly how somebody later "fixes" it by re-adding the column.
+      // annual_salary IS mapped now — Phase D gates it, so /api/data returns it
+      // for a caller holding the salaries tier and omits it entirely for anybody
+      // else. Note the ?? rather than ||: 0 is a real salary and '' is not a
+      // number, and the absent case must be null so "no tier" and "no salary on
+      // file" stay distinguishable. They render differently and only one of them
+      // is a data problem.
+      annualSalary:('annual_salary' in r)?(r.annual_salary??null):null,
       positionGroup:r.position_group||'',
       // Phase B. `position` is the specific job WITHIN a position group and
       // applies to everyone: the CEO has a position and no position group. The
@@ -232,10 +235,13 @@ async function syncToSheet(){
       payType:r.pay_type||'', costClass:r.cost_class||'',
       // The third axis of the v2 model. Legitimately null for anyone who is not
       // manufacturing floor staff, so a blank here is a real answer, not a gap.
-      // annual_salary is deliberately NOT mapped. /api/data does not return it
-      // — the projection in netlify/functions/data.js leaves it out until the
-      // Salaries & Wages tier can gate it. Mapping it would read '' forever,
-      // which is exactly how somebody later "fixes" it by re-adding the column.
+      // annual_salary IS mapped now — Phase D gates it, so /api/data returns it
+      // for a caller holding the salaries tier and omits it entirely for anybody
+      // else. Note the ?? rather than ||: 0 is a real salary and '' is not a
+      // number, and the absent case must be null so "no tier" and "no salary on
+      // file" stay distinguishable. They render differently and only one of them
+      // is a data problem.
+      annualSalary:('annual_salary' in r)?(r.annual_salary??null):null,
       positionGroup:r.position_group||'',
       // Phase B. `position` is the specific job WITHIN a position group and
       // applies to everyone: the CEO has a position and no position group. The
