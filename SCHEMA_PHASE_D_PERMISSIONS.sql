@@ -298,6 +298,10 @@ insert into user_permissions (email, tier, granted_by, note) values
 on conflict (email, tier) do nothing;
 
 -- Expected after the insert: 5 rows, 2 admins, 3 salaries, 3 distinct people.
+--
+-- RAN 2026-08-22: INSERT 0 5, then 5 / 2 / 3 / 3 exactly. The ON CONFLICT
+-- clause succeeding is itself proof of the unique constraint: Postgres rejects
+-- 'on conflict (email, tier)' outright when no unique index matches it.
 select count(*) as rows_expect_5,
        count(*) filter (where tier='admin')    as admins_expect_2,
        count(*) filter (where tier='salaries') as salaries_expect_3,
