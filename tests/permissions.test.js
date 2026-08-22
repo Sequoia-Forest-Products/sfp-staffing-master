@@ -391,3 +391,58 @@ test('a missing hire_date costs hire_date and nothing else, and says so out loud
   assert.ok(warned.some(w => /SCHEMA_PHASE_D_PERMISSIONS\.sql/.test(w)),
     'the console warning naming the unrun migration printed; got: ' + JSON.stringify(warned));
 });
+
+// ---------------------------------------------------------------------------
+// the bootstrap seed, read out of the migration itself
+// ---------------------------------------------------------------------------
+
+test('the seeded grants resolve to the tiers they were written for', () => {
+  // Parsed from SCHEMA_PHASE_D_PERMISSIONS.sql rather than restated here. A
+  // seed and a test that agree because somebody typed them both the same way
+  // agree about nothing; this fails if the migration is edited and the intent
+  // is not.
+  //
+  // The near-miss this guards against is real and already happened once, in
+  // the good direction: the pattern two of these three follow gives
+  // jeff.cook@, and Jeff's actual address is jeffrey.cook@. §0c of the
+  // migration caught it before the insert was written. A wrong address inserts
+  // cleanly, grants nothing, and is never reported by anything — so the seed is
+  // worth pinning.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const sql = fs.readFileSync(
+    path.join(__dirname, '..', 'SCHEMA_PHASE_D_PERMISSIONS.sql'), 'utf8');
+
+  const block = /insert into user_permissions[^;]*?values([\s\S]*?)on conflict/i.exec(sql);
+  assert.ok(block, 'the seed insert is still in the migration');
+
+  const rows = [];
+  for (const m of block[1].matchAll(/\(\s*'([^']+)'\s*,\s*'([^']+)'/g)) {
+    rows.push({ email: m[1], tier: m[2] });
+  }
+  assert.strictEqual(rows.length, 5, 'five grants across three people');
+
+  const tiersOf = (email) => Array.from(perms.resolveTiers(email, rows)).sort();
+
+  assert.deepStrictEqual(tiersOf('peter.stroble@sequoiafp.com'),
+    ['admin', 'hourly_wages', 'salaries']);
+  assert.deepStrictEqual(tiersOf('ryley.stanley@sequoiafp.com'),
+    ['admin', 'hourly_wages', 'salaries']);
+  assert.deepStrictEqual(tiersOf('jeffrey.cook@sequoiafp.com'),
+    ['hourly_wages', 'salaries'], 'Jeff gets salaries and NOT admin');
+
+  // The guess, kept as a live assertion rather than a comment: it must resolve
+  // to the base tier and nothing more.
+  assert.deepStrictEqual(tiersOf('jeff.cook@sequoiafp.com'), ['hourly_wages']);
+  assert.deepStrictEqual(tiersOf('someone.else@sequoiafp.com'), ['hourly_wages']);
+
+  // Every seeded row satisfies the constraints the migration puts on the column,
+  // so the file cannot be edited into an insert the database would reject.
+  for (const r of rows) {
+    assert.strictEqual(r.email, r.email.trim().toLowerCase(),
+      `${r.email} violates user_permissions_email_canonical`);
+    assert.match(r.email, /.@./, `${r.email} violates user_permissions_email_shape`);
+    assert.ok(GRANTABLE_TIERS.includes(r.tier),
+      `${r.tier} violates user_permissions_tier_check`);
+  }
+});

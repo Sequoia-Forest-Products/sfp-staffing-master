@@ -132,6 +132,22 @@ select
 -- Expected: three rows — Jeff Cook, Ryley Stanley, Peter Stroble. A blank
 -- `email_on_file` for any of them means the roster does not know it and the
 -- address has to come from somewhere else before §2 runs.
+--
+-- RAN 2026-08-22, AND IT EARNED ITS PLACE ON THE FIRST TRY:
+--
+--   Jeff Cook       jeffrey.cook@sequoiafp.com     <- NOT jeff.cook@
+--   Peter Stroble   peter.stroble@sequoiafp.com
+--   Ryley Stanley   ryley.stanley@sequoiafp.com
+--
+-- All three already lowercase, all Active, all pay_type Salaried. Two of the
+-- three follow first.last@; the third does not. Seeding from the pattern would
+-- have given Jeff a grant that matches no login — a row that reads as access
+-- and confers none, failing silently forever, because nothing anywhere reports
+-- a grant nobody used. §6c is the standing version of this check.
+--
+-- (employee_number is null for all three. Salaried staff are skipped by the
+-- payroll import so they have never needed one. Noted, not a problem here:
+-- grants are matched on email.)
 select name, employee_number, status, pay_type,
        coalesce(nullif(btrim(email), ''), '(none on file)') as email_on_file,
        lower(btrim(email)) = btrim(email)                   as already_lowercase
@@ -271,20 +287,22 @@ notify pgrst, 'reload schema';
 -- nobody's granted_by.
 -- =====================================================================
 
--- insert into user_permissions (email, tier, granted_by, note) values
---   ('peter.stroble@sequoiafp.com', 'admin',    'migration', 'Phase D bootstrap'),
---   ('RYLEY_EMAIL_FROM_0C',         'admin',    'migration', 'Phase D bootstrap'),
---   ('peter.stroble@sequoiafp.com', 'salaries', 'migration', 'Phase D bootstrap'),
---   ('RYLEY_EMAIL_FROM_0C',         'salaries', 'migration', 'Phase D bootstrap'),
---   ('JEFF_EMAIL_FROM_0C',          'salaries', 'migration', 'Phase D bootstrap')
--- on conflict (email, tier) do nothing;
+-- FILLED IN FROM §0c's ACTUAL OUTPUT, 2026-08-22. Note jeffrey.cook@, which is
+-- not what the first.last@ pattern the other two follow would have produced.
+insert into user_permissions (email, tier, granted_by, note) values
+  ('peter.stroble@sequoiafp.com', 'admin',    'migration', 'Phase D bootstrap'),
+  ('ryley.stanley@sequoiafp.com', 'admin',    'migration', 'Phase D bootstrap'),
+  ('peter.stroble@sequoiafp.com', 'salaries', 'migration', 'Phase D bootstrap'),
+  ('ryley.stanley@sequoiafp.com', 'salaries', 'migration', 'Phase D bootstrap'),
+  ('jeffrey.cook@sequoiafp.com',  'salaries', 'migration', 'Phase D bootstrap')
+on conflict (email, tier) do nothing;
 
 -- Expected after the insert: 5 rows, 2 admins, 3 salaries, 3 distinct people.
--- select count(*) as rows_expect_5,
---        count(*) filter (where tier='admin')    as admins_expect_2,
---        count(*) filter (where tier='salaries') as salaries_expect_3,
---        count(distinct email)                   as people_expect_3
--- from user_permissions;
+select count(*) as rows_expect_5,
+       count(*) filter (where tier='admin')    as admins_expect_2,
+       count(*) filter (where tier='salaries') as salaries_expect_3,
+       count(distinct email)                   as people_expect_3
+from user_permissions;
 
 
 -- =====================================================================
@@ -513,6 +531,11 @@ where table_schema='public' and table_name='employees' and column_name='hire_dat
 --   insert into user_permissions (email, tier, granted_by, note)
 --   values ('peter.stroble@sequoiafp.com', 'admin', 'recovery', 'restored manually')
 --   on conflict (email, tier) do nothing;
+--
+-- Confirm the address against employees.email before running it. The one thing
+-- that makes this recovery fail is the thing §0c caught: an address that is
+-- right in shape and wrong in fact inserts cleanly, grants nothing, and leaves
+-- you believing you are back in.
 --
 -- That is the entire recovery. It is deliberately not automated and there is no
 -- back door in the application: a hardcoded fallback admin in the code would be
