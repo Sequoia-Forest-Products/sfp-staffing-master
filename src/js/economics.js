@@ -196,6 +196,18 @@ function renderEconomics(){
       :(variance===0?fmt$(0)
       :(variance>0?'+'+fmt$(variance):'-'+fmt$(Math.abs(variance))));
     const isDupe=p.employeeId&&dupes.has(String(p.employeeId));
+    // A seat whose occupant is LINKED but is not somebody the select offers —
+    // Eduardo Rivera is salaried and sits in Production Lead, and the options
+    // are active hourly people only.
+    //
+    // Without an option of their own the browser finds nothing selected and
+    // falls back to the first one, so the seat renders as "— vacant —" when it
+    // is not, and one stray change on that select clears somebody who is
+    // actually in the job. The migration's own §2c is what surfaced this.
+    //
+    // Distinct from `unlinked`: this row HAS a key and resolves fine. It just
+    // cannot be reassigned from here, and the option says so.
+    const notOfferable=p.employeeId&&!eligible.some(e=>String(e.id)===String(p.employeeId));
     return `<div class="econ-row"${isDupe?' style="border-color:#e67e22;background:rgba(230,126,34,.06)"':''}>
       <div class="econ-num">${esc(String(p.num==null?'':p.num))}</div>
       <div class="econ-seat">${esc(p.seat||'')}</div>
@@ -203,8 +215,9 @@ function renderEconomics(){
         <select class="econ-select${isDupe?' econ-select-dupe':''}"
           ${state.econBusy||!state.econAssignable?'disabled':''}
           onchange="econAssign('${jsStr(p.id)}',this.value)">
-          <option value=""${p.employeeId?'':' selected'}>— vacant —</option>
+          <option value=""${p.employeeId||p.unlinked?'':' selected'}>— vacant —</option>
           ${p.unlinked?`<option value="" selected>${esc(p.name||'unknown')} — not linked to anybody on the roster</option>`:''}
+          ${notOfferable?`<option value="${esc(String(p.employeeId))}" selected>${esc(p.name||'unknown')} — ${p.occupantSalaried?'salaried':'not active'}, cannot be reassigned here</option>`:''}
           ${eligible.map(e=>`<option value="${esc(String(e.id))}"${String(p.employeeId)===String(e.id)?' selected':''}>${esc(e.name)}</option>`).join('')}
         </select>${
         isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>

@@ -140,6 +140,12 @@ comment on column economics.employee_id is
 
 -- 2a. The summary. `ambiguous` is the one that must be 0 before §3 — it means
 --     two employees share a name, so the match cannot say which.
+--
+--     RAN 2026-08-22: 55 seats, 55 filled, 55 will backfill, 0 no_such_employee,
+--     0 ambiguous. Every seat matched exactly, so §3 links all 55 and §4b is
+--     empty. Better than expected — the plan and the roster agree on spelling
+--     throughout, including 'Adren Wilbur Flowers Jr.' and 'Jorge Salazar De
+--     Leon', which is precisely the shape of name this migration exists for.
 with m as (
   select e.id as seat_id, e.seat, btrim(e.name) as seat_name,
          (select count(*) from employees emp
@@ -176,8 +182,21 @@ order by (emp.id is not null), e.num;
 
 -- 2c. Anybody the seat resolves to who is NOT active and hourly. Not a blocker
 --     — the plan can legitimately record who was in a seat — but the API will
---     refuse to REASSIGN them, and the page flags them, so it is worth knowing
+--     refuse to REASSIGN them, and the page marks them, so it is worth knowing
 --     which rows will look that way afterwards.
+--
+--     RAN 2026-08-22: one row, Eduardo Rivera in Production Lead, Active and
+--     Salaried. It found a real bug before this migration touched anything.
+--     The page's assignment select offers active hourly people only, so a seat
+--     linked to Eduardo had no option matching its own occupant — the browser
+--     then falls back to displaying the FIRST option, which on that select is
+--     '— vacant —'. Production Lead would have rendered as empty while he sat
+--     in it, and one stray change on that select would have cleared him.
+--
+--     Fixed before §3 was run: a linked-but-not-offerable occupant now gets an
+--     option of their own, selected, saying they cannot be reassigned here. A
+--     test asserts every seat select has EXACTLY ONE selected option, which is
+--     the general form and would catch a fourth state nobody has thought of.
 select e.num, e.seat, emp.name, emp.status, emp.pay_type
 from economics e
 join employees emp on lower(btrim(emp.name)) = lower(btrim(e.name))
