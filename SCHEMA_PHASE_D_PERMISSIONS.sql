@@ -1,4 +1,20 @@
 -- =====================================================================
+-- APPLIED 2026-08-22 to zwghbbyzrycpnesuuzgi (sfp-staffing), in full, one
+-- section at a time. Every prediction in this file was checked against what
+-- the database actually returned; the per-section results are recorded inline.
+--
+-- §0c is the section that earned its keep. Jeff Cook's address is
+-- jeffrey.cook@sequoiafp.com, not jeff.cook@ — the pattern the other two follow
+-- would have given him a grant matching no login, and a grant nobody uses is
+-- never reported by anything.
+--
+-- §5 cleared 11 rows, not the 10 the README had recorded: that note predates
+-- SCHEMA_V2_ROSTER_CLEANUP.sql §6 activating the salaried staff.
+--
+-- Learned here and worth carrying forward: THE SUPABASE SQL EDITOR DOES NOT
+-- SURFACE 'RAISE NOTICE'. §5 reported only 'Success. No rows returned.' A
+-- section can only be verified by a SELECT.
+-- =====================================================================
 -- Phase D — permissions, hire_date, and the end of the wage sentinel
 --
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY. §0 refuses to
@@ -510,6 +526,15 @@ select column_name, data_type, is_nullable,
        (select count(*) from employees where hire_date is not null) as populated_expect_0
 from information_schema.columns
 where table_schema='public' and table_name='employees' and column_name='hire_date';
+
+-- RAN 2026-08-22. 6a: 1 / 3 / 2 / true / 0. 6b: three people — jeffrey.cook@
+-- with salaries, peter.stroble@ and ryley.stanley@ each with admin+salaries.
+-- 6c: all five grants matched an employee row by email. 6d: 0 / 11 / 10 / 0 / 0
+-- — the marker gone and both salaried counts unmoved from §0d. 6e: hire_date,
+-- date, nullable, 0 populated. 6f: both inserts refused, by
+-- user_permissions_tier_check and user_permissions_email_canonical. 6g: both
+-- the DELETE and the TRUNCATE refused with 23514; 6h allowed the revoke of one
+-- admin out of two.
 
 -- 6f. The base tier is not storable. Expected: BOTH of these RAISE.
 --     Run them one at a time and confirm the error, then move on. Neither

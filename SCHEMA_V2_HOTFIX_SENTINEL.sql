@@ -10,6 +10,14 @@
 -- alongside pay_type = 'Salaried'. Both halves of the alarm this file was
 -- written for were wrong.
 --
+-- CLOSED OUT 2026-08-22. STEP 2 below has now been RUN, as §5 of
+-- SCHEMA_PHASE_D_PERMISSIONS.sql, with two guards this file's version did not
+-- have: it also refuses if any row carries the marker WITHOUT
+-- pay_type = 'Salaried', not only if some row has a null pay_type. It cleared
+-- 11 rows — not the 10 named above, because SCHEMA_V2_ROSTER_CLEANUP.sql §6
+-- activated the salaried staff in between. Nothing here is left to run; the
+-- file is history now, and STEP 1 survives only as the rollback for §5.
+--
 -- Kept for one reason only: once the roster cleanup activates the salaried
 -- staff (SCHEMA_V2_ROSTER_CLEANUP.sql §6), salaried_active stops being zero and
 -- the sentinel starts mattering again for as long as the deployed code reads

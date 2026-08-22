@@ -28,8 +28,13 @@ const EDUARDO = {
   id: 'e-1', name: 'Eduardo Rivera', status: 'Active', cost_class: 'Manufacturing',
   pay_type: 'Salaried', department: 'Production', position_group: 'Supervisors',
   position: 'Plant Superintendent', employee_number: '0101',
-  // The sentinel is still in the live column for all ten salaried people. Nothing
-  // may read it as a number; effectiveHourlyRate decides salaried first.
+  // RETIRED FROM THE LIVE COLUMN on 2026-08-22 by
+  // SCHEMA_PHASE_D_PERMISSIONS.sql §5, which nulled it on all 11 salaried
+  // people. Kept HERE on purpose: the fallback that tolerates it is still in
+  // all three isSalaried() implementations, a restored backup would carry it,
+  // and a fixture is where a tolerated input belongs once it stops being the
+  // live shape. Nothing may read it as a number; effectiveHourlyRate decides
+  // salaried first.
   wage: 'Salary', annual_salary: 105000
 };
 const AXERI = {
@@ -105,8 +110,9 @@ test('a salaried person is costed on a standard week, not on their zero hours', 
 });
 
 test('the salary sentinel in wage is never read as a number', () => {
-  // employees.wage still holds the literal 'Salary' for all ten salaried people.
-  // parseFloat of that is NaN, so a rate must never come from it.
+  // employees.wage no longer holds the marker — Phase D cleared it — but
+  // parseFloat of it is NaN, so this pins that a rate can never come from it if
+  // one ever reappears through a restore or a hand-edit.
   const p = personCost({ ...EDUARDO, annual_salary: 105000 }, 0);
   assert.strictEqual(p.rate, 50.48);
   assert.ok(!Number.isNaN(p.cost));
