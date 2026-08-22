@@ -12,10 +12,17 @@
 // in wage-sync.js, which never reaches a browser. That is the whole reason the
 // endpoint exists — see the note at the top of netlify/functions/cost-lib.js.
 //
-// This file replaced Staffing Economics, which rendered each position's holder
-// alongside their hourly rate. There is still no permissions system, so anything
-// on screen is readable by every signed-in sequoiafp.com account, and a page of
-// per-person rates is exactly what this phase set out to stop rendering.
+// This file replaced Staffing Economics, which rendered each seat's holder
+// alongside their hourly rate and a budgeted ceiling. THESE TWO NOW COEXIST and
+// answer different questions: this one is the aggregate cost of a cost class,
+// and Staffing Economics — back in Phase D, read-only and behind the salaries
+// tier — is whether the person in a seat is inside the ceiling budgeted for it.
+//
+// This tab stays UNGATED, and stays an aggregate for that reason: it is opened
+// by every signed-in sequoiafp.com account, so a per-person rate on it would be
+// published to all of them. What Phase D changed here is only the suppression
+// FLOOR, which /api/cost-report now sets from the caller's tiers — see the note
+// at the top of that file.
 
 const COST_CLASS_MANUFACTURING = 'Manufacturing';
 const COST_CLASS_MILL_OVERHEAD = 'Mill Overhead';
@@ -155,8 +162,9 @@ function costSuppressionNote(report){
   const anyAllocated=(report.byDepartment||[]).some(b=>(Number(b.allocatedFrom)||0)>0);
   return `<div class="cost-note cost-warn"><strong>Some groupings show hours but no cost.</strong>
     A grouping with fewer than ${k} people has no meaningful average — its cost per hour would be an individual's pay rate,
-    and every signed-in account can open this tab. Those rows keep their headcount and hours and withhold their money,
+    and this tab is open to every signed-in account. Those rows keep their headcount and hours and withhold their money,
     so the visible rows deliberately do not add up to the total.
+    The threshold is set from your own access: it is 1 for the salaries tier, which can read the underlying figures by name anyway.
     ${anyAllocated?`<br><br>The count that decides this is <strong>everyone whose money is in the row</strong>, not
     everyone who works there — the <span style="color:var(--muted)">+n</span> beside a headcount. A department can
     hold a share of somebody's cost and none of their time, and judging it on employees alone would publish that

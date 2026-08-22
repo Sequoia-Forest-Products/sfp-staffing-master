@@ -602,12 +602,6 @@ function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  // 'economics' is gone. Staffing Economics assigned people to positions and
-  // showed each one's hourly rate next to a max, which is precisely what this
-  // phase stopped rendering — there is no permissions system, so that page was
-  // readable by every signed-in account. Manufacturing Costs answers the costing
-  // question in aggregate; the position/max reference data is still in the
-  // `economics` table, untouched, with nothing reading it.
   else if(state.tab==='costs')el.innerHTML=renderCosts();
   else if(state.tab==='overhead')el.innerHTML=renderOverhead();
   // 'overtime', 'points' and 'otreport' are no longer tabs; they are sub-views

@@ -302,11 +302,15 @@ function smsCell(e) {
 // writes through the existing saveEdit(), Cancel discards.
 //
 // COMPENSATION IS NOT ON THIS CARD. Neither annual_salary nor wage appears, in
-// either mode. There is no permissions system yet, so every signed-in
-// sequoiafp.com account can open every profile; annual_salary is not even in the
-// payload (see the projection in netlify/functions/data.js) and wage, although it
-// is in the payload and on the roster, is not extended onto a new surface. That
-// waits for the Salaries & Wages tier.
+// either mode, and Phase D did not change that — it is a decision about where
+// compensation lives, not a consequence of there being no tiers.
+//
+// Every signed-in sequoiafp.com account can open every profile. annual_salary is
+// not in their payload at all unless they hold the salaries tier (the projection
+// is built from the caller's tiers — see netlify/functions/data.js), and wage,
+// although it is in the payload and on the roster, is not extended onto a new
+// surface. Both live on Salaries & Wages, which is one page to look at and one
+// place to change.
 //
 // state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
 // state.editing is what saveEdit() reads, and it clears it on success, which

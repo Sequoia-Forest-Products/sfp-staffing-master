@@ -46,11 +46,12 @@ const SALARIES_ONLY_TABLES = new Set(['economics']);
 // is excluded until somebody deliberately lists it here, which is the right
 // default for a table that holds compensation.
 //
-// annual_salary is the reason this exists and is deliberately absent. Without a
-// select, PostgREST returns every column, so the salary would sit in the roster
-// payload of every signed-in user's browser whether or not anything rendered
-// it — and today every sequoiafp.com account has full access. It stays out
-// until the Salaries & Wages tier exists to gate it.
+// annual_salary is the reason this exists. Without a select, PostgREST returns
+// every column, so the salary would sit in the roster payload of every
+// signed-in user's browser whether or not anything rendered it. It is no longer
+// absent unconditionally — Phase D put the salaries tier behind it — but the
+// mechanism is unchanged and still the point: what a caller may not read is
+// never NAMED in the query, so it does not cross the wire even once.
 //
 // PHASE D: THE LIST NO LONGER LIVES HERE. permissions-lib.js is the one place
 // that decides who may see and write which columns, and the projection is built

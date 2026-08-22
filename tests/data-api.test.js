@@ -10,8 +10,15 @@
 //   2. `table` is checked against an allowlist before the method dispatch, so
 //      neither a read nor a write can reach a table the app does not use.
 //
-// Both matter because every sequoiafp.com account currently has full access:
-// anything in the payload is readable by any employee with the app open.
+// Both mattered because every sequoiafp.com account had the same access:
+// anything in the payload was readable by any employee with the app open.
+//
+// PHASE D CHANGED WHO, NOT HOW. There are tiers now, and the projection is
+// built from the caller's own — but the mechanism these tests pin is unchanged
+// and still the reason it works: a column the caller may not read is never
+// NAMED in the query, so it does not cross the wire even once. The base tier is
+// the default here, because it is what almost everybody holds and it is the
+// case where a leak would matter.
 
 const test = require('node:test');
 const assert = require('node:assert');

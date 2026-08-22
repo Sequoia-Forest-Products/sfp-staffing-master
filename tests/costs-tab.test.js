@@ -4,10 +4,11 @@
 // every figure arrives already aggregated from /api/cost-report. What is worth
 // testing is that this tab cannot render an individual's pay:
 //
-//   * Staffing Economics rendered every position's holder next to their hourly
-//     rate and a max. There is no permissions system, so that page was readable
-//     by every signed-in account. It is gone, and these tests fail if it or its
-//     helpers come back.
+//   * Staffing Economics rendered every seat's holder next to their hourly rate
+//     and a ceiling, which was unpublishable while every signed-in account had
+//     the same access. Phase D brought it back behind the salaries tier and
+//     READ-ONLY; these tests fail if its WRITE path comes back with it, because
+//     that path replaced the whole table.
 //   * A suppressed bucket must still SHOW — headcount, hours, and a visible
 //     marker — because a table whose rows do not sum to its total with nothing
 //     saying why is worse than one that explains itself.
