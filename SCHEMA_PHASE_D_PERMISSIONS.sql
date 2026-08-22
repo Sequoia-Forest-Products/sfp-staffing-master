@@ -368,6 +368,16 @@ create trigger user_permissions_keep_an_admin_truncate
   for each statement execute function refuse_last_admin_removal();
 
 
+-- RAN 2026-08-22 against zwghbbyzrycpnesuuzgi. All four checks as predicted:
+--   3a  DELETE of every admin  -> ERROR 23514, rolled back
+--   3b  TRUNCATE               -> ERROR 23514, rolled back. This is the one
+--       worth having run: a delete trigger does not fire on TRUNCATE, so the
+--       separate truncate trigger is the only thing in front of it.
+--   3c  revoke one admin of two -> DELETE 1, admins_left = 1. Not over-tight.
+--   3d  5 rows, untouched by either refused attempt.
+-- =====================================================================
+
+
 -- =====================================================================
 -- §4  employees.hire_date
 --
