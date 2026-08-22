@@ -392,6 +392,7 @@ create trigger user_permissions_keep_an_admin_truncate
 
 alter table employees add column if not exists hire_date date;
 
+-- RAN 2026-08-22: column added, type date, nullable, 0 rows populated.
 comment on column employees.hire_date is
   'First day worked. Added empty in Phase D and deliberately not backfilled — '
   'a guessed start date reads as a fact. Populate from BBSI.';
