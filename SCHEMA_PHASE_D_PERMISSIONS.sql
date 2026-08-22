@@ -149,6 +149,12 @@ order by name;
 --
 -- Expected: marker_but_no_pay_type = 0 and pay_type_null_anywhere = 0.
 -- `marker_rows` is how many rows §5 will change; keep the number, §6 checks it.
+--
+-- RAN 2026-08-22 against zwghbbyzrycpnesuuzgi:
+--   marker_rows 11, marker_and_salaried 11, marker_but_no_pay_type 0,
+--   pay_type_null_anywhere 0, salaried_total 11, salaried_active 10.
+-- Both guards clear, so §5 proceeds and clears 11 rows. §0e returned no rows:
+-- nobody salaried is carrying a real rate. §6d must still show 11 and 10.
 select
   count(*) filter (where btrim(lower(coalesce(wage,''))) = 'salary')      as marker_rows,
   count(*) filter (where btrim(lower(coalesce(wage,''))) = 'salary'
