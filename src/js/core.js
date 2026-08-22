@@ -81,7 +81,11 @@ let state = {
   // The seat currently being saved, or null. One at a time: an assignment is a
   // single PATCH and there is no draft to hold, so this only stops a second
   // click landing while the first is in flight.
-  econBusy:null
+  econBusy:null,
+  // Whether the server will accept an assignment. False until
+  // SCHEMA_ECONOMICS_EMPLOYEE_ID.sql has run — the page still reads, and says so,
+  // rather than offering a dropdown that would be refused.
+  econAssignable:true
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
