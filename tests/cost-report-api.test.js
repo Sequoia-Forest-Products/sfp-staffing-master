@@ -374,3 +374,104 @@ test('a rate gap is named and counted', async (t) => {
   assert.strictEqual(gap.name, 'New Hire');
   assert.match(gap.reason, /no annual_salary/);
 });
+
+// ---------------------------------------------------------------------------
+// Phase D — the suppression floor comes from the caller's tiers
+// ---------------------------------------------------------------------------
+//
+// The 'Supervisors' position group is one person: Eduardo Rivera, salaried at
+// 105,000, so that bucket's cost-per-hour IS 105000/2080 = 50.48. At the base
+// tier the endpoint must withhold it. For a caller holding the salaries tier it
+// must not — the same reader can open Salaries & Wages and read the figure by
+// name, so a dash there protects nothing and costs the page its use.
+//
+// These assert against the RESPONSE BODY, not against what a page would draw.
+// The gate is that the money is null in the payload.
+
+function withPermissionRows(t, rows) {
+  const real = global.fetch;
+  t.after(() => { global.fetch = real; });
+  global.fetch = async (url) => {
+    const u = decodeURIComponent(String(url));
+    if (!u.includes('user_permissions')) throw new Error('unexpected fetch: ' + u);
+    const wantEmail = (/email=eq\.([^&]+)/.exec(u) || [])[1];
+    const out = rows.filter(r => !wantEmail || r.email === wantEmail);
+    return { ok: true, status: 200, json: async () => out, text: async () => JSON.stringify(out) };
+  };
+}
+
+const supervisors = (body) =>
+  body.report.byPositionGroup.find(b => b.key === 'Supervisors');
+
+test('without the salaries tier a one-person bucket withholds its money', async (t) => {
+  withPermissionRows(t, []);
+  const { body } = await run(t);
+
+  assert.strictEqual(body.disclosure.minBucketHeadcount, 3);
+  assert.strictEqual(body.disclosure.suppressionLifted, false);
+
+  const sup = supervisors(body);
+  assert.ok(sup, 'the bucket is still listed — hiding it would break the reconciliation');
+  assert.strictEqual(sup.suppressed, true);
+  assert.strictEqual(sup.cost, null);
+  assert.strictEqual(sup.costPerHour, null);
+  // The figure itself is nowhere in the response, not merely null on one field.
+  assert.ok(!res_body_has(body, 50.48), '50.48 must not appear anywhere');
+  assert.ok(!JSON.stringify(body).includes('105000'), 'nor the salary it came from');
+  // Headcount and hours survive — a page that shows neither cannot say how much
+  // is being withheld.
+  assert.strictEqual(sup.headcount, 1);
+});
+
+test('WITH the salaries tier the same bucket reports its real figures', async (t) => {
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
+  const { body } = await run(t);
+
+  assert.strictEqual(body.disclosure.minBucketHeadcount, 1);
+  assert.strictEqual(body.disclosure.suppressionLifted, true);
+
+  const sup = supervisors(body);
+  assert.strictEqual(sup.suppressed, false);
+  assert.strictEqual(sup.costPerHour, 50.48, '105000 / 2080, the same divisor the page shows');
+  assert.ok(sup.cost > 0);
+});
+
+test('the admin tier alone does not lift suppression', async (t) => {
+  // Admin grants access; it does not itself read pay. Same rule as the column
+  // registry and the Salaries page.
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'admin' }]);
+  const { body } = await run(t);
+  assert.strictEqual(body.disclosure.suppressionLifted, false);
+  assert.strictEqual(supervisors(body).cost, null);
+});
+
+test('minBucket in the query string cannot talk the floor below the tier', async (t) => {
+  withPermissionRows(t, []);
+  const { body } = await run(t, { minBucket: '1' });
+  assert.strictEqual(body.disclosure.minBucketHeadcount, 3, 'the floor is the caller, not the URL');
+  assert.strictEqual(supervisors(body).cost, null);
+});
+
+test('minBucket can still raise the threshold, for either tier', async (t) => {
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
+  const { body } = await run(t, { minBucket: '8' });
+  assert.strictEqual(body.disclosure.minBucketHeadcount, 8);
+  // Now even the six-person Production department is below it.
+  assert.strictEqual(body.report.byDepartment.find(b => b.key === 'Production').suppressed, true);
+});
+
+test('a permissions read that fails suppresses rather than publishes', async (t) => {
+  const real = global.fetch;
+  t.after(() => { global.fetch = real; });
+  global.fetch = async () => { throw new Error('network down'); };
+
+  const { res, body } = await run(t);
+  assert.strictEqual(res.statusCode, 200, 'the report still renders');
+  assert.strictEqual(body.disclosure.suppressionLifted, false,
+    'failing closed here means MORE withheld, never less');
+  assert.strictEqual(supervisors(body).cost, null);
+});
+
+function res_body_has(body, n) {
+  return JSON.stringify(body).includes(String(n));
+}

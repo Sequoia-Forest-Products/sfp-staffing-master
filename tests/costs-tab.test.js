@@ -71,7 +71,7 @@ function reportFixture(overrides = {}) {
   };
 }
 
-function sandbox({ costBody } = {}) {
+function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
   const calls = { fetches: [] };
   const ctx = {
     console,
@@ -91,6 +91,11 @@ function sandbox({ costBody } = {}) {
     },
     fetch: async (url, opts) => {
       calls.fetches.push({ url: String(url), opts });
+      if (String(url).startsWith('/api/permissions')) {
+        return { ok: true, status: 200, json: async () => ({
+          ok: true, email: 'me@sequoiafp.com', tiers,
+          isAdmin: tiers.includes('admin'), grants: null }) };
+      }
       if (String(url).startsWith('/api/cost-report')) {
         const body = costBody || {
           ok: true,
@@ -99,7 +104,12 @@ function sandbox({ costBody } = {}) {
           week: { start: '2026-08-17', end: '2026-08-23', dates: [] },
           truncated: false,
           dataWindow: {},
-          allocations: { available: false, count: 0, note: 'No allocations table yet — every person is costed 100% to their primary department.' }
+          allocations: { available: false, count: 0, note: 'No allocations table yet — every person is costed 100% to their primary department.' },
+          // Mirrors what the endpoint reports: the floor it actually applied.
+          // The money in `report` is nulled or not by the SERVER; this only
+          // says which happened.
+          disclosure: { minBucketHeadcount: tiers.includes('salaries') ? 1 : 3,
+                        suppressionLifted: tiers.includes('salaries'), tiers }
         };
         return { ok: true, status: 200, json: async () => body };
       }
@@ -323,10 +333,10 @@ test('Overhead renders both sections and no cost per MBF', async () => {
   assert.match(html, /not production cost/);
 });
 
-test('Overhead is totals only — no department or position-group breakdown', async () => {
-  // SG&A is seven people across five departments, so a breakdown would withhold
-  // nearly every row it drew. A table of dashes is worse than no table; the
-  // breakdown returns in Phase D behind permissions.
+test('Overhead is totals only WITHOUT the salaries tier', async () => {
+  // SG&A is seven people across five departments, so at the base tier's
+  // suppression floor a breakdown withholds nearly every row it draws. A table
+  // of dashes is worse than no table.
   const ctx = sandbox();
   ctx.switchTab('overhead', null);
   await new Promise(r => setImmediate(r));
@@ -336,7 +346,38 @@ test('Overhead is totals only — no department or position-group breakdown', as
   assert.ok(!html.includes('Bullpen'), 'a null position group is normal for non-mill staff');
   // The totals still render, and the omission is stated rather than silent.
   assert.match(html, /totals only/);
-  assert.match(html, /returns in Phase D/);
+  assert.match(html, /worse than no table/);
+});
+
+test('Overhead shows the breakdown WITH the salaries tier', async () => {
+  // The gate is the server's: it set the suppression floor to 1 from the
+  // caller's own tiers, so the figures in this payload are real. The page is
+  // only declining to draw a table it would otherwise fill with dashes.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  ctx.switchTab('overhead', null);
+  await new Promise(r => setImmediate(r));
+  const html = ctx.renderOverhead();
+  assert.match(html, /By department/);
+  assert.match(html, /By position group/);
+  // And it says why it is visible, so nobody assumes everyone sees this.
+  assert.match(html, /because you hold the salaries tier/);
+});
+
+test('the breakdown follows the SERVER, not the browser', async () => {
+  // A client that thinks it holds the tier while the server disagrees must get
+  // the base-tier page. The disclosure posture in the payload is what decides,
+  // and it is the server's answer — this is the assertion that stops the gate
+  // quietly becoming a client-side one.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  ctx.switchTab('overhead', null);
+  await new Promise(r => setImmediate(r));
+  // Same tiers in state, but the server said it suppressed.
+  for (const c of ctx.OVERHEAD_CLASSES) {
+    ctx.state.cost[c].disclosure = { minBucketHeadcount: 3, suppressionLifted: false, tiers: [] };
+  }
+  const html = ctx.renderOverhead();
+  assert.ok(!html.includes('By department'),
+    'the payload said suppressed, so no breakdown — whatever the browser believes');
 });
 
 test('Manufacturing keeps both breakdowns and the bullpen', async () => {

@@ -591,10 +591,18 @@ The split is correct and reconciles; it is simply not visible in the UI until th
 **Dropping the `overtime` table.** Only after `preapproved_ot` has reconciled for a few weeks, and
 never in the same change as the migration.
 
-**The SG&A department breakdown.** The Overhead tab is totals only. SG&A is 7 active people across
-5 departments — Corporate 1, Procurement 1, Accounting 2, Sales & Marketing 3 — so at any
-defensible suppression threshold nearly every row would withhold its cost. A table of dashes is
-worse than no table. Behind permissions it can show real figures.
+**~~The SG&A department breakdown~~ — DONE, gated.** The Overhead tab is totals only at the base
+tier, for the reason it always was: SG&A is 7 active people across 5 departments — Corporate 1,
+Procurement 1, Accounting 2, Sales & Marketing 3 — so at a defensible suppression threshold nearly
+every row would withhold its cost, and a table of dashes is worse than no table.
+
+With the **salaries tier** the breakdown is shown, because the suppression floor drops to 1 for
+that tier. Not a favour: suppression protects a figure the reader may not see, and that reader can
+open Salaries & Wages and read every annual_salary by name. `/api/cost-report` decides this
+server-side from the caller's own tiers and reports the posture it applied in `disclosure`; the
+page only declines to draw a table it would otherwise fill with dashes. The lift applies to every
+cost class rather than only Overhead — the argument does not stop at a class boundary, since a
+one-person Manufacturing bucket leaks the same salary/2080 to the same reader.
 
 **A salaried person is costed into every week you can pick.** `hire_date` now EXISTS
 (`SCHEMA_PHASE_D_PERMISSIONS.sql` §4) but is deliberately empty — no backfill, because a guessed
