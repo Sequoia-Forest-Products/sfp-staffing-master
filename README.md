@@ -639,6 +639,16 @@ restored backup would carry the marker — but no live row does. `parseFloat(wag
 person is still `NaN` rather than a number, because the column is now NULL for them, so the rule
 is unchanged: no code may read `wage` for a salaried person.
 
+**~~Two edit surfaces~~ — collapsed, 2026-08-22.** The roster's Edit now opens the profile card in
+edit mode; the modal survives for **Add alone**, because a person who does not exist yet has no card
+to open (the card reads `state.employees` by index) and the three sections it carries beyond the
+roster row — pre-approved OT, cost allocation, the HR file link — all need a saved employee id.
+
+Nothing was lost, and that was checked rather than assumed: the card is a strict superset. It has
+everything the modal had, plus break times, the four address fields and the HR file link, and it
+offers the schedule as a select where the modal had a free-text box. A test compares the two
+RENDERED surfaces field by field and fails if anything is bound on the modal alone.
+
 **One `verifySession`, and it compares with `!==`.** The eleven copies are consolidated into
 `netlify/functions/session-lib.js`. The signature comparison was deliberately left as `!==` rather
 than `timingSafeEqual` so that the consolidation preserved behaviour exactly; switching it is a

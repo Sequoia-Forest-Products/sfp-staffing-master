@@ -201,30 +201,35 @@ test('syncToSheet sends no wage on any row, and no column the gate refuses', asy
 // the field itself
 // ---------------------------------------------------------------------------
 
-test('the roster modal has no wage input, and shows the rate instead', () => {
+test('the Add form has no wage input, and says where the rate comes from', () => {
+  // The modal is Add-only now. Editing an existing person opens the profile
+  // card, so a modal rendered over an existing employee is a state that can no
+  // longer be reached — testing it would pin behaviour nothing produces.
   const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON }];
+  ctx.state.employees = [];
   ctx.state.profile = null;
-  ctx.state.editing = { ...PERSON, _idx: 0, _isNew: false };
+  ctx.openAdd();
 
   const html = ctx.renderModal();
 
+  assert.match(html, /Add employee/);
+  assert.ok(!/Edit —/.test(html), 'the unreachable Edit title is gone, not just unused');
   assert.ok(!/id="wageInput"/.test(html), 'no wage input');
-  assert.ok(!/state\.editing\.wage\s*=/.test(html), 'nothing in the modal assigns a wage');
+  assert.ok(!/state\.editing\.wage\s*=/.test(html), 'nothing in the form assigns a wage');
   assert.ok(!/formatWageInput/.test(html), 'the wage formatter is gone with its field');
-  // The rate is still visible — removing the edit path is not the same as
-  // hiding what somebody is paid.
+  // Whoever is adding somebody needs to know where the rate DOES come from,
+  // or they will go looking for the field.
   assert.match(html, /Hourly wage/);
-  assert.match(html, /\$22\.00/);
   assert.match(html, /not editable here/i);
+  assert.match(html, /daily payroll file/i);
 });
 
-test('a salaried person sees no rate and is told where the salary lives', () => {
+test('adding a salaried person is told where the salary lives', () => {
   const ctx = sandbox();
-  const bo = { ...PERSON, name: 'Bo Tran', payType: 'Salaried', wage: 'Salary' };
-  ctx.state.employees = [bo];
+  ctx.state.employees = [];
   ctx.state.profile = null;
-  ctx.state.editing = { ...bo, _idx: 0, _isNew: false };
+  ctx.openAdd();
+  ctx.setPayType('Salaried');
 
   const html = ctx.renderModal();
   assert.ok(!/id="wageInput"/.test(html));
@@ -255,5 +260,97 @@ test('wage is readable by everyone and writable by nobody through /api/data', ()
     const held = new Set([perms.TIER_HOURLY_WAGES, tier]);
     assert.ok(!perms.employeeWriteColumns(held).includes('wage'),
       `${tier} must not be able to write wage; BBSI owns the column`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// one edit surface
+// ---------------------------------------------------------------------------
+//
+// The roster's Edit modal and the profile card's Edit were two field lists over
+// the same row. The modal existed because it was the only place an hourly wage
+// could be set; Phase D removed that input, and with it the modal's reason to
+// be a second list. Edit now opens the card. Add still opens the modal, because
+// a person who does not exist yet has no card to open.
+
+test('the roster Edit opens the profile card in edit mode, not a modal', () => {
+  const ctx = sandbox();
+  ctx.state.employees = [{ ...PERSON }];
+  ctx.state.profile = null;
+  ctx.state.editing = null;
+
+  ctx.openEdit(0);
+
+  assert.deepStrictEqual({ idx: ctx.state.profile.idx }, { idx: 0 }, 'the card is open');
+  assert.ok(ctx.state.editing, 'and it is in edit mode');
+  assert.strictEqual(ctx.state.editing._idx, 0);
+  assert.strictEqual(ctx.state.editing._isNew, false);
+
+  // renderEmployees picks the modal on (editing && !profile). With both set it
+  // must pick the card, so this is the assertion that the collapse actually
+  // routes rather than merely setting state.
+  // Asserted on which surface is wired up, because neither of the obvious
+  // checks works: the roster toolbar carries an 'Add employee' button whatever
+  // is open, and the profile card is ALSO rendered inside .modal-bg. What
+  // separates them is the close handler and the form's own title.
+  const html = ctx.renderEmployees();
+  assert.ok(!html.includes('closeModal()'), 'the Add form is not open');
+  assert.ok(!/<span>Add employee<\/span>/.test(html), 'nor its title');
+  assert.match(html, /closeProfile\(\)/, 'the profile card is');
+  assert.match(html, /onclick="saveEdit\(\)"/, 'the card, in edit mode');
+});
+
+test('Add still opens the modal, because there is no card for a person who does not exist', () => {
+  const ctx = sandbox();
+  ctx.state.employees = [];
+  ctx.openAdd();
+  assert.strictEqual(ctx.state.profile, null);
+  assert.strictEqual(ctx.state.editing._isNew, true);
+  assert.match(ctx.renderEmployees(), /Add employee/);
+});
+
+test('the card carries every field the modal had — checked, not assumed', () => {
+  // The collapse is only safe if nothing was on the modal alone. Comparing the
+  // rendered surfaces rather than the source, so a field that exists but is not
+  // drawn fails here.
+  const ctx = sandbox();
+  ctx.state.employees = [{ ...PERSON }];
+
+  ctx.openAdd();
+  Object.assign(ctx.state.editing, PERSON, { _isNew: true });
+  const modal = ctx.renderModal();
+
+  ctx.state.profile = { idx: 0 };
+  ctx.state.editing = { ...PERSON, _idx: 0, _isNew: false };
+  const card = ctx.renderProfile();
+
+  const bound = (html) => new Set(
+    [...html.matchAll(/state\.editing\.([A-Za-z0-9_]+)\s*=/g)].map(m => m[1]));
+
+  const onlyOnModal = [...bound(modal)].filter(f => !bound(card).has(f));
+  assert.deepStrictEqual(onlyOnModal, [],
+    'these fields would become uneditable once Edit stops opening the modal: ' + onlyOnModal.join(', '));
+
+  // And the card is a STRICT superset — it has fields the modal never did, which
+  // is the other half of why the collapse is an improvement rather than a merge.
+  const onlyOnCard = [...bound(card)].filter(f => !bound(modal).has(f));
+  for (const f of ['break1', 'break2', 'addressStreet', 'addressCity', 'addressState', 'addressPostalCode']) {
+    assert.ok(onlyOnCard.includes(f), `${f} should be a card-only field`);
+  }
+});
+
+test('neither surface can write compensation', () => {
+  const ctx = sandbox();
+  ctx.state.employees = [{ ...PERSON }];
+
+  ctx.openAdd();
+  const modal = ctx.renderModal();
+  ctx.openEdit(0);
+  const card = ctx.renderProfile();
+
+  for (const [name, html] of [['the Add form', modal], ['the profile card', card]]) {
+    assert.ok(!/state\.editing\.wage\s*=/.test(html), `${name} assigns a wage`);
+    assert.ok(!/annualSalary\s*=|annual_salary/.test(html), `${name} touches annual_salary`);
+    assert.ok(!/id="wageInput"/.test(html), `${name} has the wage input`);
   }
 });
