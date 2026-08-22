@@ -7,9 +7,9 @@
 //
 //   * the figures are refused server-side without the tier (that assertion is
 //     in data-api.test.js — /api/data 403s the table before it is queried);
-//   * the WRITE path does not come back with it. The old assignment dropdown
-//     saved by replacing the whole table, over the only record of these
-//     ceilings.
+//   * the REPLACE-ALL does not come back with it. Assignment is back, but as a
+//     PATCH of one column on one row through /api/economics — the old dropdown
+//     saved the whole table, over the only record of these ceilings.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -54,7 +54,12 @@ function fakeEl(id) {
   };
 }
 
-function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats = SEATS } = {}) {
+function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats: seatsIn = SEATS } = {}) {
+  // DEEP-COPIED PER SANDBOX. The page assigns the returned row over the one in
+  // state, so handing every test the same objects let one test's assignment
+  // show up in the next. That is not a hypothetical: it made the duplicate-seat
+  // test fail against a fixture two earlier tests had already rewritten.
+  const seats = seatsIn.map(x => ({ ...x }));
   const calls = [];
   const els = new Map();
   const getEl = (id) => { if (!els.has(id)) els.set(id, fakeEl(id)); return els.get(id); };
@@ -74,13 +79,32 @@ function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats
     fetch: async (url, opts = {}) => {
       const u = String(url);
       calls.push({ url: u, method: (opts.method || 'GET'), body: opts.body ? JSON.parse(opts.body) : null });
-      if (u.includes('table=economics')) {
+      if (u.startsWith('/api/economics')) {
+        if ((opts.method || 'GET') === 'PATCH') {
+          const body = JSON.parse(opts.body);
+          const seat = seats.find(x => x.id === body.id);
+          // The server canonicalises against the roster and returns what it
+          // STORED, which is the whole reason the page reads the response
+          // rather than the picked value.
+          const match = ROSTER.find(r => r.name.toLowerCase() === String(body.name || '').toLowerCase()
+                                      && r.status === 'Active' && r.payType !== 'Salaried');
+          if (body.name && !match) {
+            return { ok: false, status: 400, json: async () => ({
+              ok: false, error: `"${body.name}" is not an active hourly employee` }) };
+          }
+          const stored = match ? match.name : null;
+          const alsoIn = stored
+            ? seats.filter(x => x.id !== body.id && x.name === stored).map(x => x.seat)
+            : [];
+          return { ok: true, status: 200, json: async () => ({
+            ok: true, seat: { ...seat, name: stored }, alsoIn }) };
+        }
         if (econStatus !== 200) {
           return { ok: false, status: econStatus, json: async () => ({
-            error: 'Not permitted to read economics',
+            ok: false, error: 'Not permitted to read the staffing plan',
             detail: 'This needs the salaries tier. An administrator can grant it under Settings → Access.' }) };
         }
-        return { ok: true, status: 200, json: async () => ({ data: seats }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, seats }) };
       }
       if (u.startsWith('/api/permissions')) {
         return { ok: true, status: 200, json: async () => ({
@@ -220,12 +244,16 @@ test('active hourly people in no seat are listed; inactive and salaried are not'
 // read-only
 // ---------------------------------------------------------------------------
 
-test('the page has no way to change anything', async () => {
+test('the only editable thing is the assignment', async () => {
   const ctx = await loaded();
   const html = ctx.renderEconomics();
-  assert.ok(!/<select/.test(html), 'the assignment dropdown is gone');
-  assert.ok(!/saveEconomics|econAssign/.test(html));
-  assert.match(html, /Read-only/);
+  // One control per seat, and it is the person.
+  assert.match(html, /econAssign\('e1'/);
+  assert.ok(!/saveEconomics/.test(html), 'no whole-table save');
+  // The plan itself is not editable here: no input bound to a seat's number,
+  // section, title or ceiling.
+  assert.ok(!/max_wage\s*=|\.seat\s*=|\.section\s*=|\.num\s*=/.test(html));
+  assert.match(html, /section, title and ceiling are set in the database/);
   // The two number boxes that ARE here are display assumptions, and say so.
   assert.match(html, /not stored/);
 });
@@ -233,17 +261,17 @@ test('the page has no way to change anything', async () => {
 test('loading and refreshing only ever GET', async () => {
   const ctx = await loaded();
   await ctx.loadEconomics();
-  const econCalls = ctx.__calls.filter(c => c.url.includes('table=economics'));
+  const econCalls = ctx.__calls.filter(c => c.url.startsWith('/api/economics'));
   assert.ok(econCalls.length >= 2);
   for (const c of econCalls) assert.strictEqual(c.method, 'GET');
 });
 
 test('it is not fetched on boot — that would 403 for most of the roster', () => {
   const ctx = sandbox();
-  assert.strictEqual(ctx.__calls.filter(c => c.url.includes('table=economics')).length, 0);
+  const hits = () => ctx.__calls.filter(c => c.url.startsWith('/api/economics')).length;
+  assert.strictEqual(hits(), 0);
   ctx.switchTab('economics', null);
-  assert.strictEqual(ctx.__calls.filter(c => c.url.includes('table=economics')).length, 1,
-    'loaded on first open of its own tab');
+  assert.strictEqual(hits(), 1, 'loaded on first open of its own tab');
 });
 
 test('losing the tier bounces off this tab too', () => {
@@ -253,4 +281,84 @@ test('losing the tier bounces off this tab too', () => {
   assert.strictEqual(ctx.state.tab, 'employees');
   assert.strictEqual(ctx.__el('tab:economics').hidden, true);
   assert.strictEqual(ctx.__el('tab:salaries').hidden, true);
+});
+
+// ---------------------------------------------------------------------------
+// assignment
+// ---------------------------------------------------------------------------
+
+const patches = (ctx) => ctx.__calls.filter(c => c.method === 'PATCH');
+
+test('assigning sends one PATCH naming one seat and one column', async () => {
+  const ctx = await loaded();
+  await ctx.econAssign('e3', 'Unseated Person');
+
+  const p = patches(ctx);
+  assert.strictEqual(p.length, 1);
+  assert.strictEqual(p[0].url, '/api/economics');
+  assert.deepStrictEqual(Object.keys(p[0].body).sort(), ['id', 'name'],
+    'nothing but the seat id and the person rides along');
+  assert.strictEqual(p[0].body.id, 'e3');
+  // Only the seat named is touched; there is no replace-all anywhere near this.
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Unseated Person');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, 'Ana Reyes');
+});
+
+test('unassigning sends an empty name and empties the seat', async () => {
+  const ctx = await loaded();
+  await ctx.econAssign('e1', '');
+  assert.strictEqual(patches(ctx)[0].body.name, '');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, null);
+});
+
+test('the row is replaced from what the SERVER stored, not from what was picked', async () => {
+  // The endpoint canonicalises against the roster. Showing the picked string
+  // instead would hide a mismatch rather than surface it — which is how
+  // 'Tim Green' and 'Timothy Green' became two people earlier in this project.
+  const ctx = await loaded();
+  await ctx.econAssign('e3', 'unseated PERSON');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Unseated Person',
+    'the canonical name from the roster, not the typed casing');
+});
+
+test('a refused assignment leaves the row exactly as the database has it', async () => {
+  const ctx = await loaded();
+  const before = ctx.state.economics.find(s => s.id === 'e1').name;
+  await ctx.econAssign('e1', 'Somebody Who Left');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, before,
+    'the screen must never show an assignment that did not happen');
+});
+
+test('putting somebody in a second seat goes through AND says so', async () => {
+  // Refusing would make a straight swap impossible without unassigning first.
+  // A mid-swap state that resolves on the next click is not worth blocking, but
+  // it is worth saying immediately rather than leaving to a banner.
+  const ctx = await loaded();
+  await ctx.econAssign('e3', 'Ana Reyes');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Ana Reyes');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, 'Ana Reyes');
+
+  const html = ctx.renderEconomics();
+  assert.match(html, /assigned to more than one seat/);
+  assert.match(html, /overstated/);
+});
+
+test('a second click while one is in flight is dropped', async () => {
+  const ctx = await loaded();
+  ctx.state.econBusy = 'e1';
+  await ctx.econAssign('e3', 'Unseated Person');
+  assert.deepStrictEqual(patches(ctx), [], 'nothing sent');
+});
+
+test('the select offers the roster, and keeps an off-roster occupant visible', async () => {
+  const ctx = await loaded();
+  const html = ctx.renderEconomics();
+  // Utility 3 names somebody not on the active hourly roster. Their name has to
+  // stay in the list or opening the select would silently reassign them to
+  // whatever happens to be first.
+  assert.match(html, /<option value="Departed Person" selected>Departed Person — not on the active hourly roster<\/option>/);
+  assert.match(html, /<option value="Unseated Person"/);
+  // Salaried and inactive people are not offerable.
+  assert.ok(!html.includes('>Sal Aried<'));
+  assert.ok(!html.includes('>Inactive Person<'));
 });

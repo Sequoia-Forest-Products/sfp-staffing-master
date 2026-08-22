@@ -17,30 +17,19 @@ const perms = require('./permissions-lib');
 // record of a per-seat rate ceiling, with no screen that would show it had been
 // emptied.
 //
-// PHASE D PUTS IT BACK, READ-ONLY AND GATED. Two separate restrictions, and
-// both are enforced below rather than by anybody remembering:
+// PHASE D BROUGHT THE PAGE BACK AND THE TABLE DID NOT COME BACK HERE WITH IT.
+// It briefly did: while Staffing Economics was read-only, `economics` sat on
+// this list behind a READ_ONLY_TABLES exception. The moment seat assignment had
+// to be editable that stopped being the right shape — a generic table endpoint
+// with a per-table exception list is one edit away from re-exposing the
+// delete-and-replace path that got the table removed in the first place.
 //
-//   READ_ONLY_TABLES     every write method is 405 here, so the delete-and-
-//                        replace path that got it removed cannot come back by
-//                        somebody adding a table to the allowlist and not
-//                        noticing PUT exists.
-//   SALARIES_ONLY_TABLES a GET requires the salaries tier. max_wage is a
-//                        budgeted ceiling per seat, and the page that reads it
-//                        puts that ceiling next to a named person's rate. That
-//                        is a compensation view, whatever the individual
-//                        columns are.
-const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points', 'economics']);
-
-// Readable through this endpoint, never writable through it. Checked before the
-// method dispatch, so it covers POST, PATCH, DELETE and PUT together — listing
-// a table here is the whole statement, with nothing to keep in sync.
-const READ_ONLY_TABLES = new Set(['economics']);
-
-// A GET here needs the salaries tier. Unlike the employees projection, which
-// narrows a row, this is all-or-nothing: every column of the table is part of
-// the same compensation view, so there is no useful subset to hand somebody
-// without the tier.
-const SALARIES_ONLY_TABLES = new Set(['economics']);
+// So the table has ONE owner: /api/economics, which serves the read and the one
+// write that exists (assign a person to a seat: one column, one row, no
+// replace-all). Nothing about `economics` is reachable through this endpoint,
+// which is a stronger statement than "read-only here" and needs no machinery to
+// hold. The exception Sets are gone with it rather than left empty.
+const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 
 // An explicit projection, not a denylist. A column added to `employees` later
 // is excluded until somebody deliberately lists it here, which is the right
@@ -220,40 +209,12 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Read-only tables. BEFORE the method dispatch on purpose: one check covers
-    // POST, PATCH, DELETE and PUT together, so a method added to this handler
-    // later is refused here by default rather than by somebody remembering.
-    if (READ_ONLY_TABLES.has(table) && method !== 'GET') {
-      return {
-        statusCode: 405, headers,
-        body: JSON.stringify({
-          error: `${table} is read-only through this endpoint`,
-          detail: 'It is reference data maintained in the database. The write path was removed ' +
-                  'because PUT here replaces the whole table, and nothing in the app writes it.'
-        })
-      };
-    }
-
-    // Tables whose every column is part of a compensation view. Unlike the
-    // employees projection, which narrows a row, this is all-or-nothing: there
-    // is no useful subset of a staffing plan to hand somebody without the tier.
-    if (SALARIES_ONLY_TABLES.has(table) && !perms.has(await callerTiers(), perms.TIER_SALARIES)) {
-      return {
-        statusCode: 403, headers,
-        body: JSON.stringify({
-          error: `Not permitted to read ${table}`,
-          detail: 'This needs the salaries tier. An administrator can grant it under Settings → Access.'
-        })
-      };
-    }
-
-    // GET /api/data?table=employees|overtime|points|economics
+    // GET /api/data?table=employees|overtime|points
     if (method === 'GET' && table) {
       let orderBy = '';
       if (table === 'employees') orderBy = '?order=name.asc';
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
-      if (table === 'economics') orderBy = '?order=num.asc';
       const rows = table === 'employees'
         ? await queryEmployees(await callerTiers())
         : await db.query(table, orderBy);

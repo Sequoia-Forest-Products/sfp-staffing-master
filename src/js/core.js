@@ -77,7 +77,11 @@ let state = {
   // Staffing Economics. Loaded on first open like the cost reports, not on every
   // page load: /api/data refuses the table to most of the roster, so fetching it
   // eagerly would 403 for almost everybody on every boot.
-  economics:[], econLoaded:false, econLoading:false, econError:''
+  economics:[], econLoaded:false, econLoading:false, econError:'', econNote:'',
+  // The seat currently being saved, or null. One at a time: an assignment is a
+  // single PATCH and there is no draft to hold, so this only stops a second
+  // click landing while the first is in flight.
+  econBusy:null
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}

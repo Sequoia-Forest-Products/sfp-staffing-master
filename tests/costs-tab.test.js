@@ -139,37 +139,39 @@ function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
 // Staffing Economics is gone, and cannot come back by accident
 // ---------------------------------------------------------------------------
 
-test('the Staffing Economics WRITE path stays gone, though the page is back', () => {
-  // Phase C deleted the whole module. Phase D restores the page — max_wage and
-  // the variance column had no replacement anywhere — but NOT the parts that
-  // made it unsafe. These names are the assignment dropdown and its save, which
-  // wrote by replacing the entire economics table, over the only record of a
-  // per-seat rate ceiling. /api/data now answers any write there with 405 for
-  // every tier, so this pins that the client cannot grow one back either.
+test('the Staffing Economics REPLACE-ALL stays gone, though assignment is back', () => {
+  // Phase C deleted the whole module. Phase D restored the page, and then the
+  // assignment dropdown — but not the thing that made the old one unsafe.
+  //
+  // The distinction is exact: econAssign is back and PATCHes one row through
+  // /api/economics; saveEconomics is the one that wrote the whole table with
+  // PUT, over the only record of a per-seat rate ceiling, and it must not
+  // return. /api/data does not know the table exists any more.
   const ctx = sandbox();
-  for (const gone of ['econAssign', 'econUnassign', 'saveEconomics']) {
-    assert.strictEqual(typeof ctx[gone], 'undefined',
-      `${gone} is back — it saved by replacing the whole table`);
-  }
+  assert.strictEqual(typeof ctx.saveEconomics, 'undefined',
+    'saveEconomics is back — it saved by replacing the whole table');
+  assert.strictEqual(typeof ctx.econAssign, 'function', 'per-seat assignment is the replacement');
   assert.ok(__SCRIPT_MODULES.includes('economics.js'), 'the page is back in the manifest');
   assert.ok(__SCRIPT_MODULES.includes('costs.js'), 'costs.js must be in the manifest');
 
-  // And no source file writes the table by any route.
+  // No source file reaches the table through the generic endpoint, in either
+  // direction, and none uses PUT against the dedicated one.
   for (const f of fs.readdirSync(SRC)) {
     const src = fs.readFileSync(path.join(SRC, f), 'utf8');
-    assert.ok(!/table=economics'[^)]*\{\s*method/.test(src), `${f} writes economics`);
-    assert.ok(!/method:\s*'(PUT|POST|PATCH|DELETE)'[^}]*economics/.test(src), `${f} writes economics`);
+    assert.ok(!/table=economics/.test(src), `${f} reaches economics through /api/data`);
+    assert.ok(!/method:\s*'PUT'[^}]*economics|economics[^}]*method:\s*'PUT'/.test(src),
+      `${f} PUTs economics`);
   }
 });
 
-test('the roster load does not fetch economics — that would 403 for most people', () => {
-  // The table is refused without the salaries tier, so fetching it in loadData
-  // would fail on every boot for almost everybody. It is loaded on first open of
-  // its own tab instead, the way the cost reports are.
+test('the roster load does not fetch the staffing plan — that would 403 for most people', () => {
+  // /api/economics is refused without the salaries tier, so fetching it in
+  // loadData would fail on every boot for almost everybody. It is loaded on
+  // first open of its own tab instead, the way the cost reports are.
   const src = fs.readFileSync(path.join(SRC, 'data.js'), 'utf8');
-  assert.ok(!/table=economics/.test(src), 'data.js must not touch the economics table');
+  assert.ok(!/api\/economics/.test(src), 'data.js must not touch the staffing plan');
   const econ = fs.readFileSync(path.join(SRC, 'economics.js'), 'utf8');
-  assert.match(econ, /table=economics/, 'its own module does the fetch');
+  assert.match(econ, /'\/api\/economics'/, 'its own module does the fetch');
 });
 
 test('the two gated tabs ship HIDDEN, and the ungated ones do not', () => {

@@ -262,18 +262,37 @@ that was readable by every signed-in account. Manufacturing Costs answered the c
 aggregate but not this one — "is the person in this seat inside the ceiling budgeted for it" — and
 `max_wage` and the variance column had no replacement anywhere.
 
-Two restrictions in `/api/data`, both enforced rather than remembered:
+**The table has one owner: `/api/economics`.** It is off the `/api/data` allowlist entirely — not
+"read-only there", not reachable there. It briefly was allowlisted behind a read-only exception,
+but the moment seat assignment had to be editable that stopped being the right shape: a generic
+table endpoint with per-table exceptions is one edit away from re-exposing the write path that got
+the table removed in the first place.
 
 | | |
 |---|---|
-| `READ_ONLY_TABLES` | every write method is **405**, for every tier. Read-only is a property of the table here, not a permission anyone can be given. |
-| `SALARIES_ONLY_TABLES` | a GET needs the **salaries tier**, all-or-nothing. Unlike the employees projection, which narrows a row, every column here is part of the same compensation view — the seat, who is in it, and the ceiling for it. |
+| `GET /api/economics` | every seat, in `num` order. Needs the **salaries tier**, all-or-nothing — unlike the employees projection, which narrows a row, every column here is part of the same compensation view. |
+| `PATCH /api/economics` `{id, name}` | assign or unassign **one** seat. Needs the salaries tier. |
 
-Read-only because the old assignment dropdown saved with `PUT`, which is delete-and-replace over
-the only record of these ceilings, with no screen that would have shown the table had been emptied.
-That was the reason it came off the allowlist in the first place, and it does not come back with the
-page. **Restoring assignment means a per-row endpoint** — deliberate work, not a side effect of
-showing a table.
+**Only `name` is writable.** `num`, `section`, `seat` and `max_wage` are the plan; moving a ceiling
+is a budgeting decision rather than a staffing one, and a body naming any of them is **refused, not
+filtered** — a 200 that silently dropped `max_wage` would report a ceiling change that did not
+happen. There is no create and no delete: adding or removing a seat changes the size of the plan.
+
+**No replace-all, ever.** The old page saved the whole table with `PUT` → `db.replaceAll`, which
+DELETEs every row and re-inserts, over the only record of a per-seat rate ceiling, with no screen
+that would have shown it had been emptied. The unit of change is one seat, and nothing here can
+touch a row the caller did not name.
+
+**Assignment is validated against the roster.** `economics.name` is TEXT, not a foreign key, and
+free-text names are how `Tim Green` and `Timothy Green` became two people earlier in this project.
+An assignment is refused unless it matches an **active hourly** employee exactly, and the stored
+value is the roster's canonical spelling rather than what was typed. Somebody in two seats is
+allowed and reported — refusing would make a straight swap impossible without unassigning first —
+and the page flags it.
+
+> **Known gap, deliberately not fixed quietly.** The real answer is an `employee_id` column with a
+> foreign key, which would make a rename impossible to get wrong and let a seat survive one. That
+> is a migration and belongs in its own change.
 
 ### preapproved_ot
 `id, employee_id -> employees(id), ot_type (Pre-Shift|Post-Shift|Weekend), hours, description, created_at, updated_at`
@@ -590,11 +609,10 @@ seeded (`SCHEMA_PHASE_D_PERMISSIONS.sql`), and `netlify/functions/permissions-li
 reads and writes of `employees`. What remains is the Salaries & Wages page itself, the admin grant
 surface, and the three items below that were waiting on the answer.
 
-**~~Staffing Economics comes back, gated~~ — DONE, with one thing not restored.** The page is back
-behind the salaries tier with `max_wage` and the wage-vs-max variance column. It is **read-only**:
-the old assignment dropdown saved by replacing the whole table, so `economics` is allowlisted for
-GET only and every write method is 405. Assigning somebody to a seat is now done in the database,
-and giving that back to the app needs a per-row endpoint.
+**~~Staffing Economics comes back, gated~~ — DONE.** The page is back behind the salaries tier with
+`max_wage` and the wage-vs-max variance column, and seat assignment works from the app again — as a
+PATCH of one column on one row through `/api/economics`, not the whole-table `PUT` that made the old
+one unsafe. See the `economics` schema section above for what that endpoint will and will not do.
 
 **~~Seeing what an allocation does~~ — DONE for the salaries tier.** Allocations are enforced and
 applied, and their effect is a department-level figure. With the salaries tier the suppression floor

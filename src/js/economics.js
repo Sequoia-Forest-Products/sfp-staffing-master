@@ -17,12 +17,16 @@
 //   it. That is what made this page unpublishable when everybody had the same
 //   access, and it is the only thing that changed about who may see it.
 //
-//   READ-ONLY. The old page assigned people to seats through a dropdown that
-//   saved with PUT — delete-and-replace over the whole table, and the only
-//   record of a per-seat ceiling. /api/data now answers any write here with 405,
-//   for every tier, so the dropdown is gone rather than left to fail. The plan
-//   is maintained in the database. Restoring assignment means a per-row endpoint,
-//   which is a deliberate piece of work and not a side effect of showing a table.
+//   ASSIGNMENT IS PER-SEAT. The old dropdown saved with PUT — delete-and-replace
+//   over the whole table, and the only record of a per-seat ceiling. The
+//   dropdown is back, but it now PATCHes one row and sets one column through
+//   /api/economics, which is the only write to this table that exists anywhere.
+//   Nothing on this page can touch a seat the user did not change.
+//
+//   THE REST OF THE PLAN IS NOT EDITABLE HERE. Seat number, section, title and
+//   the rate ceiling are the plan itself; moving a ceiling is a budgeting
+//   decision, not staffing, and the server refuses those columns rather than
+//   filtering them out. This screen answers "who is sitting here".
 
 function econRows(){ return state.economics || []; }
 
@@ -47,23 +51,71 @@ async function loadEconomics(){
   if(state.econLoading) return;
   state.econLoading=true; state.econError=''; render();
   try{
-    const res=await fetch('/api/data?table=economics');
+    const res=await fetch('/api/economics');
     if(res.status===401){location.href='/';return;}
     const d=await res.json().catch(()=>({}));
-    if(!res.ok){
+    if(!res.ok||d.ok===false){
       // 403 is the ordinary answer for most of the roster, not a fault. Said in
       // words rather than as a status code.
       throw new Error(res.status===403
         ? (d.detail||'This page needs the salaries tier.')
         : (d.error||('Request failed ('+res.status+')')));
     }
-    state.economics=d.data||[];
+    state.economics=d.seats||[];
+    state.econNote=d.tableMissing?(d.note||''):'';
     state.econError='';
   }catch(err){
     state.economics=[];
     state.econError=err.message;
   }
   state.econLoaded=true; state.econLoading=false; render();
+}
+
+// ONE SEAT, ONE COLUMN, ONE REQUEST. There is deliberately no Save button and no
+// draft: an assignment is a single fact with nothing to reconcile against
+// anything else, so batching it would only create a window where the screen and
+// the database disagree.
+//
+// The row is replaced from what the SERVER returned, not from what was picked.
+// It canonicalises the name against the roster, and showing the picked value
+// instead would hide a mismatch rather than surface it.
+async function econAssign(seatId, name){
+  if(state.econBusy) return;
+  const seat=(state.economics||[]).find(s=>String(s.id)===String(seatId));
+  const before=seat?seat.name:null;
+  state.econBusy=seatId; render();
+  try{
+    const res=await fetch('/api/economics',{
+      method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:seatId,name:name||''})
+    });
+    if(res.status===401){location.href='/';return;}
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok||d.ok===false) throw new Error(d.detail||d.error||('Request failed ('+res.status+')'));
+
+    if(seat&&d.seat) Object.assign(seat,d.seat);
+
+    if(d.unchanged){
+      // Nothing to say. The server declined to write a value that was already
+      // there, so reporting a save would be reporting something that did not
+      // happen.
+    }else if(d.alsoIn&&d.alsoIn.length){
+      // Allowed and reported in the same breath. Somebody in two seats is always
+      // a plan error, but refusing it would make a straight swap impossible
+      // without unassigning first.
+      toast(d.seat.name+' is now in '+(d.alsoIn.length+1)+' seats — also '+d.alsoIn.join(', '),'error');
+    }else if(!d.seat.name){
+      toast((seat?seat.seat:'Seat')+' is now vacant','success');
+    }else{
+      toast(d.seat.name+' assigned to '+d.seat.seat,'success');
+    }
+  }catch(err){
+    // Put the row back to what the database still holds, so the screen never
+    // shows an assignment that did not happen.
+    if(seat) seat.name=before;
+    toast(err.message,'error');
+  }
+  state.econBusy=null; render();
 }
 
 function econSetBurden(v){ const n=Number(v); state.burden=isFinite(n)&&n>=0?n/100:0; render(); }
@@ -133,9 +185,15 @@ function renderEconomics(){
     return `<div class="econ-row"${isDupe?' style="border-color:#e67e22;background:rgba(230,126,34,.06)"':''}>
       <div class="econ-num">${esc(String(p.num==null?'':p.num))}</div>
       <div class="econ-seat">${esc(p.seat||'')}</div>
-      <div class="econ-name">${p.name?esc(p.name):'<span style="color:var(--muted)">— vacant —</span>'}${
-        isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}${
-        isUnknown&&!isDupe?'<span class="econ-flag">⚠ not on the active hourly roster</span>':''}</div>
+      <div class="econ-name">
+        <select class="econ-select${isDupe?' econ-select-dupe':''}"
+          ${state.econBusy?'disabled':''}
+          onchange="econAssign('${jsStr(p.id)}',this.value)">
+          <option value=""${p.name?'':' selected'}>— vacant —</option>
+          ${isUnknown?`<option value="${esc(p.name)}" selected>${esc(p.name)} — not on the active hourly roster</option>`:''}
+          ${eligible.map(e=>`<option value="${esc(e.name)}"${p.name===e.name?' selected':''}>${esc(e.name)}</option>`).join('')}
+        </select>${
+        isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>
       <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}</div>
       <div class="econ-fig">${dpm==null?'—':esc(fmt$(dpm))}</div>
       <div class="econ-fig">${max==null?'—':esc(fmt$(max))}</div>
@@ -149,7 +207,9 @@ function renderEconomics(){
     .econ-sec{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#fff;background:var(--rust);padding:5px 12px;border-radius:6px;margin-top:14px}
     .econ-num{color:var(--muted);font-size:10px;font-weight:700}
     .econ-seat{font-weight:600}
-    .econ-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .econ-name{overflow:hidden;display:flex;align-items:center;gap:6px}
+    .econ-select{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;min-width:0;flex:1;background:var(--surface)}
+    .econ-select-dupe{border-color:#e67e22}
     .econ-flag{color:#e67e22;font-size:10px;font-weight:700;margin-left:8px}
     .econ-fig{text-align:right}
     .var-over{color:#e74c3c;font-weight:700}
@@ -168,9 +228,10 @@ function renderEconomics(){
       paid above the ceiling their seat was budgeted at.
     </div>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      <b>Read-only.</b> The plan is maintained in the database. The old page assigned people to
-      seats through a dropdown that saved by replacing the whole table — over the only record of
-      these ceilings — so that path is closed rather than left to fail.
+      <b>Assignment saves immediately</b>, one seat at a time — there is no Save button because
+      there is nothing to reconcile. Everything else about a seat is the plan itself: its number,
+      section, title and ceiling are set in the database, because moving a ceiling is a budgeting
+      decision rather than a staffing one.
     </div>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
       Seats are hourly. A salaried person contributes no rate here, because there is no hourly rate
