@@ -743,7 +743,11 @@ function buildReport({
   const standingDollars = preApprovedDollars;
 
   const graceRateMissing  = [];
-  const graceByRateSource = { 'daily_hours': 0, 'employees.wage': 0, 'none': 0 };
+  // Two buckets, not three. There was a 'daily_hours' one, for a rate observed
+  // in the week's own rows; the file carries no rate any more, so it could only
+  // ever report zero and would read as "the file supplied none this week"
+  // rather than "the file does not supply these".
+  const graceByRateSource = { 'employees.wage': 0, 'none': 0 };
   let graceHeadcount   = 0;
   let graceHoursTotal  = 0;
   let graceDollarsTotal = 0;
@@ -1092,6 +1096,40 @@ function buildReport({
   const flagged = [];
   let unassignedRows = 0;
 
+  // Somebody who WORKED and has no rate on file.
+  //
+  // This did not need to exist while the daily file carried a rate: almost
+  // everybody had one, and the pre-approved section's rateMissing covered the
+  // rest. It needs to exist now. A person the file creates arrives with NO rate
+  // and cannot have one until somebody types it on Salaries & Wages, and until
+  // then dayPay returns null earnings for every one of their days — which the
+  // aggregations fold to 0. Their hours are in the report and their dollars are
+  // missing from it, and without this list nothing says so.
+  //
+  // Keyed on row.key, the same identity the department and allowance
+  // attribution use, so one person is reported once however many days they
+  // worked and whether or not they carry an employee number.
+  const workedRateMissing = [];
+  const workedRateMissingHours = new Map();
+
+  for (const row of rows) {
+    // payRate is dayPay's answer, which is null for a missing, zero or
+    // unparseable wage — the three cases that must not price a day at nothing.
+    if (row.payRate === null && row.hours > 0) {
+      if (!workedRateMissingHours.has(row.key)) {
+        workedRateMissingHours.set(row.key, 0);
+        workedRateMissing.push({ key: row.key, employeeNumber: row.employeeNumber,
+                                 name: row.name, department: row.department, hours: 0 });
+      }
+      workedRateMissingHours.set(row.key, round2(workedRateMissingHours.get(row.key) + row.hours));
+    }
+  }
+  for (const person of workedRateMissing) {
+    person.hours = workedRateMissingHours.get(person.key);
+    delete person.key;
+  }
+  workedRateMissing.sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+
   for (const row of rows) {
     if (!row.onRoster) {
       const label = row.employeeNumber || `(no number) ${row.name}`;
@@ -1156,6 +1194,7 @@ function buildReport({
     unassignedRows,
     unassignedEmployees,
     nonProductionWithHours,
+    workedRateMissing,
     flagged,
     reconciliation: {
       departmentHours,

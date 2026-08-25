@@ -689,7 +689,10 @@ test('grace rates come from employees.wage, worked week or not', () => {
 
   assert.strictEqual(grace.headcount, 4);
   // Two sources now, not three: ours, or none. 'daily_hours' is gone.
-  assert.deepStrictEqual(grace.byRateSource, { 'daily_hours': 0, 'employees.wage': 3, 'none': 1 });
+  // Two buckets. employees.wage is the only place a rate comes from, so a
+  // third labelled 'daily_hours' could only ever be zero and would imply the
+  // file still carries one.
+  assert.deepStrictEqual(grace.byRateSource, { 'employees.wage': 3, 'none': 1 });
 
   // Ana and Ben worked; Cara did not. It makes no difference to where the rate
   // comes from, which is the point.
@@ -837,7 +840,7 @@ test('graceHoursPerEmployee: 0 switches the policy off and the report reads as i
     hours: 0,
     dollars: 0,
     rateMissing: [],
-    byRateSource: { 'daily_hours': 0, 'employees.wage': 0, 'none': 0 }
+    byRateSource: { 'employees.wage': 0, 'none': 0 }
   });
   assert.strictEqual(off.summary.preApprovedHours, 0);
   assert.strictEqual(off.summary.netOtHours, off.summary.allOtHours);
@@ -887,6 +890,65 @@ test('the grace allowance is configurable, defaults to DEFAULT_GRACE_HOURS, and 
 // the screen's "still needs a department" counter has to be able to reach zero.
 // SG&A took over this role from the old 'Non-Production' label, which is why
 // the constant is still NON_PRODUCTION and the finding is still
+// ---------------------------------------------------------------------------
+// issues.workedRateMissing — hours in, dollars out
+// ---------------------------------------------------------------------------
+//
+// The finding this change made necessary. While the daily file carried a rate
+// almost everybody had one; now a person the file creates has none until
+// somebody types it, and every dollar on the report folds their null earnings
+// to zero. Their hours are in the totals and their money is not.
+
+test('somebody who worked with no rate is named, with the hours nobody priced', () => {
+  const r = report();
+  const names = r.issues.workedRateMissing.map(p => p.name);
+
+  // Fred is in the file with employee number 0999, which nobody on the roster
+  // owns — so there is no wage to price his day with.
+  assert.deepStrictEqual(names, ['Fred Nobody']);
+  assert.strictEqual(r.issues.workedRateMissing[0].hours, 6);
+  assert.strictEqual(r.issues.workedRateMissing[0].employeeNumber, '0999');
+});
+
+test('the list is people, not rows — one entry however many days they worked', () => {
+  const noWage = EMPLOYEES.map(e => e.employee_number === '0101' ? { ...e, wage: null } : e);
+  const r = report({ employees: noWage });
+  const ana = r.issues.workedRateMissing.filter(p => p.name === 'Ana Reyes');
+
+  assert.strictEqual(ana.length, 1, 'Ana worked three days and is named once');
+  assert.strictEqual(ana[0].hours, 32, 'and her hours are the week\'s, not one day\'s');
+});
+
+test('a zero or unparseable wage counts as no rate, not as a rate of zero', () => {
+  // The three cases dayPay refuses to price. A rate of zero would put a real
+  // $0.00 in the totals and say nothing about it.
+  for (const wage of ['0', '0.00', 'not a number', '']) {
+    const employees = EMPLOYEES.map(e => e.employee_number === '0101' ? { ...e, wage } : e);
+    const r = report({ employees });
+    assert.ok(r.issues.workedRateMissing.some(p => p.name === 'Ana Reyes'),
+      `wage ${JSON.stringify(wage)} was treated as a rate`);
+  }
+});
+
+test('somebody with a rate and somebody with hours but no work are both absent', () => {
+  const r = report();
+  const names = r.issues.workedRateMissing.map(p => p.name);
+  assert.ok(!names.includes('Ana Reyes'), 'she has a rate');
+  // Dan has no wage at all and a pre-approved allowance, but did not work this
+  // week. He belongs in preApproved.rateMissing and not here — the two lists
+  // answer different questions.
+  assert.ok(!names.includes('Dan Whitfield'), 'he worked no hours');
+  assert.ok(r.preApproved.rateMissing.includes('Dan Whitfield'));
+});
+
+test('everybody having a rate leaves the list empty rather than absent', () => {
+  const employees = EMPLOYEES.map(e => ({ ...e, wage: e.wage || '20.00' }))
+    .concat([{ id: 'e9', name: 'Fred Nobody', employee_number: '0999',
+               department: 'Production', wage: '20.00', status: 'Active' }]);
+  const r = report({ employees });
+  assert.deepStrictEqual(r.issues.workedRateMissing, []);
+});
+
 // issues.nonProductionWithHours — the label changed, the role did not.
 //
 // It is NOT a production department, so it is not in DEPARTMENTS and it is not
