@@ -81,7 +81,17 @@ function harness(messages, overrides = {}, runOpts = {}) {
   const logs = [];
 
   const deps = Object.assign({
-    fetchEmployees:       async () => [{ id: 'e1', employee_number: '0101', department: 'Production' }],
+    // BOTH numbers the fake file carries. A person in the file that the roster
+    // does not have is a new ARRIVAL — planWageSync creates them and the run
+    // alerts, which is correct and is covered by its own test below. The
+    // default harness is for the runs that are meant to be quiet, so it knows
+    // everybody. (It used to know only 0101 and stayed quiet anyway, because
+    // the fake rows carry no pay rate and the plan skipped anything without
+    // one. That skip is gone, and it was hiding this.)
+    fetchEmployees:       async () => [
+      { id: 'e1', employee_number: '0101', department: 'Production' },
+      { id: 'e2', employee_number: '0202', department: 'Production' }
+    ],
     fetchDailyHours:      async () => [],
     upsertDailyHours:     async rows => { calls.upserts.push(rows); return rows; },
     findRowsByFileHash:   async () => [],
@@ -894,4 +904,46 @@ test('the browser dry run still works over GET', async () => {
 test('an unauthorised call is still 401 before anything else', async () => {
   const res = await testEndpoint({ httpMethod: 'POST', queryStringParameters: { send: 'true' } });
   assert.strictEqual(res.statusCode, 401);
+});
+
+
+test('an employee number the roster does not have is an arrival, and alerts', async () => {
+  // The one thing planWageSync still does. It is not about money — the file's
+  // rate is not read — it is that somebody is working whose hours are landing
+  // nowhere, and nothing else in the system would say so.
+  //
+  // applyWageSync is stubbed here and nowhere else in this file: every other
+  // run leaves the roster knowing everybody, so the plan carries no ops and the
+  // real applyWageSync returns without making a request. This one has an op.
+  const plans = [];
+  const { result, calls } = await harness([message()], {
+    fetchEmployees: async () => [{ id: 'e1', employee_number: '0101', department: 'Production' }],
+    applyWageSync: async plan => {
+      plans.push(plan);
+      return {
+        workDate: plan.workDate,
+        created: plan.creates.map((c, i) => ({ ...c, employeeId: `new-${i}` })),
+        ratesUpdated: 0, historyWritten: 0, setupTasks: plan.setupTasks.length,
+        flagged: [], skipped: plan.skipped, errors: [], blocked: []
+      };
+    }
+  });
+
+  assert.strictEqual(result.results[0].status, 'imported', 'the day still imports');
+  assert.ok(result.results[0].flags.includes('new_employee'));
+  assert.strictEqual(result.alertRequired, true);
+  assert.strictEqual(calls.alerts.length, 1);
+
+  // The arrival is 0202, and they arrive with NO rate — the file's Pay Rate
+  // column is not consulted, and a create that carried one would be the old
+  // behaviour coming back.
+  const plan = plans[0];
+  assert.strictEqual(plan.creates.length, 1);
+  assert.strictEqual(plan.creates[0].employeeNumber, '0202');
+  assert.ok(!('rate' in plan.creates[0]), 'a create must not carry a rate');
+  assert.strictEqual(plan.updates.length, 0, 'no wage is written for anybody');
+  assert.strictEqual(plan.history.length, 0, 'and no history row is recorded');
+
+  // 0101 is on the roster: known, and there is nothing left to do with them.
+  assert.strictEqual(plan.skipped.unchanged, 1);
 });

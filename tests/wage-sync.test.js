@@ -106,27 +106,27 @@ test('normalizeRate returns null for anything that is not a rate', () => {
 
 test('an active employee absent from the file is not touched at all', () => {
   // Only 0319 is in the file. Everybody else took the day off.
+  //
+  // "Not touched" is now the answer for EVERYBODY on the roster, present or
+  // absent — this plan writes nothing to an existing person. What still varies
+  // is the counting, and absentFromFile is the count that means "the file did
+  // not mention them", which is different from "the file mentioned them and
+  // there was nothing to do".
   const result = plan([fileRow('0319', 25.00)]);
 
-  assert.strictEqual(result.updates.length, 1);
-  assert.strictEqual(result.updates[0].employeeNumber, '0319');
-
-  for (const absent of ['0063', '0771', '0884', '905']) {
-    assert.strictEqual(updateFor(result, absent), null, `${absent} must not be updated`);
-    assert.deepStrictEqual(historyFor(result, absent), [], `${absent} must have no history row`);
-  }
+  assert.deepStrictEqual(result.updates, [], 'no existing employee is ever updated now');
+  assert.deepStrictEqual(result.history, [], 'and no history row comes from the file');
 
   // 0063, 0771, 0884 and 905 are active and hourly. 0007 and 0011 are salaried
   // (outside this flow) and 0400 is terminated, so neither is counted.
   assert.strictEqual(result.skipped.absentFromFile, 4);
+  // 0319 was in the file and is on the roster: nothing to do, counted as such.
+  assert.strictEqual(result.skipped.unchanged, 1);
 
-  // Nothing in the plan mentions an absent person, in any array.
-  const touched = new Set([
-    ...result.updates.map(u => u.employeeNumber),
-    ...result.creates.map(c => c.employeeNumber),
-    ...result.history.map(h => h.employee_number)
-  ]);
-  assert.deepStrictEqual([...touched], ['0319']);
+  // Nothing in the plan mentions anybody at all: no creates either, because
+  // every number in the file is already known.
+  assert.deepStrictEqual(result.creates, []);
+  assert.deepStrictEqual(result.ops, []);
 });
 
 test('an empty file moves nothing and blanks nobody', () => {
@@ -142,28 +142,7 @@ test('an empty file moves nothing and blanks nobody', () => {
 // Rule 2: a missing or zero rate is not a rate
 // ============================================================
 
-test('a zero, blank, negative or non-numeric rate skips without writing', () => {
-  const result = plan([
-    fileRow('0319', 0),
-    fileRow('0063', ''),
-    fileRow('0771', -5),
-    fileRow('905', 'n/a')
-  ]);
 
-  assert.deepStrictEqual(result.updates, []);
-  assert.deepStrictEqual(result.history, []);
-  assert.deepStrictEqual(result.ops, []);
-  assert.strictEqual(result.skipped.noRate, 4);
-  assert.strictEqual(result.skipped.unchanged, 0);
-});
-
-test('each unusable rate is counted on its own', () => {
-  for (const bad of [0, '0.00', null, undefined, '', '   ', -12.5, 'x', '$0']) {
-    const result = plan([fileRow('0319', bad)]);
-    assert.strictEqual(result.skipped.noRate, 1, `${JSON.stringify(bad)} should count as noRate`);
-    assert.strictEqual(result.updates.length, 0, `${JSON.stringify(bad)} must not write`);
-  }
-});
 
 test('a row with no employee number cannot be matched and is counted separately', () => {
   const result = plan([fileRow('', 25.00), fileRow(null, 25.00)]);
@@ -176,172 +155,31 @@ test('a row with no employee number cannot be matched and is counted separately'
 // Unchanged, changed, first observation
 // ============================================================
 
-test('an unchanged rate produces no history row and no update', () => {
-  const result = plan([fileRow('0319', 24.50)]);
-  assert.deepStrictEqual(result.updates, []);
-  assert.deepStrictEqual(result.history, []);
-  assert.strictEqual(result.skipped.unchanged, 1);
-});
 
-test('a rate unchanged but differently spelled is still unchanged', () => {
-  const result = plan([fileRow('0319', '$24.50')]);
-  assert.strictEqual(result.skipped.unchanged, 1);
-  assert.deepStrictEqual(result.history, []);
-});
 
-test('a changed rate produces exactly one history row, ordered before the update', () => {
-  const result = plan([fileRow('0319', 26.00)]);
 
-  const rows = historyFor(result, '0319');
-  assert.strictEqual(rows.length, 1);
-  assert.deepStrictEqual(rows[0], {
-    employee_id: 'e1',
-    employee_number: '0319',
-    employee_name: 'Miguel Acosta Ruiz',
-    rate: 26,
-    previous_rate: 24.5,
-    change_pct: 6.12,
-    effective_date: WORK_DATE,
-    source: 'bbsi',
-    flagged: false,
-    note: null
-  });
 
-  const update = updateFor(result, '0319');
-  assert.deepStrictEqual(update, {
-    employeeId: 'e1',
-    employeeNumber: '0319',
-    name: 'Miguel Acosta Ruiz',
-    from: 24.5,
-    to: 26,
-    changePct: 6.12,
-    flagged: false,
-    note: null
-  });
 
-  // The history row must be planned BEFORE the wage write that makes the old
-  // rate unrecoverable. This is the ordering the applier walks.
-  const kinds = result.ops.map(op => op.kind);
-  assert.deepStrictEqual(kinds, ['history', 'update']);
-});
-
-test('change_pct is signed', () => {
-  const down = plan([fileRow('0319', 22.05)]);
-  assert.strictEqual(down.updates[0].changePct, -10);
-  assert.strictEqual(historyFor(down, '0319')[0].change_pct, -10);
-
-  const up = plan([fileRow('0319', 26.95)]);
-  assert.strictEqual(up.updates[0].changePct, 10);
-});
-
-test('the first observation of a rate records previous_rate null', () => {
-  // 0884 is on the roster with an empty wage — the app has never held a rate.
-  const result = plan([fileRow('0884', 22.00)]);
-
-  const rows = historyFor(result, '0884');
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].previous_rate, null);
-  assert.strictEqual(rows[0].change_pct, null);
-  assert.strictEqual(rows[0].rate, 22);
-  assert.strictEqual(rows[0].flagged, false);
-  assert.match(rows[0].note, /First rate observed/);
-
-  const update = updateFor(result, '0884');
-  assert.strictEqual(update.from, null);
-  assert.strictEqual(update.to, 22);
-  assert.strictEqual(update.changePct, null);
-  assert.strictEqual(update.flagged, false);
-});
-
-test('a first observation is never flagged — there is nothing to compare it to', () => {
-  const result = plan([fileRow('0884', 250.00)]);   // absurd, but not a CHANGE
-  assert.strictEqual(result.updates[0].flagged, false);
-  assert.deepStrictEqual(result.flagged, []);
-});
 
 // ============================================================
 // Surface large changes, do not block
 // ============================================================
 
-test('a change past the threshold is APPLIED and flagged', () => {
-  const result = plan([fileRow('0063', 37.50)]);    // Ana Smith, 30.00 -> +25%
 
-  const update = updateFor(result, '0063');
-  assert.strictEqual(update.to, 37.5);              // applied, not blocked
-  assert.strictEqual(update.changePct, 25);
-  assert.strictEqual(update.flagged, true);
-  assert.match(update.note, /beyond the 20% alert threshold/);
 
-  assert.strictEqual(historyFor(result, '0063')[0].flagged, true);
-  assert.deepStrictEqual(result.flagged, [update]);
-  assert.deepStrictEqual(result.ops.map(o => o.kind), ['history', 'update']);
-});
 
-test('a change inside the threshold is applied and NOT flagged', () => {
-  const result = plan([fileRow('0063', 34.50)]);    // 30.00 -> +15%
-  const update = updateFor(result, '0063');
-  assert.strictEqual(update.changePct, 15);
-  assert.strictEqual(update.flagged, false);
-  assert.strictEqual(update.note, null);
-  assert.deepStrictEqual(result.flagged, []);
-});
 
-test('a large CUT is flagged too — the threshold is on magnitude, not direction', () => {
-  const result = plan([fileRow('0063', 22.50)]);    // 30.00 -> -25%
-  const update = updateFor(result, '0063');
-  assert.strictEqual(update.changePct, -25);
-  assert.strictEqual(update.flagged, true);
-  assert.strictEqual(update.to, 22.5);              // still applied
-  assert.strictEqual(result.flagged.length, 1);
-  assert.match(update.note, /-25.00%/);
-});
 
-test('a change exactly ON the threshold does not exceed it', () => {
-  const result = plan([fileRow('0063', 36.00)]);    // exactly +20.00%
-  assert.strictEqual(result.updates[0].changePct, 20);
-  assert.strictEqual(result.updates[0].flagged, false);
-});
-
-test('the threshold is configurable and reports what it used', () => {
-  const strict = plan([fileRow('0319', 26.00)], { thresholdPct: 5 });   // +6.12%
-  assert.strictEqual(strict.thresholdPct, 5);
-  assert.strictEqual(strict.updates[0].flagged, true);
-
-  const loose = plan([fileRow('0319', 26.00)], { thresholdPct: 50 });
-  assert.strictEqual(loose.updates[0].flagged, false);
-});
-
-test('the threshold falls back to WAGE_CHANGE_ALERT_PCT and then to 20', () => {
-  assert.strictEqual(DEFAULT_THRESHOLD_PCT, 20);
-  const before = process.env.WAGE_CHANGE_ALERT_PCT;
-  try {
-    delete process.env.WAGE_CHANGE_ALERT_PCT;
-    const dflt = planWageSync({ fileRows: [fileRow('0063', 37.50)], employees: ROSTER, workDate: WORK_DATE });
-    assert.strictEqual(dflt.thresholdPct, 20);
-    assert.strictEqual(dflt.updates[0].flagged, true);
-
-    process.env.WAGE_CHANGE_ALERT_PCT = '40';
-    const env = planWageSync({ fileRows: [fileRow('0063', 37.50)], employees: ROSTER, workDate: WORK_DATE });
-    assert.strictEqual(env.thresholdPct, 40);
-    assert.strictEqual(env.updates[0].flagged, false);
-
-    // An explicit argument always wins over the environment.
-    const explicit = planWageSync({
-      fileRows: [fileRow('0063', 37.50)], employees: ROSTER, workDate: WORK_DATE, thresholdPct: 20
-    });
-    assert.strictEqual(explicit.thresholdPct, 20);
-    assert.strictEqual(explicit.updates[0].flagged, true);
-  } finally {
-    if (before === undefined) delete process.env.WAGE_CHANGE_ALERT_PCT;
-    else process.env.WAGE_CHANGE_ALERT_PCT = before;
-  }
-});
 
 // ============================================================
 // Auto-create unknown people
 // ============================================================
 
-test('an unknown employee number creates a person, a setup task and a history row', () => {
+test('an unknown employee number creates a person and a setup task — and NO rate', () => {
+  // Arrival detection is all that is left of this plan, and it was never about
+  // money. The create carries identity only: the file's rate is not read, so
+  // somebody has to type one on Salaries & Wages before this person's cost can
+  // be computed. The task says exactly that.
   const result = plan([
     fileRow('0999', 23.75, { first_name: 'Nueva', last_name: 'Persona' })
   ]);
@@ -350,33 +188,30 @@ test('an unknown employee number creates a person, a setup task and a history ro
     employeeNumber: '0999',
     name: 'Nueva Persona',
     firstName: 'Nueva',
-    lastName: 'Persona',
-    rate: 23.75
-  }]);
+    lastName: 'Persona'
+  }], 'no rate key at all — not a null one');
 
-  assert.deepStrictEqual(result.setupTasks.map(t => ({
-    employee_id: t.employee_id,
-    employee_number: t.employee_number,
-    employee_name: t.employee_name,
-    first_seen_date: t.first_seen_date,
-    source: t.source
-  })), [{
+  const [task] = result.setupTasks;
+  assert.deepStrictEqual({
+    employee_id: task.employee_id,
+    employee_number: task.employee_number,
+    employee_name: task.employee_name,
+    first_seen_date: task.first_seen_date,
+    source: task.source
+  }, {
     employee_id: null,          // filled in by the applier from the new row
     employee_number: '0999',
     employee_name: 'Nueva Persona',
     first_seen_date: WORK_DATE,
     source: 'bbsi'
-  }]);
+  });
+  assert.match(task.note, /Needs a pay rate/);
+  assert.match(task.note, /cost cannot be computed/);
 
-  const rows = historyFor(result, '0999');
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].previous_rate, null);
-  assert.strictEqual(rows[0].rate, 23.75);
-  assert.strictEqual(rows[0].effective_date, WORK_DATE);
-
-  // No update op: the create carries the rate. The create must come first, so
-  // the history row and the task can reference the new id.
-  assert.deepStrictEqual(result.ops.map(o => o.kind), ['create', 'history', 'setupTask']);
+  // No history row: there is no rate to record. The create must come first so
+  // the task can reference the new id.
+  assert.deepStrictEqual(result.history, []);
+  assert.deepStrictEqual(result.ops.map(o => o.kind), ['create', 'setupTask']);
   assert.deepStrictEqual(result.updates, []);
 });
 
@@ -388,37 +223,19 @@ test('two rows for the same unknown number produce one create and one setup task
 
   assert.strictEqual(result.creates.length, 1);
   assert.strictEqual(result.setupTasks.length, 1);
-  assert.strictEqual(historyFor(result, '0999').length, 1);
-  assert.strictEqual(result.creates[0].rate, 23.75);   // first row wins
+  assert.deepStrictEqual(result.history, []);
   assert.strictEqual(result.skipped.duplicateInFile, 1);
+  // The two rows differ only in a rate nobody reads, so which one wins cannot
+  // matter any more — but the dedupe still has to happen, or the create would
+  // be attempted twice against a unique employee_number.
+  assert.ok(!('rate' in result.creates[0]));
 });
 
-test('an unknown row with no usable rate creates nobody', () => {
-  const result = plan([fileRow('0999', 0)]);
-  assert.deepStrictEqual(result.creates, []);
-  assert.deepStrictEqual(result.setupTasks, []);
-  assert.deepStrictEqual(result.history, []);
-  assert.strictEqual(result.skipped.noRate, 1);
-});
 
 // ============================================================
 // Salaried staff are outside this flow
 // ============================================================
 
-test('a salaried employee in the file never receives an hourly rate', () => {
-  // Eduardo Rivera is salaried in Manufacturing. Even carrying a rate and
-  // hours, his employees.wage must keep its 'Salary' sentinel.
-  const result = plan([
-    fileRow('0007', 45.00, { is_salary: true }),
-    fileRow('0011', 60.00, { is_salary: true })
-  ]);
-
-  assert.deepStrictEqual(result.updates, []);
-  assert.deepStrictEqual(result.history, []);
-  assert.deepStrictEqual(result.ops, []);
-  assert.strictEqual(result.skipped.salaried, 2);
-  assert.strictEqual(result.skipped.noRate, 0);
-});
 
 test('the roster deciding somebody is salaried is enough on its own', () => {
   // The file forgot to set Is Salary. employees.wage still says 'Salary'.
@@ -434,37 +251,6 @@ test('a salaried row is counted as salaried, not as a missing rate', () => {
   assert.strictEqual(result.skipped.noRate, 0);
 });
 
-test('a salaried row carrying a real pay rate produces no write of any kind', () => {
-  // The whole plan, proved empty rather than read: no update, no create, no
-  // wage_history row, no setup task, no flag and no op — for a salaried person
-  // the app already knows (0007) AND for one it has never seen (9500), which is
-  // the path that would otherwise auto-create somebody off a salaried row.
-  const result = plan([
-    fileRow('0007', 45.00, { is_salary: true, regular_hours: 10, total_hours: 10, total_earnings: 450 }),
-    fileRow('9500', 52.00, { is_salary: true, regular_hours: 8,  total_hours: 8,  total_earnings: 416 })
-  ]);
-
-  assert.deepStrictEqual(result.updates, []);
-  assert.deepStrictEqual(result.creates, []);
-  assert.deepStrictEqual(result.history, []);
-  assert.deepStrictEqual(result.setupTasks, []);
-  assert.deepStrictEqual(result.flagged, []);
-  assert.deepStrictEqual(result.ops, []);
-
-  // Counted as salaried and as nothing else.
-  assert.strictEqual(result.skipped.salaried, 2);
-  assert.strictEqual(result.skipped.noRate, 0);
-  assert.strictEqual(result.skipped.unchanged, 0);
-  assert.strictEqual(result.skipped.noEmployeeNumber, 0);
-  assert.strictEqual(result.skipped.duplicateInFile, 0);
-
-  // And the effective rate for the one in Manufacturing is still the app's
-  // salary / 2080, not the 45.00 that was sitting in the file.
-  assert.deepStrictEqual(
-    effectiveHourlyRate({ ...ROSTER.find(e => e.employee_number === '0007'), pay_rate: 45.00 }),
-    { rate: 50, source: 'salary/2080' }
-  );
-});
 
 // ============================================================
 // effectiveHourlyRate
@@ -558,35 +344,29 @@ test('no salary and no rate is null, not zero', () => {
   assert.deepStrictEqual(effectiveHourlyRate(null), { rate: null, source: 'none' });
 });
 
-test('an hourly employee reports the rate the file last put in employees.wage', () => {
-  assert.deepStrictEqual(effectiveHourlyRate({ wage: '24.50' }), { rate: 24.5, source: 'file' });
+test('an hourly employee is priced from employees.wage, and it says so', () => {
+  // The source used to read 'file', because employees.wage held nothing but
+  // what the BBSI file last put there. It holds what somebody typed now.
+  assert.deepStrictEqual(effectiveHourlyRate({ wage: '24.50' }),
+    { rate: 24.5, source: 'employees.wage' });
   assert.deepStrictEqual(effectiveHourlyRate({ wage: '$24.50', cost_class: 'SG&A' }),
-    { rate: 24.5, source: 'file' });
+    { rate: 24.5, source: 'employees.wage' });
 });
 
-test("an hourly employee's file rate beats the stored wage, and neither is null", () => {
-  // Unchanged by the salaried correction, kept as a regression lock: the file
-  // IS the source of truth for hourly staff, which is exactly why it is not
-  // one for salaried staff.
+test('a file rate can no longer outrank the stored wage', () => {
+  // The regression this guards is precise: for a year the file's rate won, and
+  // it was a transcription nobody maintained. An employee object carrying BOTH
+  // must price at ours.
   assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', pay_rate: 26.75 }),
-    { rate: 26.75, source: 'file' }
-  );
+    effectiveHourlyRate({ wage: '24.50', pay_rate: 99.99, cost_class: 'Manufacturing' }),
+    { rate: 24.5, source: 'employees.wage' });
+  // And a file rate on somebody with no stored wage buys nothing: null, not
+  // the file's number and not zero.
   assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', fileRate: 26.75 }),
-    { rate: 26.75, source: 'file' }
-  );
-  // A $0 or unparseable file rate is not a rate; the stored wage stands.
-  assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: '24.50', cost_class: 'Manufacturing', pay_rate: 0 }),
-    { rate: 24.5, source: 'file' }
-  );
-  // Neither: null, never zero.
-  assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: null, cost_class: 'Manufacturing', annual_salary: 104000 }),
-    { rate: null, source: 'none' }
-  );
+    effectiveHourlyRate({ wage: null, pay_rate: 99.99, cost_class: 'Manufacturing' }),
+    { rate: null, source: 'none' });
 });
+
 
 // ============================================================
 // Employee-number matching
@@ -595,28 +375,26 @@ test("an hourly employee's file rate beats the stored wage, and neither is null"
 test('an unpadded number in the file matches a padded roster record', () => {
   // 0319 on the roster, '319' in the file.
   const result = plan([fileRow('319', 26.00)]);
-  assert.strictEqual(result.creates.length, 0, 'must not auto-create a duplicate');
-  assert.strictEqual(result.updates.length, 1);
-  assert.strictEqual(result.updates[0].employeeId, 'e1');
-  assert.strictEqual(result.updates[0].employeeNumber, '0319');
-  assert.strictEqual(historyFor(result, '0319')[0].previous_rate, 24.5);
+  assert.deepStrictEqual(result.creates, [], 'must not auto-create a duplicate');
+  assert.strictEqual(result.skipped.unchanged, 1);
 });
 
 test('a padded number in the file matches an unpadded roster record', () => {
-  // '905' on the roster, 0905 in the file.
+  // '905' on the roster, 0905 in the file. Matching by normalised number is
+  // what keeps this from auto-creating a duplicate of somebody already there,
+  // and that is the whole job of the plan now.
   const result = plan([fileRow('0905', 27.00)]);
-  assert.strictEqual(result.creates.length, 0);
-  assert.strictEqual(result.updates[0].employeeId, 'e5');
-  assert.strictEqual(result.updates[0].from, 26);
-  assert.strictEqual(result.updates[0].employeeNumber, '0905');
+  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.skipped.unchanged, 1);
 });
 
-test('a terminated employee still in the file is synced like anybody else', () => {
-  // Somebody terminated mid-week still has hours, and a rate, on that week's
-  // file. Presence in the file is what drives this, not roster status.
+test('a terminated employee still in the file is not re-created', () => {
+  // Somebody terminated mid-week still has hours on that week's file. They are
+  // on the roster, so the one thing this plan does — create people it has never
+  // heard of — must not fire for them.
   const result = plan([fileRow('0400', 22.00)]);
-  assert.strictEqual(result.updates.length, 1);
-  assert.strictEqual(result.updates[0].from, 21);
+  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.skipped.unchanged, 1);
 });
 
 // ============================================================
@@ -641,12 +419,15 @@ test('effective_date is the day the file describes, not the day it is processed'
 });
 
 test('a timestamp work date is reduced to its calendar date', () => {
+  // Read off the setup task now that no history row is written. The date still
+  // has to be a calendar date: employee_setup_tasks.first_seen_date is a DATE
+  // and unique per person, so a timestamp would make one arrival look like two.
   const result = planWageSync({
-    fileRows: [fileRow('0319', 26.00)],
+    fileRows: [fileRow('0999', 26.00)],
     employees: ROSTER,
     workDate: '2026-08-17T00:00:00.000Z'
   });
-  assert.strictEqual(result.history[0].effective_date, '2026-08-17');
+  assert.strictEqual(result.setupTasks[0].first_seen_date, '2026-08-17');
 });
 
 test('a missing or unusable work date is refused, never guessed', () => {
@@ -679,46 +460,28 @@ function fakeWriters(overrides = {}) {
   return { calls, writers };
 }
 
-test('the applier writes the history row before it moves the wage', async () => {
-  const { calls, writers } = fakeWriters();
-  const applied = await applyWageSync(plan([fileRow('0319', 26.00)]), writers);
 
-  assert.deepStrictEqual(calls.map(c => c[0]), ['history', 'update']);
-  assert.strictEqual(calls[0][1].previous_rate, 24.5);
-  assert.deepStrictEqual(calls[1].slice(1), ['e1', '26.00']);
-  assert.strictEqual(applied.ratesUpdated, 1);
-  assert.strictEqual(applied.historyWritten, 1);
-  assert.deepStrictEqual(applied.errors, []);
-});
 
-test('a failed history insert blocks the wage update behind it', async () => {
-  const { calls, writers } = fakeWriters({
-    insertWageHistory: async () => { throw new Error('append-only trigger fired'); }
-  });
-  const applied = await applyWageSync(plan([fileRow('0319', 26.00)]), writers);
-
-  assert.deepStrictEqual(calls.map(c => c[0]), []);
-  assert.strictEqual(applied.ratesUpdated, 0, 'the old rate must survive');
-  assert.strictEqual(applied.errors.length, 1);
-  assert.match(applied.errors[0], /append-only trigger fired/);
-  assert.strictEqual(applied.blocked.length, 1);
-});
-
-test('one bad row does not stop the rest of the day', async () => {
+test('one bad create does not stop the rest of the day', async () => {
+  // The applier's isolation still matters: two new arrivals in one file, and
+  // the first failing must not cost the second its row. There is no wage update
+  // to fail any more, so the failure under test is the create.
   let call = 0;
   const { calls, writers } = fakeWriters({
-    updateEmployeeWage: async (id, wage) => {
+    createEmployee: async (row) => {
       if (++call === 1) throw new Error('supabase exploded');
-      calls.push(['update', id, wage]);
-      return [];
+      calls.push(['create', row]);
+      return { id: 'new-' + row.employee_number, ...row };
     }
   });
   const applied = await applyWageSync(
-    plan([fileRow('0319', 26.00), fileRow('0063', 32.00)]), writers);
+    plan([fileRow('0998', 26.00, { last_name: 'One' }),
+          fileRow('0999', 32.00, { last_name: 'Two' })]), writers);
 
-  assert.strictEqual(applied.ratesUpdated, 1);
+  assert.strictEqual(applied.created.length, 1);
   assert.strictEqual(applied.errors.length, 1);
-  assert.deepStrictEqual(calls.filter(c => c[0] === 'update').map(c => c[1]), ['e2']);
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'create').map(c => c[1].employee_number),
+    ['0999']);
 });
 
 test('the applier fills in the new employee id the plan could not know', async () => {
@@ -726,35 +489,38 @@ test('the applier fills in the new employee id the plan could not know', async (
   const applied = await applyWageSync(
     plan([fileRow('0999', 23.75, { first_name: 'Nueva', last_name: 'Persona' })]), writers);
 
-  assert.deepStrictEqual(calls.map(c => c[0]), ['create', 'history', 'setupTask']);
+  // Two ops, not three: no history row, because no rate was read.
+  assert.deepStrictEqual(calls.map(c => c[0]), ['create', 'setupTask']);
 
   const created = calls[0][1];
   assert.strictEqual(created.employee_number, '0999');
-  assert.strictEqual(created.wage, '23.75');
   assert.strictEqual(created.status, 'Active');
   assert.strictEqual(created.department, null);
   assert.strictEqual(created.cost_class, null);
   assert.strictEqual(created.position_group, null);
+  // NO WAGE. The person arrives with no rate and cannot be costed until
+  // somebody types one; the setup task is what says so.
+  assert.ok(created.wage === null || created.wage === undefined,
+    'the create must not invent a rate: ' + JSON.stringify(created.wage));
 
   assert.strictEqual(calls[1][1].employee_id, 'new-0999');
-  assert.strictEqual(calls[2][1].employee_id, 'new-0999');
   assert.deepStrictEqual(applied.created, [{
     employeeNumber: '0999', name: 'Nueva Persona', firstName: 'Nueva',
-    lastName: 'Persona', rate: 23.75, employeeId: 'new-0999'
+    lastName: 'Persona', employeeId: 'new-0999'
   }]);
 });
 
-test('a failed create blocks the history row and the setup task that reference it', async () => {
+test('a failed create blocks the setup task that references it', async () => {
   const { calls, writers } = fakeWriters({
     createEmployee: async () => { throw new Error('cost_class does not exist'); }
   });
   const applied = await applyWageSync(plan([fileRow('0999', 23.75)]), writers);
 
   assert.deepStrictEqual(calls, []);
-  assert.strictEqual(applied.historyWritten, 0);
   assert.strictEqual(applied.setupTasks, 0);
   assert.strictEqual(applied.errors.length, 1);
-  assert.strictEqual(applied.blocked.length, 2);
+  // One dependent op now, not two — the history row went with the rate.
+  assert.strictEqual(applied.blocked.length, 1);
 });
 
 test('a plan with nothing in it makes no requests at all', async () => {
@@ -767,23 +533,7 @@ test('a plan with nothing in it makes no requests at all', async () => {
   assert.strictEqual(applied.skipped.unchanged, 1);
 });
 
-test('the applier reports flagged changes it actually applied', async () => {
-  const { writers } = fakeWriters();
-  const applied = await applyWageSync(plan([fileRow('0063', 37.50)]), writers);
-  assert.strictEqual(applied.flagged.length, 1);
-  assert.strictEqual(applied.flagged[0].employeeNumber, '0063');
-  assert.strictEqual(applied.thresholdPct, 20);
-  assert.strictEqual(applied.workDate, WORK_DATE);
-});
 
-test('a flagged change whose write failed is not reported as applied', async () => {
-  const { writers } = fakeWriters({
-    updateEmployeeWage: async () => { throw new Error('nope'); }
-  });
-  const applied = await applyWageSync(plan([fileRow('0063', 37.50)]), writers);
-  assert.deepStrictEqual(applied.flagged, []);
-  assert.strictEqual(applied.errors.length, 1);
-});
 
 
 // ============================================================
@@ -874,10 +624,12 @@ test('effectiveHourlyRate is keyed on pay_type, not on the wage sentinel', () =>
                           cost_class: 'Manufacturing', annual_salary: 104000 }),
     { rate: null, source: 'none' }
   );
+  // ...and a file rate does not rescue them. It used to: this same call
+  // returned { rate: 26.75, source: 'file' } while the file was believed.
   assert.deepStrictEqual(
     effectiveHourlyRate({ pay_type: 'Hourly', wage: 'Salary', cost_class: 'Manufacturing',
                           annual_salary: 104000, pay_rate: 26.75 }),
-    { rate: 26.75, source: 'file' }
+    { rate: null, source: 'none' }
   );
 });
 

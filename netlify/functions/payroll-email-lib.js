@@ -711,15 +711,18 @@ function mergeRowFlags(rows, extraFlags) {
   return rows;
 }
 
-// The daily file is the source of truth for hourly wages, so importing a day's
-// hours and not syncing its rates would leave the app holding yesterday's money
-// for ever. Runs only after a successful import, never in a dry run.
+// Arrival detection. The name is historical: this used to carry rates out of
+// the daily file and onto employees.wage, and no longer does — employees.wage
+// is the record of truth and is edited in the app. What is left is finding the
+// people in the file that the roster does not have. Runs only after a
+// successful import, never in a dry run.
 //
-// Three outcomes deserve a human's attention and each raises the item's alert:
+// Two outcomes deserve a human's attention and each raises the item's alert:
 // a person the app had never heard of (their cost is landing nowhere until
-// somebody classifies them), a rate move past the threshold (either a raise or
-// a vendor keying error, indistinguishable without looking) and a write that
-// failed (the hours are in and the rates are not).
+// somebody types a rate and classifies them) and a write that failed (the
+// hours are in and the setup task that would have told anybody is not).
+// `flagged` is still read below so a plan that ever populates it again is not
+// silently dropped, but nothing populates it now.
 //
 // `employees` is the roster snapshot the whole run shares, and it is MUTATED
 // here on purpose — see the create loop at the bottom.
@@ -746,23 +749,26 @@ async function syncWages(item, rows, employees, d, log) {
       item.alert = true;
     }
 
-    log(`Wage sync ${item.workDate}: ${applied.ratesUpdated} rate(s) updated, ` +
-        `${created.length} employee(s) created, ${flagged.length} flagged, ` +
-        `${errors.length} error(s).`);
+    log(`Arrival check ${item.workDate}: ${created.length} employee(s) created, ` +
+        `${applied.setupTasks || 0} setup task(s), ${errors.length} error(s).`);
 
     // A back-fill run imports several days from one roster read. Without this,
     // a person created from Monday's file is still unknown when Tuesday's file
     // is processed in the same run, and would be created a second time — two
     // employees rows for one employee number. Fold them into the shared
-    // snapshot, carrying the wage just written so an unchanged rate the next
-    // day reads as unchanged rather than as a fresh first observation.
+    // snapshot so the rest of the run knows they exist.
     for (const person of created) {
       employees.push({
         id: person.employeeId,
         name: person.name,
         employee_number: person.employeeNumber,
         department: null,
-        wage: Number(person.rate).toFixed(2),
+        // NULL, matching what was actually written. This carried the rate the
+        // plan had just applied; there is no rate now, and
+        // Number(undefined).toFixed(2) is the string "NaN" — which would go
+        // into the in-memory roster and be read as a rate by anything in the
+        // rest of the run.
+        wage: null,
         status: 'Active'
       });
     }

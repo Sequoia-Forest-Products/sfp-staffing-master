@@ -609,7 +609,11 @@ async function applyWageSync(plan, writers = {}) {
         const created = await w.createEmployee({
           name: op.create.name,
           employee_number: op.create.employeeNumber,
-          wage: wageText(op.create.rate),
+          // NULL. The plan carries no rate any more — the file's was a
+          // transcription nobody maintains — and wageText(undefined) is the
+          // string "NaN", which would go into employees.wage and read as a rate
+          // to anything that looked at it. Caught by the applier's own test.
+          wage: null,
           status: 'Active',
           // The bullpen, spelled out rather than left to the column defaults:
           // these three being null is what employee_setup_tasks is queuing.

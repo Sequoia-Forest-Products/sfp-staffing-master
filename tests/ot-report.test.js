@@ -50,10 +50,18 @@ function dailyRow(over) {
   }, over);
 }
 
-// Ana's roster wage is deliberately wrong (10.00 against a real 28.00 pay rate)
-// so the pre-approved dollar tests prove daily_hours wins over employees.wage.
+// EVERY DOLLAR IN THIS FIXTURE COMES FROM THE ROSTER WAGE. The daily rows still
+// carry pay_rate and total_earnings — real vendor files do — and the report
+// ignores all of it, which several tests below assert directly.
+//
+// Ana's roster wage used to be deliberately wrong (10.00 against a real 28.00
+// in the file) so the dollar tests could prove daily_hours WON. That is the
+// thing this change reverses, so she now carries the real rate and the
+// fixture's arithmetic is unchanged — the file's own numbers were computed with
+// the same premium tiers pay-rules-lib models, so 10h + 2h OT at 28 is $364
+// either way.
 const EMPLOYEES = [
-  { id: 'e1', name: 'Ana Reyes',     employee_number: '0101', department: 'Production',  wage: '10.00', status: 'Active' },
+  { id: 'e1', name: 'Ana Reyes',     employee_number: '0101', department: 'Production',  wage: '28.00', status: 'Active' },
   { id: 'e2', name: 'Ben Carter',    employee_number: '0102', department: 'Maintenance', wage: 24.5,    status: 'Active' },
   { id: 'e3', name: 'Cara Lopez',    employee_number: '0103', department: 'Shipping',    wage: '$22.00', status: 'Active' },
   { id: 'e4', name: 'Dan Whitfield', employee_number: '0104', department: 'Saw Filing',  wage: null,    status: 'Active' },
@@ -189,7 +197,12 @@ test('a Saturday shift paid entirely at the regular rate still shows up as earni
   assert.strictEqual(r.split.nonScheduled.otDollars, 0);
   assert.strictEqual(r.split.nonScheduled.otHours, 0);
   // ...and $196 of payroll that must not disappear from the weekend view.
-  assert.strictEqual(r.split.nonScheduled.earnings, 316); // Ben 196 + Fred's Friday 120
+  //
+  // Ben only. Fred Nobody worked the Friday but is not on the roster, so there
+  // is no rate we own for him: his 6 HOURS still count and his dollars are 0,
+  // the same answer anybody with no wage gets. He is named in
+  // issues.unknownEmployeeNumbers, so the gap is reported rather than absorbed.
+  assert.strictEqual(r.split.nonScheduled.earnings, 196);
   assert.strictEqual(r.split.nonScheduled.hours, 14);
   assert.strictEqual(r.split.nonScheduled.headcount, 2);
 
@@ -231,7 +244,9 @@ test('Friday counts as non-scheduled work and, having data, is not missing', () 
 test('summary totals are the sum of the fixture, rounded once', () => {
   const r = report();
   assert.strictEqual(r.summary.totalHours, 67);
-  assert.strictEqual(r.summary.totalHourlyPayroll, 1715);
+  // 1715 minus Fred Nobody's $120: he is not on the roster, so we hold no rate
+  // for him and his dollars are 0. His 6 hours are still in totalHours.
+  assert.strictEqual(r.summary.totalHourlyPayroll, 1595);
   assert.strictEqual(r.summary.headcount, 4);
   assert.strictEqual(r.summary.allOtHours, 3);
   assert.strictEqual(r.summary.allOtDollars, 114);
@@ -241,7 +256,7 @@ test('summary totals are the sum of the fixture, rounded once', () => {
 
 test('netOtPctOfPayroll is a fraction, and null rather than a divide-by-zero', () => {
   const r = report();
-  assert.strictEqual(r.summary.netOtPctOfPayroll, -0.0809); // -138.75 / 1715
+  assert.strictEqual(r.summary.netOtPctOfPayroll, -0.087); // -138.75 / 1595
   assert.ok(Math.abs(r.summary.netOtPctOfPayroll) < 1, 'must be a fraction, not pre-multiplied');
 
   const empty = buildReport({ weekStart: WEEK, dailyRows: [], overtimeRows: [], employees: [] });
@@ -277,7 +292,9 @@ test('a null department produces an Unassigned bucket that is really in the arra
   assert.ok(unassigned, 'Unassigned must be present, not dropped or folded into a real department');
   // Eve's 11 hours + Fred's 6.
   assert.strictEqual(unassigned.week.hours, 17);
-  assert.strictEqual(unassigned.week.earnings, 350);
+  // Eve's 230 only. Fred is also Unassigned but is not on the roster, so his
+  // hours are here and his dollars are 0 — see the summary-totals test.
+  assert.strictEqual(unassigned.week.earnings, 230);
   assert.strictEqual(unassigned.week.otHours, 1);
   assert.strictEqual(unassigned.week.otDollars, 30);
   assert.strictEqual(unassigned.scheduled.hours, 11);
@@ -312,8 +329,8 @@ test('department rows sum to the summary and reconciliation says so', () => {
   const rec = r.issues.reconciliation;
   assert.strictEqual(rec.departmentHours, 67);
   assert.strictEqual(rec.summaryHours, 67);
-  assert.strictEqual(rec.departmentEarnings, 1715);
-  assert.strictEqual(rec.summaryEarnings, 1715);
+  assert.strictEqual(rec.departmentEarnings, 1595);
+  assert.strictEqual(rec.summaryEarnings, 1595);
   assert.strictEqual(rec.balanced, true);
   assert.strictEqual(rec.hoursDelta, 0);
   assert.strictEqual(rec.earningsDelta, 0);
@@ -365,23 +382,26 @@ test('a pre-approved row for somebody with no hours this week is kept, attribute
   assert.strictEqual(caraRow.onRoster, true);
 });
 
-test('the pay rate comes from daily_hours first, employees.wage second, nothing third', () => {
+test('the pay rate is employees.wage, and the file cannot outrank it', () => {
   const r = report();
   const rows = r.preApproved.rows;
 
-  // Ana's roster wage says 10.00; the week actually paid 28.00.
+  // Ana worked this week and her rows carry pay_rate 28.00. That used to be
+  // where her rate came from; it is ignored now, and the 28.00 below is the
+  // roster's. The two agree here on purpose — see the fixture note — so this
+  // asserts the SOURCE, which is the thing that changed.
   const ana = rows.find(x => x.name === 'Ana Reyes');
-  assert.strictEqual(ana.rateSource, 'daily_hours');
-  assert.strictEqual(ana.dollars, 84);   // 2 * 28.00 * 1.5, not 2 * 10.00 * 1.5
+  assert.strictEqual(ana.rateSource, 'employees.wage');
+  assert.strictEqual(ana.dollars, 84);   // 2 * 28.00 * 1.5
   assert.strictEqual(ana.department, 'Production');
   assert.strictEqual(ana.matched, true);
 
-  // Cara has no rows this week, so her roster wage is the only rate available.
+  // Cara has no rows this week, and it makes no difference at all now.
   const cara = rows.find(x => x.name === 'Cara Lopez');
   assert.strictEqual(cara.rateSource, 'employees.wage');
   assert.strictEqual(cara.dollars, 132);
 
-  // Dan has neither: dollars are 0 and he is named, not guessed at.
+  // Dan has no wage: dollars are 0 and he is named, not guessed at.
   const dan = rows.find(x => x.name === 'Dan Whitfield');
   assert.strictEqual(dan.rateSource, 'none');
   assert.strictEqual(dan.dollars, 0);
@@ -389,6 +409,22 @@ test('the pay rate comes from daily_hours first, employees.wage second, nothing 
   assert.strictEqual(dan.department, 'Saw Filing');
   assert.ok(r.preApproved.rateMissing.includes('Dan Whitfield'));
   assert.ok(!r.preApproved.rateMissing.includes('Cara Lopez'));
+
+  // No row anywhere is priced from the file. 'daily_hours' was a rateSource
+  // value until this change and must never appear again.
+  assert.ok(!rows.some(x => x.rateSource === 'daily_hours'));
+});
+
+test('a worked week at a rate the FILE disagrees with prices at ours', () => {
+  // The pointed version of the above: the roster says 15.00 and the file says
+  // 28.00 for the same person in the same week. Ours wins, and that is the
+  // whole change.
+  const r = report({
+    employees: EMPLOYEES.map(e => e.name === 'Ana Reyes' ? { ...e, wage: '15.00' } : e)
+  });
+  const ana = r.preApproved.rows.find(x => x.name === 'Ana Reyes');
+  assert.strictEqual(ana.rateSource, 'employees.wage');
+  assert.strictEqual(ana.dollars, 45, '2 * 15.00 * 1.5, not 2 * 28.00 * 1.5');
 });
 
 test('an overtime name that matches nobody is reported, not silently dropped', () => {
@@ -445,8 +481,10 @@ test('name matching against the roster ignores case and surrounding space', () =
 //   Ben  one Saturday, paid $24.50/hr
 //   Cara on the roster, no rows anywhere in the week
 
+// Same as the main fixture: Ana's roster wage used to be deliberately wrong so
+// the grace tests could prove daily_hours won. It carries the real rate now.
 const GRACE_EMPLOYEES = [
-  { id: 'g1', name: 'Ana Reyes',  employee_number: '0101', department: 'Production',  wage: '10.00',  status: 'Active' },
+  { id: 'g1', name: 'Ana Reyes',  employee_number: '0101', department: 'Production',  wage: '28.00',  status: 'Active' },
   { id: 'g2', name: 'Ben Carter', employee_number: '0102', department: 'Maintenance', wage: 24.5,     status: 'Active' },
   { id: 'g3', name: 'Cara Lopez', employee_number: '0103', department: 'Shipping',    wage: '$22.00', status: 'Active' }
 ];
@@ -639,7 +677,7 @@ test('an inactive employee holds no standing entitlement', () => {
   assert.strictEqual(byName(r.employees, 'Ozzy Former'), undefined);
 });
 
-test('grace rates come from the week rows first, the roster wage second, nothing third', () => {
+test('grace rates come from employees.wage, worked week or not', () => {
   const r = graceReport({
     graceHoursPerEmployee: 0.5,
     employees: GRACE_EMPLOYEES.concat([
@@ -650,14 +688,15 @@ test('grace rates come from the week rows first, the roster wage second, nothing
   const grace = r.preApproved.grace;
 
   assert.strictEqual(grace.headcount, 4);
-  assert.deepStrictEqual(grace.byRateSource, { 'daily_hours': 2, 'employees.wage': 1, 'none': 1 });
+  // Two sources now, not three: ours, or none. 'daily_hours' is gone.
+  assert.deepStrictEqual(grace.byRateSource, { 'daily_hours': 0, 'employees.wage': 3, 'none': 1 });
 
-  // Ana and Ben worked, so the week's own pay_rate is used, not the roster wage.
-  assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);   // 28.00, not the 10.00 on the roster
-  // Cara has no rows this week, so the roster wage is the only rate there is.
-  assert.strictEqual(byName(r.employees, 'Cara Lopez').graceDollars, 16.5);
+  // Ana and Ben worked; Cara did not. It makes no difference to where the rate
+  // comes from, which is the point.
+  assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);    // 0.5 * 28.00 * 1.5
+  assert.strictEqual(byName(r.employees, 'Cara Lopez').graceDollars, 16.5); // 0.5 * 22.00 * 1.5
 
-  // Dan has neither. The HOURS still count — the entitlement does not depend on
+  // Dan has no wage. The HOURS still count — the entitlement does not depend on
   // payroll knowing his rate — and he is named rather than silently zeroed.
   const dan = byName(r.employees, 'Dan Whitfield');
   assert.strictEqual(dan.graceHours, 0.5);
@@ -667,15 +706,18 @@ test('grace rates come from the week rows first, the roster wage second, nothing
   assert.strictEqual(grace.dollars, 55.88, 'a missing rate contributes 0 dollars, not a guess');
 });
 
-test('the grace rate is the one on the most recent row of the week, not the best one', () => {
-  // A rate cut on Thursday: grace is worth what the person is being paid now.
+test('a rate that moved mid-week has no effect — there is one rate', () => {
+  // This used to assert that a Thursday rate cut was picked up, because
+  // daily_hours carried a rate per row that could move within a week. It
+  // cannot: every row of a person prices at the one employees.wage holds, so
+  // the file's varying pay_rate below is ignored entirely.
   const r = graceReport({
     graceHoursPerEmployee: 0.5,
     employees: [GRACE_EMPLOYEES[0]],
     dailyRows: [
       anaRow('2026-08-03', { pay_rate: 30, total_earnings: 300, regular_dollars: 300 }),
       anaRow('2026-08-04', { pay_rate: 30, total_earnings: 300, regular_dollars: 300 }),
-      anaRow('2026-08-06', { pay_rate: 28 })
+      anaRow('2026-08-06', { pay_rate: 12 })
     ]
   });
   assert.strictEqual(byName(r.employees, 'Ana Reyes').graceDollars, 21);    // 0.5 * 28 * 1.5
@@ -1314,7 +1356,11 @@ test('an employee number nobody owns is reported', () => {
   const fred = byName(r.employees, 'Fred Nobody');
   assert.strictEqual(fred.onRoster, false);
   assert.strictEqual(fred.employeeNumber, '0999');
-  assert.strictEqual(fred.totalEarnings, 120);
+  // No rate: he is not on the roster, so nothing prices his hours. Zero, with
+  // his number reported above — not a figure taken from the file, which is the
+  // rate this whole change stopped believing.
+  assert.strictEqual(fred.totalEarnings, 0);
+  assert.strictEqual(fred.totalHours, 6, 'the HOURS are not in doubt');
 });
 
 test('employee numbers match across zero padding', () => {
@@ -1415,9 +1461,10 @@ test('a roster employee with no employee number is one person, not two', () => {
 
   // He worked, so his allowance is not an "approved but never worked" finding.
   assert.deepStrictEqual(r.preApproved.withoutHoursThisWeek, []);
-  // And his rate came off the week's rows, which is only possible if the
-  // allowance found the same person the hours were accumulated under.
-  assert.strictEqual(r.preApproved.rows[0].rateSource, 'daily_hours');
+  // His rate is the roster's — the only source there is now. What this test is
+  // really about survives unchanged: one man, one row, hours and allowance
+  // accumulated under the same key despite three spellings of his name.
+  assert.strictEqual(r.preApproved.rows[0].rateSource, 'employees.wage');
   assert.strictEqual(r.preApproved.rows[0].matched, true);
   assert.deepStrictEqual(r.preApproved.unmatchedNames, []);
 
