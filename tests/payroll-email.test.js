@@ -946,4 +946,14 @@ test('an employee number the roster does not have is an arrival, and alerts', as
 
   // 0101 is on the roster: known, and there is nothing left to do with them.
   assert.strictEqual(plan.skipped.unchanged, 1);
+
+  // The alert a human actually reads. It used to say "at ${rate}/hr" from a
+  // field the plan no longer carries, which formats as NaN — an email telling
+  // somebody a new hire was taken on at NaN an hour.
+  const body = calls.alerts[0].body;
+  assert.match(body, /NEW EMPLOYEE — Emp # 0202/);
+  assert.match(body, /NO PAY RATE/);
+  assert.match(body, /Salaries & Wages/);
+  assert.ok(!/NaN/.test(body), 'the alert must not contain NaN anywhere');
+  assert.ok(!/\/hr/.test(body), 'and must not quote a rate it does not have');
 });

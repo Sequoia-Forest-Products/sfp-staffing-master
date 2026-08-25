@@ -623,34 +623,32 @@ function describeItem(item) {
   return lines.join('\n');
 }
 
-// New arrivals and flagged rate changes ride in the same digest as everything
-// else, because they are the two things about a wage sync that need a decision:
-// somebody to classify, or a rate to confirm. Unchanged and skipped rows are
-// counted and not listed.
+// New arrivals ride in the same digest as everything else, because they are the
+// one thing about this step that needs a decision: somebody to set up. Rows for
+// people the roster already has are counted and not listed.
+//
+// The large-rate-change lines that used to sit here are gone with the rates
+// themselves. They read `from -> to (+N%) — APPLIED and flagged`, and there is
+// no longer anything to apply.
 function describeWageSync(sync) {
   if (!sync) return [];
   const lines = [];
 
   if (sync.failed || (sync.errors && sync.errors.length)) {
-    lines.push(`  WAGE SYNC FAILED — the hours are imported, the rates are NOT:`);
+    lines.push(`  ARRIVAL CHECK FAILED — the hours are imported, the new people are NOT:`);
     for (const err of sync.errors || [sync.error]) lines.push(`    ${err}`);
   }
 
   for (const create of sync.created || []) {
+    // NO RATE IN THIS SENTENCE. It used to read `at ${rate}/hr` from
+    // create.rate, which the plan no longer carries — Number(undefined) is NaN,
+    // so the alert would have told somebody a new hire was hired at NaN/hr.
+    // What they need to know is the opposite: that there is no rate yet.
     lines.push(
-      `  NEW EMPLOYEE — Emp # ${create.employeeNumber} ${create.name || '(no name)'} ` +
-      `at ${Number(create.rate).toFixed(2)}/hr, created from the file with no department, ` +
-      `cost class or position group. Their cost is landing nowhere until they are set up.`
-    );
-  }
-
-  for (const change of sync.flagged || []) {
-    lines.push(
-      `  LARGE RATE CHANGE — Emp # ${change.employeeNumber} ${change.name || '(no name)'}: ` +
-      `${change.from === null ? 'no rate' : Number(change.from).toFixed(2)} -> ` +
-      `${Number(change.to).toFixed(2)}` +
-      `${change.changePct === null ? '' : ` (${change.changePct > 0 ? '+' : ''}${change.changePct}%)`}` +
-      ` — APPLIED and flagged. Confirm it is a real raise.`
+      `  NEW EMPLOYEE — Emp # ${create.employeeNumber} ${create.name || '(no name)'}, ` +
+      `created from the file with NO PAY RATE and no department, cost class or ` +
+      `position group. Set their rate on Salaries & Wages — until somebody does, ` +
+      `their cost cannot be computed at all.`
     );
   }
 

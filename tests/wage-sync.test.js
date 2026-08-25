@@ -449,7 +449,6 @@ function fakeWriters(overrides = {}) {
   const calls = [];
   const writers = {
     insertWageHistory: async rows => { calls.push(['history', rows[0]]); return rows; },
-    updateEmployeeWage: async (id, wage) => { calls.push(['update', id, wage]); return [{ id, wage }]; },
     createEmployee: async row => {
       calls.push(['create', row]);
       return { id: `new-${row.employee_number}`, ...row };
@@ -523,11 +522,35 @@ test('a failed create blocks the setup task that references it', async () => {
   assert.strictEqual(applied.blocked.length, 1);
 });
 
+test('the import has no way to write a rate at all', async () => {
+  // Not "does not currently write one" — HAS NO WAY TO. payroll-db reached
+  // employees.wage with the service key, which no permission gate touches, and
+  // ran every morning off the file. The writer is deleted, not merely unused:
+  // employees.wage is typed in the app now, and the app records a wage_history
+  // row before it writes the rate, which this path never could.
+  const payrollDb = require('../netlify/functions/payroll-db');
+  assert.strictEqual(payrollDb.updateEmployeeWage, undefined,
+    'the service-key rate writer is back');
+
+  // And the applier cannot be talked into one by a plan that carries the op
+  // shape the deleted branch used to handle.
+  const { calls, writers } = fakeWriters();
+  const applied = await applyWageSync({
+    workDate: '2026-08-25',
+    ops: [{ kind: 'update', employeeNumber: '0319',
+            update: { employeeId: 'e1', to: 99.99, from: 24.5, flagged: true } }],
+    skipped: {}
+  }, writers);
+
+  assert.deepStrictEqual(calls, [], 'an update op wrote something');
+  assert.deepStrictEqual(applied.flagged, []);
+  assert.deepStrictEqual(applied.errors, []);
+});
+
 test('a plan with nothing in it makes no requests at all', async () => {
   const { calls, writers } = fakeWriters();
   const applied = await applyWageSync(plan([fileRow('0319', 24.50)]), writers);
   assert.deepStrictEqual(calls, []);
-  assert.strictEqual(applied.ratesUpdated, 0);
   assert.strictEqual(applied.historyWritten, 0);
   assert.deepStrictEqual(applied.errors, []);
   assert.strictEqual(applied.skipped.unchanged, 1);

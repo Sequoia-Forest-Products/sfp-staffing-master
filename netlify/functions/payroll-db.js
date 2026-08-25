@@ -499,8 +499,13 @@ async function restampDepartments(fromDate, toDate) {
 // key does not bypass it: there is no PATCH and no DELETE here, and there never
 // can be. A correction is a new row.
 
-// One POST per call, chunked only against a bulk back-fill. A normal day moves
-// a handful of rates.
+// One POST per call, chunked only against a bulk back-fill.
+//
+// Nothing in the import emits a history row any more — the file carries no rate
+// to record. This is kept, unlike updateEmployeeWage above, because it only
+// APPENDS to an append-only table: it cannot overwrite anything, and a back-fill
+// that ever needs to record observed rates has somewhere to go. The app's own
+// edits do not come through here; data.js writes them directly.
 async function insertWageHistory(rows) {
   const list = (rows || []).filter(Boolean);
   if (!list.length) return [];
@@ -512,13 +517,18 @@ async function insertWageHistory(rows) {
   return written;
 }
 
-// employees.wage is TEXT, holding either an hourly rate or the literal string
-// 'Salary'. Only ever called after the matching wage_history row is safely in.
-async function updateEmployeeWage(employeeId, wage) {
-  const id = String(employeeId || '').trim();
-  if (!id) throw new Error('updateEmployeeWage needs an employee id');
-  return requestRows('PATCH', `employees?id=eq.${encode(id)}`, { body: { wage } });
-}
+// THE IMPORT HAS NO WAY TO WRITE A RATE, and that is the point.
+//
+// updateEmployeeWage lived here. It PATCHed employees.wage with the service
+// key, which no permission gate touches, and it ran every morning off the daily
+// file. It is gone with the rate it wrote — the file's Pay Rate was a hand
+// transcription nobody maintains, and employees.wage is now typed in the app.
+//
+// Deleted rather than left unreachable. Nothing emits the op that called it, so
+// it was dead either way; but a service-key writer for the one column the app
+// now owns is not the kind of dead code to keep around, and the wage edit in
+// data.js records a wage_history row BEFORE it writes the rate, which this
+// never could from here.
 
 async function createEmployee(row) {
   const rows = await requestRows('POST', 'employees', { body: row });
@@ -546,10 +556,6 @@ async function upsertSetupTask(row) {
   return Array.isArray(rows) ? rows[0] || null : rows;
 }
 
-// employees.wage as text. Two decimals so the column reads like the rest of the
-// roster ('24.50'), which humans do still look at.
-const wageText = rate => Number(rate).toFixed(2);
-
 // Apply a plan from wage-sync.planWageSync(). Walks plan.ops in order, because
 // the order is the safety property: the history row for a change goes in before
 // the employees.wage write that makes the old rate unrecoverable, and a created
@@ -574,7 +580,6 @@ const wageText = rate => Number(rate).toFixed(2);
 async function applyWageSync(plan, writers = {}) {
   const w = {
     insertWageHistory:  writers.insertWageHistory  || insertWageHistory,
-    updateEmployeeWage: writers.updateEmployeeWage || updateEmployeeWage,
     createEmployee:     writers.createEmployee     || createEmployee,
     upsertSetupTask:    writers.upsertSetupTask    || upsertSetupTask
   };
@@ -583,9 +588,11 @@ async function applyWageSync(plan, writers = {}) {
     workDate: (plan && plan.workDate) || null,
     thresholdPct: plan && plan.thresholdPct !== undefined ? plan.thresholdPct : null,
     created: [],
-    ratesUpdated: 0,
     historyWritten: 0,
     setupTasks: 0,
+    // Always empty now: nothing plans a rate change, so nothing can be a large
+    // one. Kept in the shape rather than removed so a caller reading it gets an
+    // empty list instead of undefined.
     flagged: [],
     skipped: (plan && plan.skipped) || null,
     errors: [],
@@ -618,9 +625,10 @@ async function applyWageSync(plan, writers = {}) {
           name: op.create.name,
           employee_number: op.create.employeeNumber,
           // NULL. The plan carries no rate any more — the file's was a
-          // transcription nobody maintains — and wageText(undefined) is the
-          // string "NaN", which would go into employees.wage and read as a rate
-          // to anything that looked at it. Caught by the applier's own test.
+          // transcription nobody maintains — and the two-decimal helper this
+          // used to call returns the string "NaN" for undefined, which would go
+          // into employees.wage and read as a rate to anything that looked at
+          // it. Caught by the applier's own test.
           wage: null,
           status: 'Active',
           // The bullpen, spelled out rather than left to the column defaults:
@@ -635,11 +643,6 @@ async function applyWageSync(plan, writers = {}) {
       } else if (op.kind === 'history') {
         await w.insertWageHistory([withId(op.row)]);
         applied.historyWritten++;
-
-      } else if (op.kind === 'update') {
-        await w.updateEmployeeWage(op.update.employeeId, wageText(op.update.to));
-        applied.ratesUpdated++;
-        if (op.update.flagged) applied.flagged.push(op.update);
 
       } else if (op.kind === 'setupTask') {
         await w.upsertSetupTask(withId(op.row));
@@ -715,7 +718,6 @@ module.exports = {
   // Wage sync writers, plus the applier that orders them. The decisions live in
   // wage-sync.js; nothing here decides anything.
   insertWageHistory,
-  updateEmployeeWage,
   createEmployee,
   upsertSetupTask,
   applyWageSync,
