@@ -242,7 +242,13 @@ test('vendor fixture: buildImport reads it end to end with no anomalies', () => 
   const sum = (key) => Math.round(result.rows.reduce((t, r) => t + r[key], 0) * 100) / 100;
   assert.strictEqual(result.totals.regularHours, sum('regular_hours'));
   assert.strictEqual(result.totals.otHours, sum('ot_hours'));
-  assert.strictEqual(result.totals.totalEarnings, sum('total_earnings'));
+  assert.strictEqual(result.totals.totalHours, sum('total_hours'));
+  // No money, on a real vendor file. The columns are in the sheet and are read
+  // past — every row comes out with them null, which is what "the feed is hours
+  // only" has to mean against the actual thing BBSI sends.
+  assert.ok(result.rows.every(r => r.total_earnings === null && r.pay_rate === null
+                                && r.ot_dollars === null && r.regular_dollars === null),
+    'the vendor file carries money and none of it is stored');
 });
 
 test('vendor fixture: the file hash is stable across reads', () => {

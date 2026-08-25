@@ -1565,7 +1565,7 @@ function indexRow(date) {
   return { work_date: date, total_hours: 10, total_earnings: 280 };
 }
 
-test('the week index reads three columns, newest first, and proves it saw them all', async () => {
+test('the week index reads TWO columns, newest first, and proves it saw them all', async () => {
   const { res, body, urls, detailCalls } = await runReport({
     pageFor: (url) => fakePage([indexRow(windowEnd(url)), indexRow(windowEnd(url)), indexRow(windowEnd(url))],
                                '0-2/3'),
@@ -1587,7 +1587,7 @@ test('the week index reads three columns, newest first, and proves it saw them a
 
   // A narrow projection, not every column of every row.
   assert.strictEqual(urls.length, 1, 'an exact count that matches needs no second page');
-  assert.match(urls[0], /select=work_date,total_hours,total_earnings/);
+  assert.match(urls[0], /select=work_date,total_hours(?!,)/);
   assert.ok(!/pay_rate|total_earnings,ot_dollars/.test(urls[0].split('&')[0]),
     'the week index must not pull the payroll detail columns');
   // Descending, so a server-side cap would drop the OLDEST rows, never the week

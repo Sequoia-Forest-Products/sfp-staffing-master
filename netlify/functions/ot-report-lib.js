@@ -1,6 +1,18 @@
 // Weekly overtime report — pure aggregation.
 //
-// No network, no database, no npm dependencies: every input is passed in, so
+// EVERY DOLLAR HERE IS OURS NOW. Until 2026-08-22 this report took ot_dollars
+// and total_earnings straight from daily_hours — the vendor file's own money,
+// computed from a pay rate a human at BBSI re-keyed into Timenet so this feed
+// could exist. Nobody maintains that rate there any more, so the file carries
+// hours and nothing else, and the money is recomputed from employees.wage with
+// the overtime premium from pay-rules-lib.
+//
+// One consequence, stated because it is not obvious: a rate change re-prices
+// history. Give somebody a raise and last month's report moves. wage_history
+// records effective dates, so pricing each week at the rate in force that week
+// is buildable later without new schema — it is deliberately not done here.
+//
+// No network, no database, and one local dependency: every input is passed in, so
 // tests/ot-report.test.js drives exactly the same code that /api/payroll-report
 // runs (netlify/functions/payroll-report.js fetches the rows and calls
 // buildReport). Keeping the arithmetic here and the I/O there is the same split
@@ -95,6 +107,8 @@ const OT_TYPES    = ['Pre-Shift', 'Post-Shift', 'Weekend'];
 // Pre-approved dollars use a flat 1.5x. Unlike imported ot_dollars (which is the
 // residual of the payroll system's own blended Total Earnings) there is no
 // authoritative dollar figure for an allowance, so 1.5x is the stated estimate.
+const { dayPay } = require('./pay-rules-lib');
+
 const PRE_APPROVED_MULTIPLIER = 1.5;
 
 // The timeclock grace policy, in hours per active hourly employee per week.
@@ -328,8 +342,14 @@ function newBlock() {
 function addRow(block, row) {
   block.hours     += row.hours;
   block.otHours   += row.otHours;
-  block.otDollars += row.otDollars;
-  block.earnings  += row.earnings;
+  block.otDollars += num(row.otDollars);
+  // num() because a row with no rate carries null money, not zero. The
+  // established contract is unchanged — the dollars are honestly 0 and the
+  // person is named in rateMissing rather than being given an invented rate —
+  // but `+= null` would arrive at the same place by accident rather than on
+  // purpose, and would stop doing so the day somebody switches to a sum that
+  // propagates null.
+  block.earnings  += num(row.earnings);
   block.people.add(row.key);
 }
 
@@ -480,9 +500,18 @@ function buildReport({
       // a true here is the week's own evidence that this person is not hourly.
       isSalary: isYes(raw.is_salary),
       otHours: num(raw.ot_hours),
-      otDollars: num(raw.ot_dollars),
-      earnings: num(raw.total_earnings),
-      payRate: toRate(raw.pay_rate),
+      // COMPUTED, not read. The file's ot_dollars and total_earnings are null
+      // on every row imported since the feed became hours-only, and were a
+      // transcribed rate's output before that. dayPay applies the daily premium
+      // tiers — 1.5x from 10 to 12 hours, 2.0x above — to OUR rate.
+      //
+      // Null when there is no rate on file, never zero: that person is named in
+      // rateMissing below, and a zero would fold into the totals and understate
+      // them without saying so.
+      ...(() => {
+        const pay = dayPay(num(raw.regular_hours), num(raw.ot_hours), toRate(rosterEmp && rosterEmp.wage));
+        return { otDollars: pay.otDollars, earnings: pay.earnings, payRate: pay.rate };
+      })(),
       flags: Array.isArray(raw.flags) ? raw.flags.filter(Boolean) : [],
       source: cleanText(raw.source),
       dateSource: cleanText(raw.date_source)
@@ -499,9 +528,6 @@ function buildReport({
         name: '',
         onRoster: false,
         departmentHours: new Map(), // department -> hours, to pick the dominant one
-        payRate: null,          // highest rate seen this week (the standing allowance's rule)
-        latestRate: null,       // rate on the most recent row this week (the grace rule)
-        latestRateDate: null,
         isSalary: false,
         scheduled: newBlock(),
         nonScheduled: newBlock(),
@@ -526,20 +552,12 @@ function buildReport({
     person.hasHoursThisWeek = true;
     person.departmentHours.set(row.department, (person.departmentHours.get(row.department) || 0) + row.hours);
     if (row.isSalary) person.isSalary = true;
-    if (row.payRate !== null) {
-      person.payRate = Math.max(person.payRate || 0, row.payRate);
-      // ...and, separately, the rate on the LATEST row of the week: a rate that
-      // changed mid-week should grace the hours at what the person is being paid
-      // now, not at the best rate they were on at any point. Two rows on the same
-      // date are settled by taking the higher, so the answer does not depend on
-      // the order the rows arrived in.
-      if (person.latestRateDate === null || row.date > person.latestRateDate) {
-        person.latestRateDate = row.date;
-        person.latestRate = row.payRate;
-      } else if (row.date === person.latestRateDate) {
-        person.latestRate = Math.max(person.latestRate, row.payRate);
-      }
-    }
+    // The per-week rate reconciliation that used to live here is gone with the
+    // rates it reconciled. It picked the highest rate seen in the week for the
+    // standing allowance and the most recent one for the clock grace, because
+    // daily_hours carried a rate per row that could move mid-week. It cannot
+    // now: every row of a person prices at the one employees.wage holds, so
+    // "highest" and "most recent" are the same number as "the rate".
     addRow(row.isScheduledDay ? person.scheduled : person.nonScheduled, row);
     person.days.add(row.date);
     if (!row.isScheduledDay) person.nonScheduledDays.add(row.date);
@@ -642,17 +660,13 @@ function buildReport({
       ? worked.department
       : (rosterEmp ? departmentBucket(rosterEmp.department) : UNASSIGNED);
 
-    // Rate: the highest pay_rate seen in daily_hours this week, else the
-    // roster wage, else nothing — in which case the dollars are honestly 0 and
-    // the name is reported in rateMissing instead of being invented.
-    let rate = hasHours ? worked.payRate : null;
-    let rateSource = 'none';
-    if (rate) {
-      rateSource = 'daily_hours';
-    } else {
-      rate = toRate(rosterEmp && rosterEmp.wage);
-      if (rate) rateSource = 'employees.wage';
-    }
+    // Rate: ours. It used to be the highest pay_rate seen in daily_hours this
+    // week, falling back to the roster — but daily_hours no longer carries one,
+    // and the transcribed rate that used to be there is exactly what
+    // employees.wage replaced. Nothing, in which case the dollars are honestly
+    // 0 and the name is reported in rateMissing instead of being invented.
+    const rate = toRate(rosterEmp && rosterEmp.wage);
+    const rateSource = rate ? 'employees.wage' : 'none';
 
     const dollars = rate ? round2(hours * rate * PRE_APPROVED_MULTIPLIER) : 0;
 
@@ -768,18 +782,14 @@ function buildReport({
       // figure and the OT it offsets have to land in the same bucket.
       const department = hasHours ? worked.department : departmentBucket(emp.department);
 
-      // Rate: the most recent daily_hours rate inside the reported week, else
-      // the roster wage. Neither one means the HOURS still count and the dollars
-      // are honestly zero — with the name reported, because a zero contributed
-      // silently is a number nobody can audit afterwards.
-      let rate = hasHours ? worked.latestRate : null;
-      let rateSource = 'none';
-      if (rate) {
-        rateSource = 'daily_hours';
-      } else {
-        rate = toRate(emp.wage);
-        if (rate) rateSource = 'employees.wage';
-      }
+      // Rate: ours, the same single answer the worked-hours branch above uses.
+      // It used to prefer the most recent daily_hours rate inside the week; that
+      // column is empty now and the rate that used to be in it is the one
+      // employees.wage replaced. No rate means the HOURS still count and the
+      // dollars are honestly zero — with the name reported, because a zero
+      // contributed silently is a number nobody can audit afterwards.
+      const rate = toRate(emp.wage);
+      const rateSource = rate ? 'employees.wage' : 'none';
       graceByRateSource[rateSource]++;
 
       const hours   = gracePerEmployee;
@@ -870,8 +880,8 @@ function buildReport({
       };
       w.hours     += row.hours;
       w.otHours   += row.otHours;
-      w.otDollars += row.otDollars;
-      w.earnings  += row.earnings;
+      w.otDollars += num(row.otDollars);
+      w.earnings  += num(row.earnings);
       workers.set(row.key, w);
     }
 

@@ -147,7 +147,10 @@ const DAILY_COLUMNS = [
 // report scans covers ~17,000 rows at a full mill, and pulling all 23
 // daily_hours columns for every one of them just to list the weeks that have
 // data is most of a megabyte of payroll detail nobody reads.
-const DAILY_INDEX_COLUMNS = 'work_date,total_hours,total_earnings';
+// Hours only. total_earnings came off this list when the feed stopped being
+// read for money: it is null on every row imported since, and summing nulls
+// would have given the week picker a confident $0.00 per week.
+const DAILY_INDEX_COLUMNS = 'work_date,total_hours';
 
 // One page of the window scan. Big enough that a normal window is one request,
 // small enough to stay well inside any proxy's response limits.

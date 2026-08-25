@@ -307,7 +307,6 @@ async function days(body) {
         employees: 0,
         totalHours: 0,
         otHours: 0,
-        totalEarnings: 0,
         source: row.source || null,
         dateSource: row.date_source || null,
         uploadBatchId: row.upload_batch_id || null,
@@ -322,7 +321,6 @@ async function days(body) {
     day.rowCount++;
     day.totalHours += Number(row.total_hours) || 0;
     day.otHours += Number(row.ot_hours) || 0;
-    day.totalEarnings += Number(row.total_earnings) || 0;
     day._employees.add(row.employee_number);
     if (Array.isArray(row.flags) && row.flags.length) day.flagCount++;
     if (!row.department) day.unassignedCount++;
@@ -340,7 +338,7 @@ async function days(body) {
       employees: _employees.size,
       totalHours: Math.round(rest.totalHours * 100) / 100,
       otHours: Math.round(rest.otHours * 100) / 100,
-      totalEarnings: Math.round(rest.totalEarnings * 100) / 100
+      /* no money: the feed is hours only */
     };
   }).sort((a, b) => (a.workDate < b.workDate ? 1 : a.workDate > b.workDate ? -1 : 0));
 

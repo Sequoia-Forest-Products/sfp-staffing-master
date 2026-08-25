@@ -126,12 +126,11 @@ function summarizeWeeks(rows, { weekStartFor, weekDates }) {
       dates: new Set(),
       rows: 0,
       totalHours: 0,
-      totalEarnings: 0
+      /* no money: the feed is hours only */
     };
     week.dates.add(date);
     week.rows += 1;
     week.totalHours += num(row.total_hours);
-    week.totalEarnings += num(row.total_earnings);
     weeks.set(weekStart, week);
   }
 
@@ -143,7 +142,7 @@ function summarizeWeeks(rows, { weekStartFor, weekDates }) {
       days: w.dates.size,
       rows: w.rows,
       totalHours: round2(w.totalHours),
-      totalEarnings: round2(w.totalEarnings)
+      /* no money: the feed is hours only */
     }));
 }
 

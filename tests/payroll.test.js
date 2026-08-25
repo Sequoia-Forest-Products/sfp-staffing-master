@@ -232,7 +232,7 @@ test('a salaried row carrying real hours is skipped too, and reported as an anom
   // failure this catches. 40 hours and 400 dollars are nowhere.
   assert.deepStrictEqual(result.totals, {
     regularHours: 0, otHours: 0, totalHours: 0,
-    totalEarnings: 0, regularDollars: 0, otDollars: 0
+    /* money removed: this import no longer reads it */
   });
   assert.deepStrictEqual(result.departments, []);
   assert.deepStrictEqual(result.sample, []);
@@ -257,15 +257,11 @@ test('a salaried row with hours contributes nothing to a department the hourly r
   assert.strictEqual(result.totals.totalHours, 10);
   assert.strictEqual(result.totals.regularHours, 10);
   assert.strictEqual(result.totals.otHours, 0);
-  assert.strictEqual(result.totals.totalEarnings, 245);
-  assert.strictEqual(result.totals.regularDollars, 245);
-  assert.strictEqual(result.totals.otDollars, 0);
 
   assert.deepStrictEqual(result.departments.map(d => d.department), ['Production']);
   const production = result.departments[0];
   assert.strictEqual(production.employees, 1);
   assert.strictEqual(production.totalHours, 10);
-  assert.strictEqual(production.totalEarnings, 245);
 
   assert.ok(result.anomalies.some(a => a.type === 'salaried_with_hours' && a.employeeNumber === '9002'));
 });
@@ -282,66 +278,74 @@ test('a pre-parsed sheet can be imported directly, and then there is no file has
 });
 
 // ============================================================
-// Dollars — the residual, not a 1.5x formula
+// The file's money is not read at all
 // ============================================================
+//
+// Until 2026-08-22 this import stored Pay Rate and Total Earnings and derived
+// ot_dollars as the residual (total_earnings - regular_hours * pay_rate). That
+// inherited California's premium structure for free.
+//
+// It is gone, because the rate it rested on was a human transcription: somebody
+// at BBSI re-keyed it from BBSI's payroll system into Timenet so this feed could
+// exist, and the earnings were computed from that re-keyed number. Nobody
+// maintains it there any more. employees.wage is the record of truth, every
+// dollar is our rate times these hours, and the premium is computed in
+// pay-rules-lib where the tiers are written down.
 
-test('OT dollars are the residual, which is not the flat 1.5x answer', () => {
-  // 10 regular hours at $30 = $300. The payroll system paid $480 in total, so
-  // $180 is OT — 3 hours that include California double-time above 12 hours.
-  // A flat 1.5x would have said 3 * 30 * 1.5 = $135 and lost $45.
+test('the money columns are stored NULL, and the hours are stored intact', () => {
+  // The same row the residual test used: $30, 10 regular + 3 OT = 13 hours,
+  // $480 claimed. Every money figure in that row is now ignored.
   const result = importFrom([row('0063', 'Smith', 'Ana', 'No', 30, 10, 3, 13, 480)]);
   const r = result.rows[0];
 
-  assert.strictEqual(r.regular_dollars, 300);
-  assert.strictEqual(r.ot_dollars, 180);
-  assert.notStrictEqual(r.ot_dollars, 135);
-  assert.strictEqual(r.total_earnings, 480);      // stored verbatim, never recomputed
-  assert.deepStrictEqual(r.flags, []);
+  // NULL, not 0. A zero would read as "worked for nothing" and would sum into
+  // a total as a confident figure; null says "not recorded", which is true.
+  assert.strictEqual(r.pay_rate, null);
+  assert.strictEqual(r.total_earnings, null);
+  assert.strictEqual(r.ot_dollars, null);
+  assert.strictEqual(r.regular_dollars, null);
 
-  assert.strictEqual(result.totals.regularDollars, 300);
-  assert.strictEqual(result.totals.otDollars, 180);
-  assert.strictEqual(result.totals.totalEarnings, 480);
+  // The hours are Timenet's job and are not in doubt.
+  assert.strictEqual(r.regular_hours, 10);
+  assert.strictEqual(r.ot_hours, 3);
+  assert.strictEqual(r.total_hours, 13);
+  assert.deepStrictEqual(r.flags, []);
 });
 
-test('a few cents of negative residual is rounding noise and clamps to zero', () => {
-  // 10 * 24.50 = 245.00 against total earnings of 244.92: residual -0.08.
-  const result = importFrom([row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 244.92)]);
-  const r = result.rows[0];
+test('the import summary reports hours and no money at all', () => {
+  const result = importFrom([row('0063', 'Smith', 'Ana', 'No', 30, 10, 3, 13, 480)]);
 
-  assert.strictEqual(r.regular_dollars, 245);
-  assert.strictEqual(r.ot_dollars, 0);
-  assert.deepStrictEqual(r.flags, []);
-  assert.strictEqual(result.anomalies.length, 0);
+  assert.deepStrictEqual(Object.keys(result.totals).sort(), ['otHours', 'regularHours', 'totalHours']);
+  assert.strictEqual(result.totals.totalHours, 13);
+  // Summing the now-null columns would have produced a confident $0.00, which a
+  // reader cannot tell apart from a day nobody was paid. No figure is better
+  // than a wrong one.
+  assert.ok(!('totalEarnings' in result.totals));
+  assert.ok(!('otDollars' in result.totals));
+  assert.ok(!('regularDollars' in result.totals));
+  for (const d of result.departments) {
+    assert.ok(!('totalEarnings' in d), 'no money on a department bucket either');
+    assert.ok(!('otDollars' in d));
+  }
 });
 
-test('a dollar-scale negative residual keeps its value and is flagged', () => {
-  // 10 * 24.50 = 245.00 against total earnings of 240.00: residual -5.00.
+test('a disagreement between the file\'s own money figures is no longer an anomaly', () => {
+  // 10 x 24.50 = 245.00 against total earnings of 240.00 used to be a
+  // negative_residual flag. It compared two numbers this import no longer
+  // trusts, so their disagreeing says nothing about anything.
   const result = importFrom([row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 240)]);
-  const r = result.rows[0];
-
-  assert.strictEqual(r.regular_dollars, 245);
-  assert.strictEqual(r.ot_dollars, -5);
-  assert.ok(r.flags.includes('negative_residual'));
-  assert.ok(result.anomalies.some(a => a.type === 'negative_residual' && a.employeeNumber === '0319'));
-});
-
-test('the clamp boundary is exactly -1.00', () => {
-  const atBoundary = importFrom([row('0319', 'A', 'B', 'No', 10, 10, 0, 10, 99)]);      // residual -1.00
-  assert.strictEqual(atBoundary.rows[0].ot_dollars, 0);
-  assert.deepStrictEqual(atBoundary.rows[0].flags, []);
-
-  const pastBoundary = importFrom([row('0319', 'A', 'B', 'No', 10, 10, 0, 10, 98.99)]); // residual -1.01
-  assert.strictEqual(pastBoundary.rows[0].ot_dollars, -1.01);
-  assert.ok(pastBoundary.rows[0].flags.includes('negative_residual'));
+  assert.deepStrictEqual(result.rows[0].flags, []);
+  assert.strictEqual(result.anomalies.length, 0);
+  assert.ok(!JSON.stringify(result).includes('negative_residual'));
 });
 
 test('dollars and hours arrive as text with currency formatting without breaking', () => {
   const result = importFrom([row('0063', 'Smith', 'Ana', 'No', ' $30.00 ', '10', '3', '13', '$1,480.00')]);
   const r = result.rows[0];
-  assert.strictEqual(r.pay_rate, 30);
+  assert.strictEqual(r.pay_rate, null, 'parsed from the file, then deliberately not stored');
   assert.strictEqual(r.regular_hours, 10);
-  assert.strictEqual(r.total_earnings, 1480);
-  assert.strictEqual(r.ot_dollars, 1180);
+  assert.strictEqual(r.total_earnings, null);
+  assert.strictEqual(r.ot_dollars, null);
   assert.deepStrictEqual(r.flags, []);
 });
 
@@ -450,12 +454,10 @@ test('the department snapshot comes from the roster, and gaps are visible rather
   const unassigned = result.departments.find(d => d.department === 'Unassigned');
   assert.strictEqual(unassigned.employees, 2);
   assert.strictEqual(unassigned.totalHours, 20);
-  assert.strictEqual(unassigned.totalEarnings, 420);
 
   // Nothing was quietly filed under a real department.
   const production = result.departments.find(d => d.department === 'Production');
   assert.strictEqual(production.employees, 1);
-  assert.strictEqual(production.totalEarnings, 245);
 });
 
 test('SG&A is assignable but is not one of the production departments', () => {
@@ -522,7 +524,7 @@ test('an SG&A employee imports normally and sorts after the production departmen
   assert.strictEqual(nora.department.length, 4);
   assert.strictEqual(nora.department.indexOf('&'), 2);
   assert.deepStrictEqual(nora.flags, []);
-  assert.strictEqual(nora.ot_dollars, 46.5);          // 356.50 - 10 x 31.00
+  assert.strictEqual(nora.ot_dollars, null);
   assert.deepStrictEqual(result.unmatched, []);
   assert.deepStrictEqual(result.missingDepartment,
     [{ employeeNumber: '0884', name: 'Rosa Salazar De Leon' }]);
@@ -533,7 +535,7 @@ test('an SG&A employee imports normally and sorts after the production departmen
   assert.strictEqual(cliff.department, 'Clean-up');
   assert.deepStrictEqual(cliff.flags, []);
   assert.strictEqual(cliff.total_hours, 8);
-  assert.strictEqual(cliff.total_earnings, 168);
+  assert.strictEqual(cliff.total_earnings, null);
 
   // Log Yard and Clean-up are ordinary production departments and keep their
   // canonical positions; SG&A follows all of them; the legacy 'Kiln' comes after
@@ -543,28 +545,22 @@ test('an SG&A employee imports normally and sorts after the production departmen
   const logYard = result.departments.find(d => d.department === 'Log Yard');
   assert.strictEqual(logYard.employees, 1);
   assert.strictEqual(logYard.totalHours, 9);
-  assert.strictEqual(logYard.totalEarnings, 234);
   assert.deepStrictEqual(result.rows.find(r => r.employee_number === '0412').flags, []);
 
   const cleanup = result.departments.find(d => d.department === 'Clean-up');
   assert.strictEqual(cleanup.employees, 1);
   assert.strictEqual(cleanup.totalHours, 8);
-  assert.strictEqual(cleanup.totalEarnings, 168);
 
   const np = result.departments.find(d => d.department === 'SG&A');
   assert.strictEqual(np.employees, 1);
   assert.strictEqual(np.regularHours, 10);
   assert.strictEqual(np.otHours, 1);
   assert.strictEqual(np.totalHours, 11);
-  assert.strictEqual(np.totalEarnings, 356.5);
-  assert.strictEqual(np.otDollars, 46.5);
 
   // Nothing was folded into a production department, and the breakdown still ties.
   assert.strictEqual(result.departments.find(d => d.department === 'Production').totalHours, 10);
   const sum = key => round2(result.departments.reduce((a, d) => a + d[key], 0));
   assert.strictEqual(sum('totalHours'), result.totals.totalHours);
-  assert.strictEqual(sum('totalEarnings'), result.totals.totalEarnings);
-  assert.strictEqual(sum('otDollars'), result.totals.otDollars);
 });
 
 test("an SG&A employee's ampersand survives the whole round trip, sample included", () => {
@@ -629,8 +625,6 @@ test('the department breakdown adds up to the totals', () => {
   assert.strictEqual(sum('regularHours'), result.totals.regularHours);
   assert.strictEqual(sum('otHours'), result.totals.otHours);
   assert.strictEqual(sum('totalHours'), result.totals.totalHours);
-  assert.strictEqual(sum('totalEarnings'), result.totals.totalEarnings);
-  assert.strictEqual(sum('otDollars'), result.totals.otDollars);
 
   const employees = result.departments.reduce((a, d) => a + d.employees, 0);
   assert.strictEqual(employees, result.counts.imported);
@@ -654,7 +648,7 @@ test('header aliases and stray whitespace are tolerated', () => {
   assert.strictEqual(result.counts.imported, 1);
   assert.strictEqual(result.rows[0].employee_number, '0063');
   assert.strictEqual(result.rows[0].ot_hours, 3);
-  assert.strictEqual(result.rows[0].ot_dollars, 180);
+  assert.strictEqual(result.rows[0].ot_dollars, null);
 });
 
 test('a missing required column names the column and lists what was found', () => {
@@ -712,13 +706,13 @@ test('rows come out as daily_hours columns, ready to POST', () => {
     last_name: 'Acosta Ruiz',
     first_name: 'Miguel',
     is_salary: false,
-    pay_rate: 24.5,
+    pay_rate: null,
     regular_hours: 10,
     ot_hours: 2.5,
     total_hours: 12.5,
-    total_earnings: 336.88,
-    ot_dollars: 91.88,
-    regular_dollars: 245,
+    total_earnings: null,
+    ot_dollars: null,
+    regular_dollars: null,
     department: 'Production',
     source: 'email',
     source_subject: 'Work Summary Payroll',
@@ -751,7 +745,6 @@ test('a header-only file imports nothing rather than throwing', () => {
   assert.strictEqual(result.counts.imported, 0);
   assert.deepStrictEqual(result.rows, []);
   assert.deepStrictEqual(result.departments, []);
-  assert.strictEqual(result.totals.totalEarnings, 0);
 });
 
 test('buildImport refuses to run on nothing at all', () => {
@@ -1272,7 +1265,7 @@ test('a Prefer set by the caller survives, with the count appended', async (t) =
     'resolution=merge-duplicates,return=representation,count=exact');
 });
 
-test('fetchDailyHoursIndex reads three columns, newest first, one counted page', async (t) => {
+test('fetchDailyHoursIndex reads TWO columns, newest first, one counted page', async (t) => {
   const calls = stubFetchWithHeaders(t, () => ({
     rows: [{ work_date: '2026-08-17', total_hours: 10, total_earnings: 280 }],
     contentRange: '0-9/17384'
@@ -1281,7 +1274,7 @@ test('fetchDailyHoursIndex reads three columns, newest first, one counted page',
   const page = await payrollDb.fetchDailyHoursIndex('2025-07-14', '2026-08-23', { offset: 0, limit: 5000 });
 
   assert.strictEqual(calls.length, 1);
-  assert.match(calls[0].url, /select=work_date,total_hours,total_earnings/);
+  assert.match(calls[0].url, /select=work_date,total_hours(?!,)/);
   assert.ok(!/pay_rate|ot_dollars|employee_number/.test(calls[0].url),
     'the index must not drag the payroll detail columns through the window scan');
   // Descending, so a server-side row cap drops the OLDEST weeks, never the one

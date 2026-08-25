@@ -72,9 +72,6 @@ const ASSIGNABLE_DEPARTMENTS = [...DEPARTMENTS, NON_PRODUCTION];
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-// A residual this small is float noise or the payroll system's own rounding,
-// not a disagreement worth a human's attention.
-const RESIDUAL_TOLERANCE = 1.00;
 
 // More than a week between the work date and today means somebody is entering
 // history — legitimate, but worth saying out loud before it is committed.
@@ -301,9 +298,7 @@ function emptyDepartmentBucket(department) {
     employees: 0,
     regularHours: 0,
     otHours: 0,
-    totalHours: 0,
-    totalEarnings: 0,
-    otDollars: 0
+    totalHours: 0
   };
 }
 
@@ -445,9 +440,12 @@ function buildImport({
     }
 
     const isSalary = coerceSalaryFlag(cell(record, 'Is Salary'));
+    // Hours only. This decides whether a SKIPPED salaried row is worth
+    // reporting as an anomaly, and earnings is no longer a fact this import
+    // holds an opinion about.
     const hasActivity =
       numbers.regularHours !== 0 || numbers.otHours !== 0 ||
-      numbers.totalHours !== 0 || numbers.totalEarnings !== 0;
+      numbers.totalHours !== 0;
 
     // Salaried people are outside this flow entirely. EVERY salaried row is
     // dropped, unconditionally, whatever it carries — pay rate, hours,
@@ -482,24 +480,24 @@ function buildImport({
 
     // total_earnings is the payroll system's blended figure and is stored
     // verbatim. ot_dollars is what remains once regular hours are paid.
-    const regularDollars = round2(numbers.regularHours * numbers.payRate);
-    const residual = round2(numbers.totalEarnings - regularDollars);
-    let otDollars;
-    if (residual >= 0) {
-      otDollars = residual;
-    } else if (residual >= -RESIDUAL_TOLERANCE) {
-      otDollars = 0;                       // rounding noise, clamped to zero
-    } else {
-      otDollars = residual;                // a real disagreement — keep it visible
-      flags.push('negative_residual');
-      anomalies.push({
-        employeeNumber,
-        name: fileName,
-        type: 'negative_residual',
-        detail: `Total Earnings ${numbers.totalEarnings.toFixed(2)} is ${Math.abs(residual).toFixed(2)} ` +
-                `below Regular x Pay Rate (${regularDollars.toFixed(2)}). Stored as a negative ot_dollars.`
-      });
-    }
+    // THE FILE'S MONEY IS NOT READ, as of 2026-08-22. Pay Rate, Total Earnings
+    // and the ot_dollars residual derived from them are all gone from this
+    // import.
+    //
+    // The reason is what the rate actually WAS: a human at BBSI re-keyed it from
+    // BBSI's payroll system into Timenet so that this feed could exist. Two
+    // transcriptions from the truth, arriving daily with the authority to
+    // overwrite employees.wage — and its earnings were computed from that same
+    // re-keyed number. Nobody updates the rate in Timenet any more.
+    //
+    // employees.wage is the record of truth now. Every dollar this system
+    // reports is our rate times these hours, with the overtime premium computed
+    // in pay-rules-lib. The hours are still the file's and are not in doubt:
+    // that is what Timenet is for.
+    //
+    // The negative_residual anomaly went with it. It compared Total Earnings
+    // against Regular x Pay Rate — two numbers this import no longer trusts, so
+    // their disagreeing says nothing about anything.
 
     const employee = byNumber.get(employeeNumber) || null;
     let department = null;
@@ -525,13 +523,18 @@ function buildImport({
       // Always false: every salaried row was skipped above. Kept because it is
       // a real daily_hours column and historic rows carry true.
       is_salary: isSalary,
-      pay_rate: numbers.payRate,
+      // NULL, not 0. The columns remain (historic rows carry real figures from
+      // when the file was believed) but nothing writes them now, and a zero
+      // would read as "worked for nothing" rather than "not recorded". See
+      // SCHEMA_RATE_OWNED_BY_APP.sql, which makes them nullable for exactly
+      // this reason.
+      pay_rate: null,
       regular_hours: numbers.regularHours,
       ot_hours: numbers.otHours,
       total_hours: numbers.totalHours,
-      total_earnings: numbers.totalEarnings,
-      ot_dollars: otDollars,
-      regular_dollars: regularDollars,
+      total_earnings: null,
+      ot_dollars: null,
+      regular_dollars: null,
       department,
       source,
       source_subject: sourceSubject,
@@ -545,10 +548,11 @@ function buildImport({
 
   // ---- aggregates ----
 
-  const totals = {
-    regularHours: 0, otHours: 0, totalHours: 0,
-    totalEarnings: 0, regularDollars: 0, otDollars: 0
-  };
+  // HOURS ONLY. This import has no opinion about money any more, and summing
+  // the now-null columns would total to a confident $0.00 — worse than not
+  // showing a figure, because a reader has no way to tell it apart from a day
+  // nobody was paid.
+  const totals = { regularHours: 0, otHours: 0, totalHours: 0 };
 
   const buckets = new Map();
   const bucketEmployees = new Map();
@@ -557,9 +561,6 @@ function buildImport({
     totals.regularHours += row.regular_hours;
     totals.otHours += row.ot_hours;
     totals.totalHours += row.total_hours;
-    totals.totalEarnings += row.total_earnings;
-    totals.regularDollars += row.regular_dollars;
-    totals.otDollars += row.ot_dollars;
 
     const key = row.department || UNASSIGNED;
     if (!buckets.has(key)) {
@@ -570,8 +571,6 @@ function buildImport({
     bucket.regularHours += row.regular_hours;
     bucket.otHours += row.ot_hours;
     bucket.totalHours += row.total_hours;
-    bucket.totalEarnings += row.total_earnings;
-    bucket.otDollars += row.ot_dollars;
     bucketEmployees.get(key).add(row.employee_number);
   }
 
@@ -594,7 +593,7 @@ function buildImport({
     const bucket = buckets.get(key);
     if (!bucket) continue;
     bucket.employees = bucketEmployees.get(key).size;
-    for (const field of ['regularHours', 'otHours', 'totalHours', 'totalEarnings', 'otDollars']) {
+    for (const field of ['regularHours', 'otHours', 'totalHours']) {
       bucket[field] = round2(bucket[field]);
     }
     departments.push(bucket);
@@ -605,13 +604,9 @@ function buildImport({
     name: [row.first_name, row.last_name].filter(Boolean).join(' ') || null,
     department: row.department,
     isSalary: row.is_salary,
-    payRate: row.pay_rate,
     regularHours: row.regular_hours,
     otHours: row.ot_hours,
     totalHours: row.total_hours,
-    totalEarnings: row.total_earnings,
-    regularDollars: row.regular_dollars,
-    otDollars: row.ot_dollars,
     flags: row.flags
   }));
 
