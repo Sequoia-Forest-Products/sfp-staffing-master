@@ -72,19 +72,36 @@ async function loadPermissions(){
   }
 }
 
-// The Salaries & Wages tab button lives in app.html with hidden set, because a
-// tab that appears and then vanishes when permissions load is worse than one
-// that appears a moment late.
-// Both tabs behind the salaries tier, hidden together. Listed rather than
-// derived from anything, so adding a gated tab is one edit in one place and
-// forgetting it leaves the tab visible-but-empty rather than silently open.
-const SALARIES_TABS=['salaries','economics'];
+// Both tabs start hidden in app.html, because a tab that appears and then
+// vanishes when permissions load is worse than one that appears a moment late.
+// Which of them stays hidden is decided here.
+//
+// SALARIES & WAGES IS NO LONGER ONE OF THEM. It was, while the whole page was
+// annual salaries; since 2026-08-22 its Hourly section is where every pay rate
+// in the company is typed, and employees.wage is writable at the base tier. A
+// supervisor who cannot set a rate anywhere is a worse failure than a page with
+// one section they cannot see, so the tab opens for everybody and the salaried
+// SECTION is what the tier gates — see renderSalaries.
+//
+// Listed rather than derived, so adding a gated tab is one edit in one place
+// and forgetting it leaves the tab visible-but-empty rather than silently open.
+const SALARIES_TABS=['economics'];
+
+// Shown to everybody the moment permissions resolve, whatever they resolve to.
+// Unhidden HERE rather than left visible in app.html: this function is the one
+// place that decides, and a tab whose visibility is set in two places is a tab
+// that will one day disagree with itself.
+const OPEN_TABS=['salaries'];
 
 function applyTabVisibility(){
   const allowed=canSeeSalaries();
   for(const name of SALARIES_TABS){
     const tab=document.querySelector('.sfp-tab[data-tab="'+name+'"]');
     if(tab) tab.hidden=!allowed;
+  }
+  for(const name of OPEN_TABS){
+    const tab=document.querySelector('.sfp-tab[data-tab="'+name+'"]');
+    if(tab) tab.hidden=false;
   }
   // If they were looking at one when a grant was revoked in another window, do
   // not leave them on a tab that no longer has anything to show.

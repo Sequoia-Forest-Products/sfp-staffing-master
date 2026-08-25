@@ -174,12 +174,18 @@ async function syncToSheet(){
   try{
     for(const e of state.employees){
       const row={
-        // WAGE IS NOT WRITTEN HERE. This loop re-writes every row on the roster,
-        // which made it the worst possible place to send a column the app does not
-        // own: employees.wage comes from BBSI's daily file via
-        // payroll-db.updateEmployeeWage, and one Sync would have stamped the
-        // browser's stale copy over every rate in the table. permissions-lib now
-        // refuses the column on this path as well, for every tier.
+        // WAGE IS NOT WRITTEN HERE, AND THE SERVER NO LONGER STOPS IT.
+        //
+        // This loop re-writes every row on the roster, which makes it the worst
+        // possible place to send a rate. Phase D made that safe by refusing the
+        // column outright; since 2026-08-22 employees.wage is writable at the
+        // base tier, so the only thing keeping one Sync from stamping this
+        // browser's stale copy over every rate in the table — and appending a
+        // wage_history row for each one, saying a rate moved when nobody
+        // touched it — is that this object does not name the column.
+        //
+        // Rates are set on Salaries & Wages, one row at a time, deliberately.
+        // Do not add `wage` here.
         name:e.name,
         pay_type:payTypeOf(e), status:e.status,
         // clock_in and clock_out are deliberately NOT written. Nothing reads them

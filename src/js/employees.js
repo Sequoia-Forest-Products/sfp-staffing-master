@@ -176,7 +176,8 @@ function renderEmployees(){
 // The pay type select. It no longer touches the rate. There is no wage input to
 // clear, and state.editing.wage is now only the value READ from the roster for
 // display — blanking it would make the modal, and then the roster row behind it,
-// show nothing for a rate the database still holds and BBSI still maintains.
+// show nothing for a rate the database still holds and the Salaries & Wages
+// page owns.
 //
 // Flipping somebody to Salaried therefore leaves employees.wage exactly as the
 // import left it. Nothing reads it for a salaried person: isSalaried() consults
@@ -818,7 +819,7 @@ function profileEditBody(e){
         <select onchange="setPayType(this.value)">
           ${PAY_TYPES.map(t=>`<option value="${esc(t)}" ${payTypeOf(e)===t?'selected':''}>${esc(t)}</option>`).join('')}
         </select></div>
-      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Compensation is not editable here. Hourly rates come from the daily payroll file, and salary is entered on the Salaries &amp; Wages page, which does not exist yet. <b>Position group</b> is mill-floor only and is correctly “— none —” for office staff; <b>Position</b> applies to everyone.</div></div>
+      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Compensation is not editable here. Both hourly rates and salaries are set on the <b>Salaries &amp; Wages</b> page, where every rate change is recorded. <b>Position group</b> is mill-floor only and is correctly “— none —” for office staff; <b>Position</b> applies to everyone.</div></div>
 
       <div class="form-group"><label class="form-label">Phone</label>
         <input type="text" value="${esc(e.phone||'')}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
@@ -879,8 +880,9 @@ const profileStyle=`<style>
 // in edit mode; it no longer opens a modal with its own field list.
 //
 // The modal existed because it was the only place an hourly wage could be set.
-// Phase D removed that input — BBSI owns the column and the server refuses it
-// on write — and with it the modal's last reason to be a second field list.
+// Phase D removed that input, and with it the modal's last reason to be a second
+// field list. The rate is editable again since 2026-08-22, but on Salaries &
+// Wages — one surface, where the change is recorded, rather than back here.
 //
 // NOTHING IS LOST IN THE COLLAPSE, which was checked field by field rather than
 // assumed. The card is a strict superset: it has everything the modal had, plus
@@ -910,11 +912,13 @@ async function saveEdit(){
 
   setSyncStatus('saving');
   try{
-    // WAGE IS NOT WRITTEN FROM HERE, in either direction. It is BBSI's column:
-    // payroll-db.updateEmployeeWage sets it from the daily file with the service
-    // key, and permissions-lib refuses it on this path for every tier. So this
-    // save neither sends it nor edits the local copy — e.wage stays whatever the
-    // roster read, and the row behind the modal keeps showing the real rate.
+    // WAGE IS NOT WRITTEN FROM HERE, in either direction. The column is
+    // writable again — permissions-lib allows it at the base tier — but it is
+    // set on Salaries & Wages, which is the one surface that records the change
+    // in wage history. Sending it from this form would append a history row for
+    // a save nobody thought of as a rate change. So this save neither sends it
+    // nor edits the local copy — e.wage stays whatever the roster read, and the
+    // row behind the modal keeps showing the real rate.
     //
     // Pay type IS written, and is the only fact about compensation this form
     // still asserts. Flipping to Salaried no longer nulls the rate: isSalaried()
@@ -1038,16 +1042,16 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Pay type</label><select onchange="setPayType(this.value)">
             ${PAY_TYPES.map(t=>`<option value="${t}" ${payTypeOf(e)===t?'selected':''}>${t}</option>`).join('')}
           </select></div>
-          <!-- READ-ONLY, and deliberately not an input. employees.wage belongs to BBSI:
-               payroll-db.updateEmployeeWage rewrites it from the daily file with the
-               service key, so a rate typed here would be replaced by the next morning's
-               import with nobody told. The server now refuses the column on write too
-               (permissions-lib, EMPLOYEE_WRITABLE_BASE) — a box that 403s on save is
-               worse than no box. The value is still SHOWN, because the question "what is
-               this person paid" is a fair one to ask of an employee record. -->
+          <!-- READ-ONLY, and deliberately not an input. The column IS writable now, by
+               anybody signed in — but on Salaries & Wages, which is the surface that
+               records every change in wage_history. A second box here would let a rate
+               move as a side effect of editing somebody's phone number, and the history
+               row would say it was a rate change. The value is still SHOWN, because
+               "what is this person paid" is a fair question to ask of an employee
+               record. -->
           <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
             <div style="padding:8px 0;font-size:13px;color:var(--text)">${esc(fmtWage(e))}</div></div>
-          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">${salariedHere?'A salaried person has no hourly rate. Their salary is entered on the Salaries &amp; Wages page.':'Hourly rates come from the daily payroll file and are not editable here — the import would overwrite anything typed.'}</div></div>
+          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">${salariedHere?'A salaried person has no hourly rate. Their salary is entered on the Salaries &amp; Wages page.':'Hourly rates are not editable here. They are set on the <b>Salaries &amp; Wages</b> page, where every change is recorded in wage history.'}</div></div>
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
           <!-- The three taxonomy axes: three separate selects, three separate columns,
                and no handler here touches more than its own field. Changing the

@@ -6,10 +6,22 @@
 // attacker and a trap for us — the roster's own Save sent `wage` on every write,
 // so the gate as shipped would have 403'd every save from the Edit modal.
 //
-// `wage` had to go from the client because BBSI owns the column: the daily
-// import writes it through payroll-db.updateEmployeeWage with the service key,
-// which this gate does not touch. Anything typed in the app would have been
+// `wage` had to go from the client because BBSI owned the column: the daily
+// import wrote it through payroll-db.updateEmployeeWage with the service key,
+// which this gate does not touch, so anything typed in the app would have been
 // replaced by the next morning's file, unannounced.
+//
+// THAT REASON EXPIRED ON 2026-08-22 AND THE ASSERTIONS DID NOT. The file's rate
+// was a hand transcription nobody maintains; the import no longer reads it and
+// employees.wage is writable at the base tier. So the gate would now ACCEPT a
+// wage from these writers, and the reason they must still not send one has
+// changed rather than gone away: a rate is set on Salaries & Wages, one row at
+// a time, where the change is recorded in wage_history. A roster Save or a Sync
+// that carried the browser's stale copy would append a history row for every
+// person on the roster saying a rate moved when nobody touched it.
+//
+// Which makes these the tests that matter MORE than they did, not less — the
+// server is no longer the backstop behind them.
 //
 // So these tests are not "does the client omit wage" — that alone would pass
 // again the day somebody adds a field. They compare the ACTUAL request bodies
@@ -221,7 +233,7 @@ test('the Add form has no wage input, and says where the rate comes from', () =>
   // or they will go looking for the field.
   assert.match(html, /Hourly wage/);
   assert.match(html, /not editable here/i);
-  assert.match(html, /daily payroll file/i);
+  assert.match(html, /Salaries &amp; Wages/);
 });
 
 test('adding a salaried person is told where the salary lives', () => {
