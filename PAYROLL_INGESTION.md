@@ -274,9 +274,36 @@ employee, **one day per file**, ~6.6 KB.
 | `Emp #` | **TEXT, zero-padded**: `0319`. Stored as text; an integer column destroys the padding |
 | `Last Name`, `First Name` | |
 | `Is Salary` | `Yes` / `No` |
-| `Pay Rate` | hourly base rate; `0` for every salaried employee |
-| `Regular`, `OT`, `Total Hours` | hours |
-| `Total Earnings` | **blended regular + OT dollars in one column** |
+| `Pay Rate` | hourly base rate; `0` for every salaried employee. **No longer imported** |
+| `Regular`, `OT`, `Total Hours` | hours — the only thing this file is read for |
+| `Total Earnings` | blended regular + OT dollars in one column. **No longer imported** |
+
+### The money columns are ignored, since 2026-08-22
+
+**Only hours are imported.** `Pay Rate` and `Total Earnings` are read past, and
+`daily_hours.pay_rate`, `total_earnings`, `ot_dollars` and `regular_dollars` are written
+as **NULL** — "the file said nothing about money", which is not the same statement as
+zero.
+
+The rate in this file was never a source of truth. BBSI keyed it by hand out of their own
+payroll system into Timenet, the hours-tracking software this export comes from, purely
+so the feed could exist. Nobody maintains it there any more, so a number that looks
+authoritative would be stale by an unknowable amount.
+
+`employees.wage` is the record of truth. It is typed on the **Salaries & Wages** page by
+any signed-in user, every change is recorded in the append-only `wage_history`, and every
+dollar in this system is that rate x these hours.
+
+Two consequences worth knowing:
+
+- **Rows before and after that date differ.** Old rows keep the vendor's figures — the
+  only record of what BBSI said the money was — and new ones have none. Deliberate; see
+  `SCHEMA_RATE_OWNED_BY_APP.sql`, which must be applied **before** the hours-only
+  importer deploys or the morning import fails on the NOT NULL constraints.
+- **The overtime premium is now modelled rather than inherited.** See the next section.
+
+What the file still decides is **how many** hours are overtime. That is not recomputed:
+`Regular`, `OT` and `Total Hours` are imported exactly as sent.
 
 ### Salaried employees are excluded
 
@@ -298,28 +325,38 @@ Because salaried staff are excluded by design, every dollar figure in this syste
 **hourly payroll**, and the UI says so everywhere. Without that label the Net OT
 percentage reads as company-wide, and it is not.
 
-### Dollars are derived by residual, not by a flat multiplier
+### The overtime premium: the tiers, modelled
 
-`Total Earnings` is one blended number, so OT dollars have to be backed out:
+`netlify/functions/pay-rules-lib.js` prices a day from our rate and the file's hours:
 
 ```
-regular_dollars = Regular x Pay Rate
-ot_dollars      = Total Earnings - regular_dollars      <- residual
+double-time hours  = the part of OT above 12 total hours in the day
+time-and-a-half    = the rest of OT
+ot_dollars         = 1.5x rate x time-and-a-half + 2.0x rate x double-time
+regular_dollars    = Regular x rate
 ```
 
-Validated against a real day's file: the residual method totals **$1,026.03** of OT;
-`OT x rate x 1.5` totals **$995.22**, undercounting by ~3% because it misses the
-double-time tier. California 4x10 pays base to 10 hours, 1.5x from 10-12, and **2.0x
-above 12** — three employees crossed 12 hours in that one sample. The residual is exact
-by construction and needs no assumption about tier boundaries, so it stays correct if the
-pay rules ever change.
+California's 4x10 alternative workweek pays base to 10 hours, **1.5x from 10-12** and
+**2.0x above 12**.
 
-Guardrails: residuals between `-$1.00` and `0` are penny-rounding in the payroll system
-and clamp to zero. Anything more negative keeps its real value and is flagged
-`negative_residual` for review rather than being silently zeroed.
+**This replaced a residual, and the residual was better where it applied.** While
+`Total Earnings` was imported, OT dollars were backed out of it:
+`Total Earnings - Regular x Pay Rate`. That inherited the whole tier structure for free
+and was exact by construction. Validated against a real day's file, the residual totalled
+**$1,026.03** of OT where a flat `OT x rate x 1.5` totalled **$995.22** — undercounting by
+~3%, because three employees crossed 12 hours in that one sample.
 
-`total_earnings` is **never** recomputed or overwritten. The payroll system's figure is
-the source of truth for payroll dollars.
+So the tiers had to be modelled explicitly once the blended figure was no longer
+imported, and a flat 1.5x was not an acceptable substitute. What is modelled is the daily
+tier and nothing else.
+
+**KNOWN LIMIT.** California's seventh-consecutive-day rule (1.5x for the first 8 hours,
+2.0x beyond, on the 7th day of a workweek) is **not** modelled. The residual carried it
+without knowing about it; this does not. A mill working seven straight days would be
+understated. Raise it if that ever becomes ordinary rather than exceptional.
+
+The file still decides how many hours are overtime. This decides only what tier each of
+those hours is paid at.
 
 ### Department is snapshotted, not joined
 
@@ -390,9 +427,12 @@ The existing `overtime` table is `id, name, ot_type ('Pre-Shift' | 'Post-Shift' 
   week — not a per-week entry. The OT Report says so on the page, because the number is
   otherwise easy to misread as "pre-approved OT for this specific week".
 - **It has no dollars.** Pre-approved OT dollars are **derived**: `hours x rate x 1.5`,
-  where the rate is the employee's `pay_rate` observed in `daily_hours` that week, falling
-  back to `employees.wage`. Where neither exists, the dollars are zero and the name is
-  listed under `rateMissing` rather than being quietly dropped.
+  where the rate is `employees.wage` (it used to prefer the `pay_rate` observed in
+  `daily_hours` that week, which is no longer imported). Where there is no rate the
+  dollars are zero and the name is listed under `rateMissing` rather than being quietly
+  dropped. The flat 1.5x is right here and not a shortcut: a pre-approved allowance is
+  hours nobody has worked yet, so there is no day to place them in and no way to know
+  which tier they would fall into.
 
 All three `ot_type` values count toward pre-approved OT, with a per-type breakdown on the
 report. The older report counted only `Weekend`; that restriction is gone.
@@ -428,14 +468,16 @@ Rules, and the reasoning where it is not obvious:
   does *not* shrink on a light week. That consequence is intended.
 - **Headcount is roster-based, not worked-based**, and is shown on the report so the number
   can be audited.
-- **Hourly only.** Salaried staff are excluded from `daily_hours` at import and carry a $0
-  pay rate in the source file, so there is no basis to compute grace dollars for them.
-- **Rate**: the employee's `pay_rate` from their most recent `daily_hours` row that week,
-  else `employees.wage`. This is deliberately *most recent* rather than the highest rate,
-  unlike the `overtime` table's allowance — a mid-week rate change graces at what the person
-  is paid now. An employee with no determinable rate still accrues the grace **hours**,
-  contributes $0, and is named in `preApproved.grace.rateMissing`; contributing zero silently
-  is what makes a total impossible to reconcile later.
+- **Hourly only.** Salaried staff are excluded from `daily_hours` at import, so there is
+  no basis to compute grace dollars for them.
+- **Rate**: `employees.wage`. It used to be the `pay_rate` on their most recent
+  `daily_hours` row that week, falling back to the stored wage — deliberately *most
+  recent* rather than highest, so a mid-week rate change graced at what the person was
+  then paid. The file carries no rate any more and there is one rate, so the distinction
+  is gone: a rate change now applies to the whole week it is typed in. An employee with no
+  rate still accrues the grace **hours**, contributes $0, and is named in
+  `preApproved.grace.rateMissing`; contributing zero silently is what makes a total
+  impossible to reconcile later.
 - Grace is attributed to the same department snapshot as the hours it offsets, and routes
   through the same roster identity, so one person is graced once no matter how many sources
   reach them.
@@ -617,8 +659,15 @@ department are in the Unassigned bucket and something is filtering it out — st
 audit query 4c.
 
 **OT dollars look too low.**
-Check whether something is applying a flat 1.5x. The residual method is the correct one;
-see the derivation section above.
+Check whether something is applying a flat 1.5x to hours that should have crossed into
+double time — `pay-rules-lib.dayPay` is the one place that decides, and it is the only
+thing that should be computing an OT premium anywhere. See the derivation above.
+
+**Somebody's dollars are $0, or a whole department's are.**
+They have no rate. `employees.wage` is the only source now, and a person the daily file
+created has none until somebody types one. Salaries & Wages lists everybody without a rate
+at the top of the Hourly section, and the costing report names them under `rateGaps`
+rather than folding a zero into the total.
 
 **Nothing arrived at all this morning.**
 The missed-delivery check emails on a missing Mon-Thu day. Confirm BBSI still sends

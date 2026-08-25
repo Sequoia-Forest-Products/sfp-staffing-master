@@ -157,7 +157,9 @@ test('an hourly person with no rate anywhere is a named gap', () => {
   const noRate = hourly({ name: 'No Rate', wage: null, employee_number: '0606' });
   const r = buildCostReport({ employees: [noRate], costClass: 'Manufacturing' });
   assert.strictEqual(r.totals.peopleWithoutRate, 1);
-  assert.match(r.rateGaps[0].reason, /no pay rate/);
+  assert.match(r.rateGaps[0].reason, /no hourly rate on file/);
+  assert.match(r.rateGaps[0].reason, /Salaries & Wages/,
+    'the gap says where to fix it — there is nowhere else the rate can come from now');
 });
 
 test('a gap still contributes its HOURS, so hours and cost disagree visibly', () => {

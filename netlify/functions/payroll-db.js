@@ -135,6 +135,14 @@ const encode = v => encodeURIComponent(String(v));
 
 // The daily_hours columns every payroll reader needs. Spelled out rather than
 // select=* so a schema addition cannot quietly change what reports aggregate.
+//
+// The four money columns are still HERE and no longer READ. They are null on
+// every row imported since 2026-08-22 and carry real vendor figures before it,
+// so a reader that pulls them gets a column that is meaningful for old rows and
+// empty for new ones. Nothing in the app consults them — every dollar is
+// computed from employees.wage — and they are kept in the projection so an
+// audit query against a historical day still has them. If you are about to sum
+// one of these, that is the mistake this comment exists to stop.
 const DAILY_COLUMNS = [
   'id', 'work_date', 'employee_number', 'last_name', 'first_name', 'is_salary',
   'pay_rate', 'regular_hours', 'ot_hours', 'total_hours', 'total_earnings',
@@ -143,7 +151,7 @@ const DAILY_COLUMNS = [
   'upload_batch_id', 'created_at'
 ].join(',');
 
-// The three columns a week index is built from. The 400-day window the OT
+// The two columns a week index is built from. The 400-day window the OT
 // report scans covers ~17,000 rows at a full mill, and pulling all 23
 // daily_hours columns for every one of them just to list the weeks that have
 // data is most of a megabyte of payroll detail nobody reads.

@@ -208,11 +208,9 @@ const money = rate => (rate === null || rate === undefined ? 'no rate' : rate.to
 // regression this ordering exists to prevent, and tests/wage-sync.test.js pins
 // it with a salaried employee who carries a pay_rate.
 //
-// For an hourly employee a rate from the file wins, then the stored
-// employees.wage. `source: 'file'` covers both, and that is not a fudge:
-// employees.wage holds nothing but what the BBSI file last put there. The result
-// is never written back onto a salaried person's row — employees.wage means an
-// hourly rate or nothing, and pay type is employees.pay_type.
+// For an hourly employee there is one answer, employees.wage, which is typed on
+// the Salaries & Wages page and recorded in wage_history. The file's rate used
+// to win over it and no longer exists — see the hourly branch below.
 function effectiveHourlyRate(employee) {
   const emp = employee || {};
 
