@@ -37,8 +37,8 @@ function canSeeSalaries(){ return hasTier(TIER_SALARIES); }
 function isPermAdmin(){ return hasTier(TIER_ADMIN); }
 
 // Loaded once, on boot, before the roster paints — see bootstrap.js. A failure
-// leaves the base tier in place and says so on the Settings page rather than
-// anywhere the user is trying to work.
+// leaves the base tier in place and says so on the Settings page — see
+// renderPermsError below — rather than anywhere the user is trying to work.
 async function loadPermissions(){
   if(state.perms.loading) return;
   state.perms.loading=true;
@@ -106,6 +106,41 @@ function applyTabVisibility(){
   // If they were looking at one when a grant was revoked in another window, do
   // not leave them on a tab that no longer has anything to show.
   if(!allowed&&SALARIES_TABS.includes(state.tab)) goToTab('employees');
+}
+
+// ------------------------------------------------------------------------
+// when the permissions read itself failed
+// ------------------------------------------------------------------------
+//
+// FAILING CLOSED IS RIGHT. FAILING CLOSED SILENTLY IS NOT.
+//
+// state.perms.error was set here from the day this file was written and read by
+// nothing. The comment above loadPermissions said a failure "says so on the
+// Settings page"; no such surface existed, so what actually happened was that a
+// transient /api/permissions failure dropped somebody to the base tier with no
+// explanation anywhere. The Access section vanishes, Staffing Economics
+// vanishes, salaried figures stop rendering — and the obvious reading of that,
+// for an admin, is that somebody revoked them.
+//
+// It is on Settings rather than as a global banner because that is where the
+// consequences are visible and where the fix is: an admin whose tiers failed to
+// load has lost the Access section they would otherwise use.
+function renderPermsError(){
+  if(!state.perms.error) return '';
+  return `
+    <div style="background:var(--surface);border:1px solid #b8860b;border-radius:8px;padding:20px;margin-bottom:24px">
+      <div style="font-size:14px;font-weight:700;color:#b8860b;margin-bottom:8px">
+        ⚠ Your access could not be checked, so you are seeing the base level only
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">
+        Nothing has been revoked and nothing is broken in the data — the request that asks what
+        you may see did not come back, so the app assumed the least. Salaried figures and
+        Staffing Economics will be missing until it succeeds, and if you are an administrator the
+        Access section below is missing too. <b>Reload the page.</b> If it keeps happening, the
+        error was:
+        <div style="font-family:var(--mono,monospace);font-size:11px;color:var(--text);background:var(--surface2);border-radius:4px;padding:8px 10px;margin-top:8px;word-break:break-word">${esc(state.perms.error)}</div>
+      </div>
+    </div>`;
 }
 
 // ------------------------------------------------------------------------

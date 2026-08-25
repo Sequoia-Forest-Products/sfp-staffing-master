@@ -123,24 +123,45 @@ writeEmployeeRow._warned = {};
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
+// Returns true if the setting is actually stored, false if it was refused.
+// Every caller checks: they each toast their own success message, and one that
+// fires after a refusal is how somebody walks away believing a number moved.
+//
+// A REFUSAL IS NOT A TRANSIENT FAILURE, and the difference decides what happens
+// to localStorage. A network error or a 500 leaves the browser holding the only
+// copy of what the user typed, so it is written there and loadEmailSettings
+// picks it up — that is what the fallback is for. A 403 means the server has
+// decided this person may not change the setting, and caching their value
+// locally would let them keep a private, divergent copy of the manager
+// recipient list and the grace allowance that survives every reload. So a 403
+// writes nothing anywhere and the local state is put back.
 async function saveEmailSettings(){
+  const attempted = {...EMAIL_SETTINGS_DEFAULTS, ...state.emailSettings};
   try {
-    // Save to database
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        key: 'emailSettings',
-        value: {...EMAIL_SETTINGS_DEFAULTS, ...state.emailSettings}
-      })
+      body: JSON.stringify({ key: 'emailSettings', value: attempted })
     });
-    if (!res.ok) {
-      console.error('Failed to save settings to database');
-      localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    if (res.ok) return true;
+
+    if (res.status === 403) {
+      const d = await res.json().catch(()=>({}));
+      // Reload rather than keep what was typed: the server's copy is the truth
+      // and the fields should show it again.
+      await loadEmailSettings();
+      render();
+      toast(d.detail || d.error || 'Only an administrator may change these settings.', 'error');
+      return false;
     }
+
+    console.error('Failed to save settings to database');
+    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    return true;
   } catch (err) {
     console.error('Settings save error:', err);
     localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    return true;
   }
 }
 
