@@ -16,9 +16,10 @@
 // employees.wage is writable at the base tier. So the gate would now ACCEPT a
 // wage from these writers, and the reason they must still not send one has
 // changed rather than gone away: a rate is set on Salaries & Wages, one row at
-// a time, where the change is recorded in wage_history. A roster Save or a Sync
-// that carried the browser's stale copy would append a history row for every
-// person on the roster saying a rate moved when nobody touched it.
+// a time, where the change is recorded in wage_history. A roster Save carrying
+// the browser's stale copy would append a history row saying a rate moved when
+// nobody touched it — and syncToSheet(), which did that for EVERY row, has been
+// deleted rather than left sitting one edit away from being callable again.
 //
 // Which makes these the tests that matter MORE than they did, not less — the
 // server is no longer the backstop behind them.
@@ -83,7 +84,7 @@ function sandbox() {
       calls.push({ url: u, method, body: opts && opts.body ? JSON.parse(opts.body) : null });
       if (u.startsWith('/api/preapproved-ot')) return { ok: true, status: 200, json: async () => ({ ok: true, rows: [], otTypes: [] }) };
       if (u.startsWith('/api/allocations')) return { ok: true, status: 200, json: async () => ({ ok: true, allocations: [] }) };
-      // The reload at the end of syncToSheet: hand back the row unchanged.
+      // Any roster reload a writer does on its way out: hand back the row unchanged.
       if (method === 'GET') return { ok: true, status: 200, json: async () => ({ ok: true, data: [{ id: EMP_ID, name: 'Ana Reyes', wage: '22.00' }] }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, data: [{ id: EMP_ID }] }) };
     }
@@ -185,28 +186,36 @@ test('a new employee is created without a wage column', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sync — the whole roster, every row, one click
+// Sync — deleted, and this asserts it stays deleted
 // ---------------------------------------------------------------------------
 
-test('syncToSheet sends no wage on any row, and no column the gate refuses', async () => {
+test('there is no whole-roster writer in the frontend', () => {
+  // A test used to live here asserting that syncToSheet() sent no wage on any
+  // of its rows. The function is gone: its button was removed in 531018b, it
+  // was reachable from nothing afterwards, and it would have thrown on its
+  // first line (document.getElementById('syncBtn') is null — no such element
+  // exists in public/app.html).
+  //
+  // The test went with it rather than being kept as a guard, because a test
+  // that calls a function directly cannot tell a live writer from a dead one —
+  // which is exactly how this survived a year of being uncallable while its
+  // own test passed every run.
+  //
+  // What is asserted instead is that nothing of the shape has come back. A
+  // loop that PATCHes every roster row is one edit away from stamping this
+  // browser's stale copy of every rate over the table and appending a
+  // wage_history row per person, now that `wage` is writable at the base tier.
   const ctx = sandbox();
-  ctx.state.employees = [
-    { ...PERSON },
-    { ...PERSON, id: 'row-2', name: 'Bo Tran', payType: 'Salaried', wage: 'Salary' },
-    { ...PERSON, id: null, name: 'Unsaved Person' }
-  ];
+  assert.strictEqual(typeof ctx.syncToSheet, 'undefined',
+    'syncToSheet is back — it needs a design, not a restore');
 
-  await ctx.syncToSheet();
-
-  const writes = writesTo(ctx, 'employees');
-  assert.strictEqual(writes.length, 3, 'one write per roster row');
-  for (const w of writes) {
-    assert.ok(!('wage' in w.body), `${w.url} must not carry wage`);
-    const refused = Object.keys(w.body).filter(k => !BASE_WRITABLE.includes(k));
-    assert.deepStrictEqual(refused, [], 'refused: ' + refused.join(', '));
-  }
-  // Sync still asserts pay type, which is the fact it is allowed to carry.
-  assert.deepStrictEqual(writes.map(w => w.body.pay_type), ['Hourly', 'Salaried', 'Hourly']);
+  const source = fs.readFileSync(path.join(SRC, 'data.js'), 'utf8');
+  // The comment block that replaced it names the identifier; the code must not.
+  const inCode = source.split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.ok(!/syncToSheet|syncBtn/.test(inCode),
+    'a Sync writer is referenced in data.js outside the comment recording its removal');
 });
 
 // ---------------------------------------------------------------------------

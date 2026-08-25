@@ -165,10 +165,16 @@ truth — BBSI keyed it by hand out of their payroll system into Timenet so the 
 nobody maintains it there any more. The import stopped reading it; see **daily_hours** below and
 `SCHEMA_RATE_OWNED_BY_APP.sql`.
 
-Neither client writer sends `wage`, and that is now load-bearing rather than belt-and-braces: the
-server would accept it. The roster's Sync loop re-writes every row, so one Sync carrying a stale
-browser copy would stamp it over every rate in the table **and** append a `wage_history` row for
-each one saying a rate moved that nobody touched. Rates are set one row at a time, on one page.
+The client writers do not send `wage`, and that is now load-bearing rather than belt-and-braces:
+the server would accept it. A roster Save carrying the browser's stale copy would overwrite a rate
+and append a `wage_history` row saying it moved when nobody touched it. Rates are set one row at a
+time, on one page.
+
+`syncToSheet()` — a loop that PATCHed **every** roster row — was deleted for this reason. Its
+button had been gone since `531018b` and it had been unreachable (and would have thrown on its
+first line) ever since, but a dormant whole-roster writer against the compensation table is not
+worth keeping now that the column is writable. If a bulk roster write is ever wanted again it needs
+a design, not that function restored.
 
 `hire_date` (DATE) exists and is **empty**. Added by `SCHEMA_PHASE_D_PERMISSIONS.sql` §4 with no
 backfill: a guessed start date reads as a fact. BBSI likely has the real ones.
