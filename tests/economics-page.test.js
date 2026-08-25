@@ -22,13 +22,21 @@ const { __SCRIPT_MODULES } = require('../netlify/functions/session.js');
 
 // Millwright 1 holds somebody UNDER the ceiling, Millwright 2 somebody OVER it,
 // Utility 1 is vacant, Utility 2 holds a salaried person (who has no hourly
-// rate at all), and Utility 3 names somebody not on the active hourly roster.
+// rate at all), and Utility 3 is UNLINKED — a row the backfill could not match,
+// which is what section 4b of SCHEMA_ECONOMICS_EMPLOYEE_ID.sql lists.
+//
+// Shaped the way /api/economics returns them: employeeId is the fact, `name` is
+// the occupant's name as the SERVER resolved it today.
+// occupantStatus / occupantSalaried ride along from the server so the page does
+// not have to re-derive them. Set here because the endpoint sets them: a
+// fixture that omits a field the real response carries tests a shape nothing
+// produces, and this one silently turned "salaried" into "not active".
 const SEATS = [
-  { id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1', name: 'Ana Reyes',   max_wage: 38.50 },
-  { id: 'e2', num: 2, section: 'Mill', seat: 'Millwright 2', name: 'Bo Tran',     max_wage: 30.00 },
-  { id: 'e3', num: 3, section: 'Yard', seat: 'Utility 1',    name: null,          max_wage: 24.00 },
-  { id: 'e4', num: 4, section: 'Yard', seat: 'Utility 2',    name: 'Sal Aried',   max_wage: 24.00 },
-  { id: 'e5', num: 5, section: 'Yard', seat: 'Utility 3',    name: 'Departed Person', max_wage: 24.00 }
+  { id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1', employeeId: 'h1', name: 'Ana Reyes', unlinked: false, occupantStatus: 'Active', occupantSalaried: false, max_wage: 38.50 },
+  { id: 'e2', num: 2, section: 'Mill', seat: 'Millwright 2', employeeId: 'h2', name: 'Bo Tran',   unlinked: false, occupantStatus: 'Active', occupantSalaried: false, max_wage: 30.00 },
+  { id: 'e3', num: 3, section: 'Yard', seat: 'Utility 1',    employeeId: null, name: null,        unlinked: false, occupantStatus: null,     occupantSalaried: null,  max_wage: 24.00 },
+  { id: 'e4', num: 4, section: 'Yard', seat: 'Utility 2',    employeeId: 's1', name: 'Sal Aried', unlinked: false, occupantStatus: 'Active', occupantSalaried: true,  max_wage: 24.00 },
+  { id: 'e5', num: 5, section: 'Yard', seat: 'Utility 3',    employeeId: null, name: 'Departed Person', unlinked: true, occupantStatus: null, occupantSalaried: null, max_wage: 24.00 }
 ];
 
 const ROSTER = [
@@ -54,7 +62,8 @@ function fakeEl(id) {
   };
 }
 
-function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats: seatsIn = SEATS } = {}) {
+function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats: seatsIn = SEATS,
+                   assignable = true } = {}) {
   // DEEP-COPIED PER SANDBOX. The page assigns the returned row over the one in
   // state, so handing every test the same objects let one test's assignment
   // show up in the next. That is not a hypothetical: it made the duplicate-seat
@@ -83,28 +92,30 @@ function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats
         if ((opts.method || 'GET') === 'PATCH') {
           const body = JSON.parse(opts.body);
           const seat = seats.find(x => x.id === body.id);
-          // The server canonicalises against the roster and returns what it
-          // STORED, which is the whole reason the page reads the response
-          // rather than the picked value.
-          const match = ROSTER.find(r => r.name.toLowerCase() === String(body.name || '').toLowerCase()
+          // The server resolves the id against the roster and returns the row it
+          // STORED, which is the whole reason the page reads the response rather
+          // than the picked value.
+          const match = ROSTER.find(r => r.id === body.employeeId
                                       && r.status === 'Active' && r.payType !== 'Salaried');
-          if (body.name && !match) {
+          if (body.employeeId && !match) {
             return { ok: false, status: 400, json: async () => ({
-              ok: false, error: `"${body.name}" is not an active hourly employee` }) };
+              ok: false, error: 'cannot be seated',
+              detail: 'Only an active employee can fill a seat.' }) };
           }
-          const stored = match ? match.name : null;
-          const alsoIn = stored
-            ? seats.filter(x => x.id !== body.id && x.name === stored).map(x => x.seat)
+          const alsoIn = match
+            ? seats.filter(x => x.id !== body.id && x.employeeId === match.id).map(x => x.seat)
             : [];
-          return { ok: true, status: 200, json: async () => ({
-            ok: true, seat: { ...seat, name: stored }, alsoIn }) };
+          const updated = { ...seat, employeeId: match ? match.id : null,
+                            name: match ? match.name : null, unlinked: false };
+          Object.assign(seat, updated);
+          return { ok: true, status: 200, json: async () => ({ ok: true, seat: updated, alsoIn }) };
         }
         if (econStatus !== 200) {
           return { ok: false, status: econStatus, json: async () => ({
             ok: false, error: 'Not permitted to read the staffing plan',
             detail: 'This needs the salaries tier. An administrator can grant it under Settings → Access.' }) };
         }
-        return { ok: true, status: 200, json: async () => ({ ok: true, seats }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, seats, assignable }) };
       }
       if (u.startsWith('/api/permissions')) {
         return { ok: true, status: 200, json: async () => ({
@@ -216,7 +227,8 @@ test('a salaried occupant contributes no rate, even with a stale one in the colu
 });
 
 test('somebody in two seats is flagged, and the overstatement is said out loud', async () => {
-  const seats = SEATS.map(s => s.seat === 'Utility 1' ? { ...s, name: 'Ana Reyes' } : s);
+  const seats = SEATS.map(s => s.seat === 'Utility 1'
+    ? { ...s, employeeId: 'h1', name: 'Ana Reyes' } : s);
   const ctx = await loaded({ seats });
   const html = ctx.renderEconomics();
   assert.match(html, /in two seats/);
@@ -224,10 +236,10 @@ test('somebody in two seats is flagged, and the overstatement is said out loud',
   assert.match(html, /overstated/, 'the wage pool counts them twice and says so');
 });
 
-test('a seat naming somebody off the active hourly roster is flagged separately', async () => {
+test('a seat the backfill could not link is flagged separately', async () => {
   const ctx = await loaded();
   const html = ctx.renderEconomics();
-  assert.match(html, /not on the active hourly roster/);
+  assert.match(html, /not linked to anybody on the roster/);
   assert.match(html, /Utility 3 → Departed Person/);
 });
 
@@ -291,36 +303,64 @@ test('losing the tier bounces off this tab too', () => {
 
 const patches = (ctx) => ctx.__calls.filter(c => c.method === 'PATCH');
 
-test('assigning sends one PATCH naming one seat and one column', async () => {
+// The seat selects, in render order — which is SEATS order, because the page
+// groups by section and the fixture's sections are already contiguous.
+const selects = (html) => html.match(/<select[\s\S]*?<\/select>/g) || [];
+
+test('assigning sends one PATCH naming one seat and one person, by id', async () => {
   const ctx = await loaded();
-  await ctx.econAssign('e3', 'Unseated Person');
+  await ctx.econAssign('e3', 'h3');
 
   const p = patches(ctx);
   assert.strictEqual(p.length, 1);
   assert.strictEqual(p[0].url, '/api/economics');
-  assert.deepStrictEqual(Object.keys(p[0].body).sort(), ['id', 'name'],
-    'nothing but the seat id and the person rides along');
+  assert.deepStrictEqual(Object.keys(p[0].body).sort(), ['employeeId', 'id'],
+    'nothing but the seat and the person rides along');
   assert.strictEqual(p[0].body.id, 'e3');
+  assert.strictEqual(p[0].body.employeeId, 'h3', 'an id, never a name');
   // Only the seat named is touched; there is no replace-all anywhere near this.
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Unseated Person');
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, 'Ana Reyes');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').employeeId, 'h3');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').employeeId, 'h1');
 });
 
-test('unassigning sends an empty name and empties the seat', async () => {
+test('unassigning sends an empty id and empties the seat', async () => {
   const ctx = await loaded();
   await ctx.econAssign('e1', '');
-  assert.strictEqual(patches(ctx)[0].body.name, '');
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, null);
+  assert.strictEqual(patches(ctx)[0].body.employeeId, '');
+  const seat = ctx.state.economics.find(s => s.id === 'e1');
+  assert.strictEqual(seat.employeeId, null);
+  assert.strictEqual(seat.name, null);
 });
 
-test('the row is replaced from what the SERVER stored, not from what was picked', async () => {
-  // The endpoint canonicalises against the roster. Showing the picked string
-  // instead would hide a mismatch rather than surface it — which is how
-  // 'Tim Green' and 'Timothy Green' became two people earlier in this project.
+test('the row is replaced from what the SERVER returned, not from what was picked', async () => {
+  // The page sends an id and gets back the name the server resolved. That is
+  // the whole point of the key: the name is derived, so it cannot drift from
+  // the person — which is how 'Tim Green' and 'Timothy Green' became two people
+  // earlier in this project.
   const ctx = await loaded();
-  await ctx.econAssign('e3', 'unseated PERSON');
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Unseated Person',
-    'the canonical name from the roster, not the typed casing');
+  await ctx.econAssign('e3', 'h3');
+  const seat = ctx.state.economics.find(s => s.id === 'e3');
+  assert.strictEqual(seat.name, 'Unseated Person', 'resolved by the server from the id');
+  assert.strictEqual(seat.unlinked, false);
+});
+
+test('a rename does not orphan the seat — the page resolves by id', async () => {
+  // Ana is renamed on the roster. Her seat still points at h1, so it follows
+  // her: the new name renders, the seat is not flagged, and her rate still
+  // counts towards the pool. Under the old free-text scheme this seat read as
+  // 'not on the roster' and her 36.00 dropped out of the totals, with nothing
+  // anywhere saying a rename had done it.
+  const ctx = sandbox();
+  ctx.state.employees = ctx.state.employees.map(
+    e => e.id === 'h1' ? { ...e, name: 'Ana Reyes-Marquez' } : e);
+  await ctx.loadEconomics();
+  const html = ctx.renderEconomics();
+
+  assert.match(html, /Ana Reyes-Marquez/);
+  const millwright1 = html.slice(html.indexOf('Millwright 1'), html.indexOf('Millwright 2'));
+  assert.ok(!/not linked to anybody/.test(millwright1), 'the seat must not look orphaned');
+  // Her rate is still in the pool: 36.00 + 33.25.
+  assert.match(html, /\$69\.25/);
 });
 
 test('a refused assignment leaves the row exactly as the database has it', async () => {
@@ -336,9 +376,9 @@ test('putting somebody in a second seat goes through AND says so', async () => {
   // A mid-swap state that resolves on the next click is not worth blocking, but
   // it is worth saying immediately rather than leaving to a banner.
   const ctx = await loaded();
-  await ctx.econAssign('e3', 'Ana Reyes');
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').name, 'Ana Reyes');
-  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').name, 'Ana Reyes');
+  await ctx.econAssign('e3', 'h1');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e3').employeeId, 'h1');
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e1').employeeId, 'h1');
 
   const html = ctx.renderEconomics();
   assert.match(html, /assigned to more than one seat/);
@@ -352,15 +392,77 @@ test('a second click while one is in flight is dropped', async () => {
   assert.deepStrictEqual(patches(ctx), [], 'nothing sent');
 });
 
-test('the select offers the roster, and keeps an off-roster occupant visible', async () => {
+test('the select offers the roster by id, and keeps an unlinked occupant visible', async () => {
   const ctx = await loaded();
   const html = ctx.renderEconomics();
-  // Utility 3 names somebody not on the active hourly roster. Their name has to
-  // stay in the list or opening the select would silently reassign them to
-  // whatever happens to be first.
-  assert.match(html, /<option value="Departed Person" selected>Departed Person — not on the active hourly roster<\/option>/);
-  assert.match(html, /<option value="Unseated Person"/);
+  // Options carry employee ids, not names. That is the contract the endpoint
+  // now enforces, and a name value would be refused with a 403.
+  assert.match(html, /<option value="h3"/);
+  assert.ok(!/<option value="Unseated Person"/.test(html), 'no name-valued options anywhere');
+  // Utility 3's recorded occupant has to stay visible, or opening the select
+  // would silently show it as vacant. Its value is empty, because there is no
+  // id to send.
+  assert.match(html, /<option value="" selected>Departed Person — not linked to anybody on the roster<\/option>/);
   // Salaried and inactive people are not offerable.
-  assert.ok(!html.includes('>Sal Aried<'));
-  assert.ok(!html.includes('>Inactive Person<'));
+  assert.ok(!html.includes('>Sal Aried</option>'));
+  assert.ok(!html.includes('>Inactive Person</option>'));
+});
+
+test('before the migration the dropdowns are inert and the page says why', async () => {
+  const ctx = await loaded({ assignable: false });
+  const html = ctx.renderEconomics();
+  assert.match(html, /<select[^>]*disabled/);
+  // And a click cannot slip through the disabled attribute.
+  await ctx.econAssign('e3', 'h3');
+  assert.deepStrictEqual(patches(ctx), [], 'nothing sent');
+});
+
+test('a salaried occupant stays visible and SELECTED, not silently shown as vacant', async () => {
+  // THE REAL CASE, from the live plan: Eduardo Rivera is salaried and sits in
+  // Production Lead. The select offers active hourly people only, so without an
+  // option of his own the browser finds nothing selected and falls back to the
+  // first one — the seat renders as "— vacant —" when it is not, and one stray
+  // change clears somebody who is actually in the job.
+  //
+  // Found by §2c of SCHEMA_ECONOMICS_EMPLOYEE_ID.sql, which exists to list
+  // exactly these rows.
+  const ctx = await loaded();
+  // Indexed by position rather than sliced by seat title. The page groups by
+  // section, so the selects come out in SEATS order — and slicing on a title
+  // silently produced an empty string when the order was not what I assumed,
+  // which passes some assertions and fails others for the wrong reason.
+  const sel = selects(ctx.renderEconomics())[3];   // Utility 2, Sal Aried, salaried
+
+  assert.match(sel, /<option value="s1" selected>Sal Aried — salaried, cannot be reassigned here<\/option>/);
+  assert.ok(!/<option value="" selected>— vacant —<\/option>/.test(sel),
+    'the seat is not vacant and must not render as though it were');
+});
+
+test('a genuinely vacant seat still selects the vacant option', async () => {
+  const ctx = await loaded();
+  assert.match(selects(ctx.renderEconomics())[2], /<option value="" selected>— vacant —<\/option>/);
+});
+
+test('an unlinked seat does not also select the vacant option', async () => {
+  // Two markers competing for `selected` on one select renders as whichever
+  // came last. Utility 3 is the unlinked row.
+  const ctx = await loaded();
+  const sel = selects(ctx.renderEconomics())[4];
+  const selected = sel.match(/<option[^>]*\sselected[^>]*>/g) || [];
+  assert.strictEqual(selected.length, 1, 'exactly one option is selected: ' + selected.join(' '));
+  assert.match(sel, /<option value="" selected>Departed Person — not linked to anybody on the roster<\/option>/);
+});
+
+test('every seat has exactly one selected option, whatever its state', async () => {
+  // The general form of the bug above, and the one that would catch a fourth
+  // state nobody has thought of yet. A select with none selected silently shows
+  // its first option, which on this page means "vacant".
+  const ctx = await loaded();
+  const all = selects(ctx.renderEconomics());
+  assert.strictEqual(all.length, 5, 'one per seat');
+  all.forEach((sel, i) => {
+    const selected = sel.match(/<option[^>]*\sselected[^>]*>/g) || [];
+    assert.strictEqual(selected.length, 1,
+      `seat ${i} has ${selected.length} selected options, must have exactly 1`);
+  });
 });
