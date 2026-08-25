@@ -252,15 +252,22 @@ test('the profile card still has no compensation field of any kind', () => {
 // the reason the whole thing exists
 // ---------------------------------------------------------------------------
 
-test('wage is readable by everyone and writable by nobody through /api/data', () => {
+test('wage is readable AND writable by everyone through /api/data', () => {
+  // The reversal. Phase D refused `wage` for every tier because BBSI overwrote
+  // it every morning and a value typed in the app would not have survived the
+  // night. The import stopped reading the file's rate on 2026-08-22, so
+  // employees.wage is the record of truth and somebody has to be able to set
+  // it. Base tier, deliberately: the people who correct a rate are supervisors.
   const base = new Set([perms.TIER_HOURLY_WAGES]);
   assert.ok(perms.employeeReadColumns(base).includes('wage'),
-    'hourly rates stay visible to every signed-in user — that was not what Phase D changed');
-  for (const tier of perms.ALL_TIERS) {
-    const held = new Set([perms.TIER_HOURLY_WAGES, tier]);
-    assert.ok(!perms.employeeWriteColumns(held).includes('wage'),
-      `${tier} must not be able to write wage; BBSI owns the column`);
-  }
+    'hourly rates stay visible to every signed-in user');
+  assert.ok(perms.employeeWriteColumns(base).includes('wage'),
+    'and are now writable at the base tier, with no grant');
+
+  // The reversal is `wage` and nothing else. annual_salary moved in neither
+  // direction, which is the whole point of the two lists being separate.
+  assert.ok(!perms.employeeReadColumns(base).includes('annual_salary'));
+  assert.ok(!perms.employeeWriteColumns(base).includes('annual_salary'));
 });
 
 // ---------------------------------------------------------------------------

@@ -78,11 +78,20 @@ const EMPLOYEE_COLUMNS_BY_TIER = {
 // are different questions and conflating them is how `wage` ended up writable
 // by everyone while being carefully projected on the way out.
 //
-// `wage` is NOT here for any tier. BBSI is the source of truth and overwrites
-// it every morning through payroll-db.updateEmployeeWage, which uses the
-// service key directly and is unaffected by this gate. A value typed in the app
-// would be silently replaced overnight, so the field is gone rather than
-// decorative.
+// `wage` IS here, at the base tier, and that is a reversal.
+//
+// It was excluded because BBSI overwrote it every morning: a value typed in the
+// app would have been silently replaced overnight, so the field was removed
+// rather than left decorative. That is no longer true. The rate in the daily
+// file was a human transcription from BBSI's payroll system into Timenet, kept
+// alive only so the feed could exist, and nobody maintains it there any more.
+// The import stopped reading it on 2026-08-22 and employees.wage is now the
+// record of truth for every dollar this system computes.
+//
+// Base tier, not `salaries`, by decision: hourly rates are already readable by
+// every signed-in user, and the people who need to correct one are supervisors,
+// not the two accounts holding the salaries grant. `annual_salary` is
+// untouched and stays behind `salaries` in both directions.
 //
 // `id`, `created_at` and `updated_at` are absent because nothing should set
 // them through this path.
@@ -91,7 +100,7 @@ const EMPLOYEE_WRITABLE_BASE = [
   'birthday', 'phone', 'language', 'email', 'sms_opted_out', 'drive_folder_id',
   'employee_number', 'department', 'pay_type', 'cost_class', 'position_group',
   'position', 'address_street', 'address_city', 'address_state', 'address_postal_code',
-  'hire_date',
+  'hire_date', 'wage',
   // Retained columns nothing writes today but which the roster has always been
   // able to carry. Listed so a write of one is a decision, not an accident.
   'dept', 'clock_in', 'clock_out', 'text_bolt'

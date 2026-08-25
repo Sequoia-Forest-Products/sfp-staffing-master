@@ -89,6 +89,17 @@ const patch = (email, body, id = 'e1') => data.handler({
 
 const grant = (email, tier) => ({ email, tier });
 
+// The salary row above is SALARIED, which is the right default for a file about
+// leaking annual_salary. A wage edit against it is refused on those grounds
+// before anything about permissions is reached, so the wage tests need somebody
+// hourly to be about what they claim to be.
+const HOURLY_ROW = {
+  ...EMPLOYEE_ROW,
+  id: 'h1', name: 'Bo Tran', employee_number: '0101',
+  pay_type: 'Hourly', wage: '24.50', annual_salary: null,
+  department: 'Production', position: 'Sawyer'
+};
+
 // ---------------------------------------------------------------------------
 // THE negative case, on a real response
 // ---------------------------------------------------------------------------
@@ -208,17 +219,110 @@ test('a user without the tier cannot WRITE annual_salary, and nothing reaches th
     'a write reached the database despite the refusal');
 });
 
-test('nobody can write `wage`, whatever tier they hold', async () => {
-  // BBSI overwrites it every morning through payroll-db with the service key,
-  // which this gate does not touch. A value typed in the app would be silently
-  // replaced overnight, so the column is refused rather than accepted and lost.
-  for (const grants of [[], [grant('a@sequoiafp.com', TIER_SALARIES)], [grant('a@sequoiafp.com', TIER_ADMIN)]]) {
-    const calls = stub({ grants });
-    const res = await patch('a@sequoiafp.com', { wage: '99.00' });
-    assert.strictEqual(res.statusCode, 403, JSON.stringify(grants));
-    assert.match(JSON.parse(res.body).detail, /overwritten every morning/);
-    assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
+test('anybody can write `wage`, with no grant at all', async () => {
+  // Phase D refused this for every tier: BBSI overwrote the column every
+  // morning through payroll-db with the service key, so a value typed in the
+  // app would have been silently replaced overnight. The daily file no longer
+  // carries a rate and employees.wage is the record of truth, so the refusal
+  // would now mean nobody in the company can set a pay rate anywhere.
+  const calls = stub({ grants: [], employee: HOURLY_ROW });
+  const res = await patch('nobody@sequoiafp.com', { wage: '26.00' }, 'h1');
+
+  assert.strictEqual(res.statusCode, 200, JSON.stringify(res.body));
+  const writes = calls.filter(c => c.method === 'PATCH');
+  assert.strictEqual(writes.length, 1);
+  assert.deepStrictEqual(writes[0].body, { wage: '26.00' });
+});
+
+test('a rate change writes its history row BEFORE the rate itself', async () => {
+  // The ordering is the safety property, not a detail. Once employees.wage is
+  // overwritten the old rate is unrecoverable, so a failure between the two
+  // writes must leave a history row with no update — never an update with no
+  // history.
+  const calls = stub({ grants: [], employee: HOURLY_ROW });
+  const res = await patch('peter.stroble@sequoiafp.com', { wage: '26.00' }, 'h1');
+  assert.strictEqual(res.statusCode, 200);
+
+  const writes = calls.filter(c => c.method === 'POST' || c.method === 'PATCH');
+  assert.strictEqual(writes.length, 2);
+  assert.ok(/wage_history/.test(writes[0].url), 'the rate was overwritten before its history was recorded');
+  assert.strictEqual(writes[0].method, 'POST');
+  assert.ok(/employees/.test(writes[1].url));
+  assert.strictEqual(writes[1].method, 'PATCH');
+
+  const h = writes[0].body;
+  assert.strictEqual(h.rate, 26);
+  assert.strictEqual(h.previous_rate, 24.5);
+  assert.strictEqual(h.employee_number, '0101');
+  assert.strictEqual(h.employee_id, 'h1');
+  assert.strictEqual(h.source, 'manual');
+  assert.match(h.note, /peter\.stroble@sequoiafp\.com/);
+});
+
+test('the history row records the rate the DATABASE held, not the browser\'s', async () => {
+  // A page open since this morning holds a rate somebody else may have changed
+  // since. previous_rate must come from the row read inside the request, so
+  // this sends a body claiming a different starting point and asserts it is
+  // ignored.
+  const calls = stub({ grants: [], employee: { ...HOURLY_ROW, wage: '31.00' } });
+  await patch('a@sequoiafp.com', { wage: '32.00', name: HOURLY_ROW.name }, 'h1');
+
+  const history = calls.find(c => /wage_history/.test(c.url));
+  assert.strictEqual(history.body.previous_rate, 31);
+  assert.strictEqual(history.body.change_pct, 3.23);
+});
+
+test('retyping the same rate writes nothing at all', async () => {
+  // '24.5' over a stored '24.50' is not a change. Writing it would append a
+  // history row saying a rate moved when it did not.
+  const calls = stub({ grants: [], employee: HOURLY_ROW });
+  const res = await patch('a@sequoiafp.com', { wage: '24.5' }, 'h1');
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(calls.filter(c => c.method === 'POST' || c.method === 'PATCH').length, 0);
+});
+
+test('an unchanged rate does not block the rest of the same PATCH', async () => {
+  const calls = stub({ grants: [], employee: HOURLY_ROW });
+  const res = await patch('a@sequoiafp.com', { wage: '24.50', position: 'Lead Sawyer' }, 'h1');
+
+  assert.strictEqual(res.statusCode, 200);
+  const writes = calls.filter(c => c.method === 'PATCH');
+  assert.strictEqual(writes.length, 1);
+  assert.deepStrictEqual(writes[0].body, { position: 'Lead Sawyer' });
+});
+
+test('a wage that cannot be recorded is refused, and nothing is written', async () => {
+  // Each of these is a different mistake with a different remedy, so each gets
+  // its own sentence rather than one generic rejection.
+  const cases = [
+    { employee: EMPLOYEE_ROW,                          wage: '30.00', match: /salaried/i },
+    { employee: { ...HOURLY_ROW, employee_number: '' }, wage: '30.00', match: /employee number/i },
+    { employee: HOURLY_ROW,                            wage: '',      match: /cannot be cleared/i },
+    { employee: HOURLY_ROW,                            wage: '0',     match: /not an hourly rate/i },
+    { employee: HOURLY_ROW,                            wage: 'abc',   match: /not an hourly rate/i }
+  ];
+  for (const c of cases) {
+    const calls = stub({ grants: [], employee: c.employee });
+    const res = await patch('a@sequoiafp.com', { wage: c.wage }, c.employee.id);
+    assert.strictEqual(res.statusCode, 409, JSON.stringify(c));
+    const payload = JSON.parse(res.body);
+    assert.match(payload.error + ' ' + payload.detail, c.match);
+    assert.strictEqual(calls.filter(c2 => c2.method === 'POST' || c2.method === 'PATCH').length, 0,
+      'a refused wage still reached the database');
   }
+});
+
+test('`wage` being writable did not open `annual_salary` alongside it', async () => {
+  // The two live in the same body on the same page. A base-tier account sending
+  // both must have the salary refused and — because a refusal is a refusal —
+  // the wage not written either.
+  const calls = stub({ grants: [] });
+  const res = await patch('nobody@sequoiafp.com', { wage: '99.00', annual_salary: 250000 });
+
+  assert.strictEqual(res.statusCode, 403);
+  assert.match(JSON.parse(res.body).error, /Not permitted to write: annual_salary/);
+  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
 });
 
 test('a refusal is a REFUSAL, not a silent drop of the offending column', async () => {
