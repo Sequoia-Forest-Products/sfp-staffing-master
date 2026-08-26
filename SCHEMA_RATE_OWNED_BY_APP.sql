@@ -1,4 +1,26 @@
 -- =====================================================================
+-- APPLIED 2026-08-26 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- Walked section by section, each verified before the next.
+--
+-- §0: 7 rows as predicted — total_earnings, ot_dollars, regular_dollars
+-- NO/0; pay_rate YES/none; the three hours columns NO/0.
+-- §1: all four money columns now is_nullable=YES, column_default=null.
+-- §2: six comments attached, HISTORICAL on the four money columns and
+-- "The file's" on regular_hours and ot_hours.
+-- §3: 233 rows, 233 with money, 0 without, 0 with neither money nor
+-- hours. last_day_with_money = 2026-08-25, first_day_without_money null.
+--
+-- That last line is the baseline: every row that existed at migration
+-- time kept its vendor figures, which is what "no data is touched" means
+-- in practice. Re-run §3's second query after the first hours-only
+-- import and the shape inverts — the newest work dates become the ones
+-- without money and last_day_with_money freezes at 2026-08-25.
+--
+-- THE DEPLOY IS NOW UNBLOCKED. The 2026-08-26 delivery (covering work
+-- date 2026-08-25) has already landed, so the next unattended run is
+-- ~06:04 Pacific on 2026-08-27.
+-- =====================================================================
 -- SFP Staffing — the daily file becomes hours-only
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 --
