@@ -351,10 +351,19 @@ function costSection(costClass, classes, opts){
   // follows it: for a base-tier caller the money is already null in the payload,
   // so rendering the table anyway would produce the dashes, not a leak.
   //
-  // The bullpen is dropped here for a different reason: a null position group is
-  // NORMAL for non-mill staff, so on Overhead it would list the entire class as
-  // if something were wrong. On Manufacturing it means an unclassified new hire,
-  // which is the thing worth seeing.
+  // THE BULLPEN IS NOT DROPPED HERE, and this comment used to claim it was.
+  //
+  // What actually happened was that the early return below — for a totals-only
+  // Overhead view — returned before costBullpenBlock ran, so the bullpen was
+  // absent by accident. The moment the salaries tier lifted suppression, that
+  // early return stopped firing and the Overhead tab listed its whole SG&A
+  // roster as unclassified.
+  //
+  // The rule is right and it now lives in cost-lib, which builds the array:
+  // position group is mill-floor only, so its absence is a finding for
+  // Manufacturing and the correct answer for everybody else. report.bullpen is
+  // empty for the other classes, so this renders nothing without needing to
+  // know why.
   const head = costTruncationNote(view)
     + costAllocationNote(view)
     + costStatCards(r, opts)

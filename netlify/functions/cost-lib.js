@@ -27,6 +27,10 @@ const { effectiveHourlyRate, isSalaried, SALARY_HOURS_PER_YEAR } = require('./wa
 const STANDARD_WEEKLY_HOURS = 40;
 
 const COST_CLASSES = ['Manufacturing', 'Mill Overhead', 'SG&A'];
+
+// The one class where position group means anything, and therefore the one
+// class where its absence is a finding. See the bullpen in buildCostReport.
+const MANUFACTURING_CLASS = 'Manufacturing';
 const UNASSIGNED_DEPARTMENT = 'Unassigned';
 const NO_POSITION_GROUP = 'No position group';
 
@@ -315,7 +319,20 @@ function buildCostReport({
     // A Manufacturing person with no position group needs somewhere visible to
     // sit. Empty today, but new hires arrive unclassified through the BBSI
     // auto-create path, so the bucket has to exist before they do.
-    if (!group) {
+    //
+    // MANUFACTURING ONLY, and the check is here because the comment above said
+    // so and the code did not. Position group is the PLANNING axis — where in
+    // the mill somebody physically works (architecture section 4). It carries
+    // no accounting meaning and it is mill-floor only, so a null one is not a
+    // gap for office staff, it is the correct and only possible answer for
+    // them. Their own profile cards say "none — not mill floor staff".
+    //
+    // Without this, the Overhead tab listed its entire SG&A roster under
+    // "Bullpen — no position group": four people who needed nothing done,
+    // presented as a to-do list. A findings panel that names people who are
+    // already correct is worse than no panel, because it teaches the reader to
+    // skim past the ones who are not.
+    if (!group && costClass === MANUFACTURING_CLASS) {
       bullpen.push({
         name,
         department: primaryDept,
