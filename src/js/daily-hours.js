@@ -250,10 +250,9 @@ function renderDailyPreview(){
           <div class="dh-stat">
             <div><div class="k">Rows to import</div><div class="v">${counts.imported||0}</div><div style="font-size:11px;color:var(--muted)">of ${counts.totalRows||0} in the file</div></div>
             <div><div class="k">Employees</div><div class="v">${empCount}</div></div>
-            <div><div class="k">Total hours</div><div class="v">${fmtHrs(totals.totalHours)}</div></div>
-            <div><div class="k">Total earnings</div><div class="v">${fmt$(totals.totalEarnings)}</div></div>
+            <div><div class="k">Regular hours</div><div class="v">${fmtHrs(totals.regularHours)}</div></div>
             <div><div class="k">OT hours</div><div class="v">${fmtHrs(totals.otHours)}</div></div>
-            <div><div class="k">OT dollars</div><div class="v">${fmt$(totals.otDollars)}</div></div>
+            <div><div class="k">Total hours</div><div class="v">${fmtHrs(totals.totalHours)}</div></div>
           </div>
 
           <div class="dh-note"><strong>${counts.salariedSkipped||0} salaried row${(counts.salariedSkipped||0)===1?'':'s'} skipped.</strong>
@@ -268,7 +267,7 @@ function renderDailyPreview(){
           <div class="section-head" style="margin-top:16px"><span>By department</span></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Department</th><th class="num">Employees</th><th class="num">Reg hrs</th><th class="num">OT hrs</th><th class="num">Total hrs</th><th class="num">OT $</th><th class="num">Earnings</th></tr></thead>
+              <thead><tr><th>Department</th><th class="num">Employees</th><th class="num">Reg hrs</th><th class="num">OT hrs</th><th class="num">Total hrs</th></tr></thead>
               <tbody>
                 ${depts.length?depts.map(d=>`<tr${(d.department===null||d.department==='Unassigned')?' style="background:#fef5e8"':''}>
                   <td style="font-weight:600">${esc(d.department||'Unassigned')}</td>
@@ -276,9 +275,7 @@ function renderDailyPreview(){
                   <td class="num">${fmtHrs(d.regularHours)}</td>
                   <td class="num">${fmtHrs(d.otHours)}</td>
                   <td class="num">${fmtHrs(d.totalHours)}</td>
-                  <td class="num">${fmt$(d.otDollars)}</td>
-                  <td class="num">${fmt$(d.totalEarnings)}</td>
-                </tr>`).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No rows</td></tr>'}
+                </tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px">No rows</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -287,17 +284,14 @@ function renderDailyPreview(){
           <div class="section-head" style="margin-top:16px"><span>First ${p.sample.length} rows</span></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Emp #</th><th>Name</th><th>Department</th><th class="num">Rate</th><th class="num">Reg</th><th class="num">OT</th><th class="num">Total hrs</th><th class="num">Earnings</th><th class="num">OT $</th><th>Flags</th></tr></thead>
+              <thead><tr><th>Emp #</th><th>Name</th><th>Department</th><th class="num">Reg</th><th class="num">OT</th><th class="num">Total hrs</th><th>Flags</th></tr></thead>
               <tbody>${p.sample.map(s=>`<tr>
                 <td>${esc(s.employeeNumber)}</td>
                 <td style="font-weight:600">${esc(s.name||'')}</td>
                 <td${s.department?'':' style="color:#9a600a"'}>${esc(s.department||'Unassigned')}</td>
-                <td class="num">${fmt$(s.payRate)}</td>
                 <td class="num">${fmtHrs(s.regularHours)}</td>
                 <td class="num">${fmtHrs(s.otHours)}</td>
                 <td class="num">${fmtHrs(s.totalHours)}</td>
-                <td class="num">${fmt$(s.totalEarnings)}</td>
-                <td class="num">${fmt$(s.otDollars)}</td>
                 <td style="font-size:10px">${(s.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
               </tr>`).join('')}</tbody>
             </table>
@@ -372,7 +366,7 @@ function renderDailyHours(){
       <table>
         <thead><tr>
           <th style="width:120px">Date</th><th style="width:180px">Classification</th><th style="width:150px">Source</th>
-          <th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">Earnings</th>
+          <th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th>
           <th style="width:150px">Data quality</th><th style="width:190px"></th>
         </tr></thead>
         <tbody>
@@ -392,7 +386,6 @@ function renderDailyHours(){
               <td class="num">${d.employees||0}</td>
               <td class="num">${fmtHrs(d.totalHours)}</td>
               <td class="num">${fmtHrs(d.otHours)}</td>
-              <td class="num">${fmt$(d.totalEarnings)}</td>
               <td style="font-size:11px">
                 ${d.flagCount?`<div style="color:var(--brick);font-weight:700">${d.flagCount} flagged</div>`:''}
                 ${d.unassignedCount?`<div style="color:#9a600a;font-weight:700">${d.unassignedCount} unassigned <button class="btn btn-outline btn-sm" style="padding:1px 6px;font-size:10px" onclick="goToTab('employees')">fix on Employees</button></div>`:''}

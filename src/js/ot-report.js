@@ -479,7 +479,13 @@ function renderOTReport(){
     ${pre.withoutHoursThisWeek.map(p=>`<span class="ot-chip">${esc(p.name)} · ${esc(p.department||'Unassigned')} · ${fmtHrs(p.hours)}h · ${fmt$(p.dollars)}</span>`).join('')}
     <div style="font-size:11px;margin-top:4px">Their allowance still counts against net OT, so it is worth knowing they did not work.</div></div>`);
   if((pre.rateMissing||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved dollars show as $0 for:</strong> ${pre.rateMissing.map(esc).join(', ')}
-    <div style="font-size:11px;margin-top:4px">Their allowance is not free — no pay rate exists for them in this week's daily hours or on the employee record, so the dollars cannot be derived. Their hours still count.</div></div>`);
+    <div style="font-size:11px;margin-top:4px">Their allowance is not free — no hourly rate is on the employee record, so the dollars cannot be derived. Their hours still count.</div></div>`);
+  // Worked hours with no rate. Listed FIRST among the money findings because
+  // every other dollar on this page is understated by exactly these people:
+  // their earnings are null and every total folds a null to zero.
+  if((iss.workedRateMissing||[]).length) issueBits.unshift(`<div class="ot-warn"><strong>${iss.workedRateMissing.length} ${iss.workedRateMissing.length===1?'person':'people'} worked with no hourly rate on file:</strong>
+    <div style="margin-top:6px">${iss.workedRateMissing.map(p=>`<span class="ot-chip">${esc(p.name||('#'+p.employeeNumber))} · ${fmtHrs(p.hours)}h · ${esc(p.department||'Unassigned')}</span>`).join('')}</div>
+    <div style="font-size:11px;margin-top:4px">Their hours are in every figure on this page and their dollars are not, so every dollar total here is understated by whatever they are owed. Set their rate on <strong>Salaries &amp; Wages</strong>; this report recomputes from it.</div></div>`);
   const issueBlock=`
     <div class="section-head"><span>Issues</span></div>
     <div class="ot-panel">${issueBits.length?issueBits.join(''):'<div class="ot-ok">✓ No data issues in this week.</div>'}</div>`;

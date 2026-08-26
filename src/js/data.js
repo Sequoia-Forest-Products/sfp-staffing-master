@@ -123,24 +123,45 @@ writeEmployeeRow._warned = {};
 // ============================================================
 // EMAIL SETTINGS FUNCTIONS
 // ============================================================
+// Returns true if the setting is actually stored, false if it was refused.
+// Every caller checks: they each toast their own success message, and one that
+// fires after a refusal is how somebody walks away believing a number moved.
+//
+// A REFUSAL IS NOT A TRANSIENT FAILURE, and the difference decides what happens
+// to localStorage. A network error or a 500 leaves the browser holding the only
+// copy of what the user typed, so it is written there and loadEmailSettings
+// picks it up — that is what the fallback is for. A 403 means the server has
+// decided this person may not change the setting, and caching their value
+// locally would let them keep a private, divergent copy of the manager
+// recipient list and the grace allowance that survives every reload. So a 403
+// writes nothing anywhere and the local state is put back.
 async function saveEmailSettings(){
+  const attempted = {...EMAIL_SETTINGS_DEFAULTS, ...state.emailSettings};
   try {
-    // Save to database
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        key: 'emailSettings',
-        value: {...EMAIL_SETTINGS_DEFAULTS, ...state.emailSettings}
-      })
+      body: JSON.stringify({ key: 'emailSettings', value: attempted })
     });
-    if (!res.ok) {
-      console.error('Failed to save settings to database');
-      localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    if (res.ok) return true;
+
+    if (res.status === 403) {
+      const d = await res.json().catch(()=>({}));
+      // Reload rather than keep what was typed: the server's copy is the truth
+      // and the fields should show it again.
+      await loadEmailSettings();
+      render();
+      toast(d.detail || d.error || 'Only an administrator may change these settings.', 'error');
+      return false;
     }
+
+    console.error('Failed to save settings to database');
+    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    return true;
   } catch (err) {
     console.error('Settings save error:', err);
     localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
+    return true;
   }
 }
 
@@ -167,99 +188,29 @@ async function loadEmailSettings(){
 }
 
 
-async function syncToSheet(){
-  const btn=document.getElementById('syncBtn');
-  btn.textContent='Syncing…';btn.className='sfp-sync-btn saving';
-  setSyncStatus('saving');
-  try{
-    for(const e of state.employees){
-      const row={
-        // WAGE IS NOT WRITTEN HERE. This loop re-writes every row on the roster,
-        // which made it the worst possible place to send a column the app does not
-        // own: employees.wage comes from BBSI's daily file via
-        // payroll-db.updateEmployeeWage, and one Sync would have stamped the
-        // browser's stale copy over every rate in the table. permissions-lib now
-        // refuses the column on this path as well, for every tier.
-        name:e.name,
-        pay_type:payTypeOf(e), status:e.status,
-        // clock_in and clock_out are deliberately NOT written. Nothing reads them
-        // (audited across the frontend, every Netlify function and both report
-        // libraries), so the profile stopped offering them. The COLUMNS remain
-        // and are still projected, so the stored values stay readable — dropping
-        // them is a separate, later, deliberate act, the way `dept` was handled.
-        //
-        // Absent is not null: PostgREST leaves a column a PATCH does not name
-        // alone, so this loop re-writing every row does NOT blank them.
-        days:e.days,
-        // THIS LOOP RE-WRITES EVERY ROW ON THE ROSTER, which is what made the
-        // old `e.break1 || '7:00 AM'` here so much worse than the same
-        // expression in saveEdit: one click of Sync stamped a fabricated 7:00 AM
-        // and 12:45 PM onto every employee who had no break time on file, and
-        // nothing on any screen would have shown it happening.
-        break_1:breakStorageValue(e.break1), break_2:breakStorageValue(e.break2),
-        birthday:e.birthday, phone:e.phone, language:e.language,
-        email:e.email, sms_opted_out:e.smsOptedOut===true,
-        drive_folder_id:e.driveFolderId||null,
-        employee_number:normEmpNum(e.empNum)||null, department:e.department||null,
-        // Written here too: this loop re-writes every row on the roster, so leaving
-        // the two new axes out would not preserve them — it would just make Sync the
-        // one path that never carries them.
-        cost_class:e.costClass||null, position_group:e.positionGroup||null,
-        // Same reasoning for the Phase B fields: Sync must not be the one path
-        // that quietly stops carrying them.
-        position:e.position||null,
-        address_street:e.addressStreet||null, address_city:e.addressCity||null,
-        address_state:e.addressState||null, address_postal_code:e.addressPostalCode||null
-      };
-      if(e.id){
-        await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);
-      } else {
-        const res=await writeEmployeeRow('/api/data?table=employees','POST',row);
-        const d=await res.json();
-        if(d.data?.[0]?.id) e.id=d.data[0].id;
-      }
-    }
-    // Reload employees from database to ensure OT report has latest wages
-    const empRes = await fetch('/api/data?table=employees');
-    const empJson = await empRes.json();
-    state.employees = (empJson.data||[]).map(r=>({
-      id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
-      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
-      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
-      birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
-      email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
-      empNum:r.employee_number||'', department:r.department||'',
-      // pay_type is absent until SCHEMA_V2_MODEL.sql section 5b runs. Left blank
-      // rather than defaulted, so isSalaried falls back to the legacy wage
-      // marker instead of reading a guess as a stated fact.
-      payType:r.pay_type||'', costClass:r.cost_class||'',
-      // The third axis of the v2 model. Legitimately null for anyone who is not
-      // manufacturing floor staff, so a blank here is a real answer, not a gap.
-      // annual_salary IS mapped now — Phase D gates it, so /api/data returns it
-      // for a caller holding the salaries tier and omits it entirely for anybody
-      // else. Note the ?? rather than ||: 0 is a real salary and '' is not a
-      // number, and the absent case must be null so "no tier" and "no salary on
-      // file" stay distinguishable. They render differently and only one of them
-      // is a data problem.
-      annualSalary:('annual_salary' in r)?(r.annual_salary??null):null,
-      positionGroup:r.position_group||'',
-      // Phase B. `position` is the specific job WITHIN a position group and
-      // applies to everyone: the CEO has a position and no position group. The
-      // address columns have existed since SCHEMA_V2_MODEL.sql section 4 and
-      // were simply never projected, so nothing could show them.
-      position:r.position||'',
-      addressStreet:r.address_street||'', addressCity:r.address_city||'',
-      addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
-    }));
-
-    state.dirty=false;
-    btn.textContent='✓ Saved';btn.className='sfp-sync-btn saved';
-    setSyncStatus('idle');
-    toast('Saved to Supabase','success');
-    setTimeout(()=>{btn.textContent='+ Sync';btn.className='sfp-sync-btn';},3000);
-  }catch(err){
-    btn.textContent='+ Sync';btn.className='sfp-sync-btn';
-    setSyncStatus('error');
-    toast('Sync failed: '+err.message,'error');
-  }
-}
+// syncToSheet() WAS HERE, AND IS GONE.
+//
+// It looped every row in state.employees and PATCHed each one — a whole-roster
+// writer against the table that holds compensation. The button that called it
+// was removed in 531018b ("Remove Sync button — all saves are now direct to
+// database"); the function stayed behind, reachable from nothing. It could not
+// even have run: it opened with
+// document.getElementById('syncBtn').textContent = ..., and no element with
+// that id exists in public/app.html, so the first line would have thrown.
+//
+// Deleted rather than left, because what made it safe was changing underneath
+// it. Its only protection against stamping a stale rate over the whole roster
+// was that `wage` was not named in its row object — and until 2026-08-22 the
+// server refused the column anyway, so that was belt and braces. `wage` is
+// writable at the base tier now. A revived Sync carrying the browser's copy
+// would overwrite every rate in the table AND append a wage_history row for
+// each person saying a rate moved that nobody touched.
+//
+// Nothing was lost with it. Its roster reload was a verbatim copy of
+// loadData()'s mapping above, and the writers that actually run — saveEdit and
+// the profile card — keep their own tests in
+// tests/employee-write-columns.test.js.
+//
+// Rates are set on Salaries & Wages, one row at a time, where the change is
+// recorded. If a bulk roster write is ever wanted again it needs a design, not
+// this function restored.

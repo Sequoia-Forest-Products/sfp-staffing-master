@@ -95,7 +95,7 @@ function personCost(employee, actualHours) {
       cost: null,
       gap: isSalaried(employee)
         ? 'salaried with no annual_salary on file — cost cannot be computed'
-        : 'no pay rate in the daily file and none stored — cost cannot be computed'
+        : 'no hourly rate on file — set one on Salaries & Wages, or their cost cannot be computed'
     };
   }
 
@@ -238,6 +238,8 @@ function finishBucket(bucket, mbfPerHour, minBucket) {
 //   dailyRows   daily_hours rows for the period, used for HOURS only. Cost is
 //               recomputed from the rate rather than read from total_earnings,
 //               so a salaried person's zeros in the file cannot become their cost.
+//               Since 2026-08-22 there is nothing else it could do: the file
+//               carries no money at all and those columns are null.
 //   costClass   'Manufacturing' | 'Mill Overhead' | 'SG&A'
 //   allocations optional [{employee_id, department, percent}] — cost splits
 //               across departments. Hours stay whole at the person level; only

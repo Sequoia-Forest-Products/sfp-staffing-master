@@ -1,6 +1,7 @@
 const db = require('./db');
 const { verifySession, getCookies } = require('./session-lib');
 const perms = require('./permissions-lib');
+const { planWageEdit } = require('./wage-edit-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -141,13 +142,7 @@ function gateWrite(table, body, tiers) {
       body: JSON.stringify({
         error: 'Not permitted to write: ' + refused.join(', '),
         refused,
-        // Said plainly, because the two refusals have different remedies and a
-        // generic "forbidden" would send somebody looking for the wrong one.
-        detail: refused.includes('wage')
-          ? 'Hourly rates come from the daily payroll file and are overwritten every ' +
-            'morning; nothing in the app may set them. Other refused columns require ' +
-            'a permission tier this account does not hold.'
-          : 'This column requires a permission tier this account does not hold.'
+        detail: 'This column requires a permission tier this account does not hold.'
       })
     }
   };
@@ -177,6 +172,42 @@ async function queryEmployees(tiers) {
   }
 
   throw lastErr;
+}
+
+// ------------------------------------------------------------------------
+// employees.wage — the one column on this endpoint that leaves a record
+// ------------------------------------------------------------------------
+//
+// Phase D refused `wage` for every tier because BBSI overwrote it nightly. That
+// stopped being true on 2026-08-22: the daily file's rate was a hand
+// transcription nobody maintains any more, the import no longer reads it, and
+// employees.wage is the record of truth behind every dollar this system
+// computes. So it is writable, at the base tier, by anybody signed in.
+//
+// Writable, NOT quietly writable. Every move is recorded in wage_history, which
+// is append-only at the database, and the history row goes in FIRST — before
+// the update that makes the old rate unrecoverable. That is the same ordering
+// applyWageSync uses for the import, for the same reason.
+//
+// wage_history is deliberately absent from ALLOWED_TABLES, so this is the only
+// way it is ever written from a browser and there is no request that can write
+// the rate without it.
+
+const hasWage = body => body && Object.prototype.hasOwnProperty.call(body, 'wage');
+
+// Refusals from planWageEdit are 409, not 400: the request is well-formed and
+// permitted, and what makes it impossible is the state of the row (salaried, no
+// employee number, nothing to record a cleared rate with). The message is meant
+// to be shown to the person who typed it, so it says what to fix.
+const wageRefusal = (headers, plan) => ({
+  statusCode: 409, headers,
+  body: JSON.stringify({ error: plan.error, detail: plan.detail })
+});
+
+async function recordWageHistory(row) {
+  // POST directly rather than through db.insert so a failure here is
+  // distinguishable in the log from a failure writing the employee.
+  await db.insert('wage_history', row);
 }
 
 exports.handler = async (event) => {
@@ -226,7 +257,41 @@ exports.handler = async (event) => {
       const body = JSON.parse(event.body || '{}');
       const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
       if (gated.error) return gated.error;
+
+      // A new person created WITH a rate. The app's Add form has no rate field,
+      // so this is the hand-crafted case — and it is exactly the case that must
+      // not slip a rate in without a history row. Planned against an empty row
+      // so the refusals (salaried, no employee number, blank, zero) all apply
+      // and previous_rate is null, which is what a first observation is.
+      let wagePlan = null;
+      if (table === 'employees' && hasWage(gated.body)) {
+        wagePlan = planWageEdit({
+          employee: { id: 'pending', name: gated.body.name, wage: null,
+                      employee_number: gated.body.employee_number,
+                      pay_type: gated.body.pay_type },
+          value: gated.body.wage,
+          editorEmail: session.email
+        });
+        if (!wagePlan.ok) return wageRefusal(headers, wagePlan);
+        gated.body.wage = wagePlan.wage;
+      }
+
       const row = await db.insert(table, gated.body);
+
+      // History AFTER the insert here, and only here: the row it references
+      // does not have an id until the insert returns. Same order, and the same
+      // reason, as applyWageSync's create op.
+      //
+      // db.insert returns what PostgREST returns, which is an ARRAY even for a
+      // single row — reading .id off it directly is undefined, and the history
+      // row would silently never be written.
+      if (wagePlan && !wagePlan.unchanged) {
+        const created = Array.isArray(row) ? row[0] : row;
+        if (!created || !created.id) {
+          throw new Error('The employee insert returned no row, so the rate could not be recorded.');
+        }
+        await recordWageHistory({ ...wagePlan.history, employee_id: created.id });
+      }
       return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
     }
 
@@ -235,6 +300,42 @@ exports.handler = async (event) => {
       const body = JSON.parse(event.body || '{}');
       const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
       if (gated.error) return gated.error;
+
+      if (table === 'employees' && hasWage(gated.body)) {
+        // The row as the DATABASE has it, not as the browser remembers it. A
+        // page open since this morning holds a rate somebody else may have
+        // changed since, and a history row whose previous_rate was never the
+        // current rate is worse than no history at all.
+        const found = await db.query('employees',
+          `?id=eq.${encodeURIComponent(params.id)}&select=id,name,employee_number,wage,pay_type`);
+        const plan = planWageEdit({
+          employee: (found || [])[0] || null,
+          value: gated.body.wage,
+          editorEmail: session.email
+        });
+        if (!plan.ok) return wageRefusal(headers, plan);
+
+        if (plan.unchanged) {
+          // The same rate, retyped. Dropping it from the body rather than
+          // writing it keeps wage_history free of rows saying a rate moved when
+          // it did not — and the rest of the PATCH still goes through.
+          delete gated.body.wage;
+        } else {
+          // History FIRST. If this throws, the catch below turns it into a 500
+          // and the wage update never runs: an overwrite with no history is the
+          // one outcome that cannot be repaired afterwards.
+          await recordWageHistory(plan.history);
+          gated.body.wage = plan.wage;
+        }
+
+        // A PATCH whose only column was an unchanged wage has nothing left to
+        // write. db.update with an empty body is a request that changes nothing
+        // and returns nothing useful, so answer from the row already read.
+        if (!Object.keys(gated.body).length) {
+          return { statusCode: 200, headers, body: JSON.stringify({ data: (found || [])[0] || null }) };
+        }
+      }
+
       const row = await db.update(table, params.id, gated.body);
       return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
     }

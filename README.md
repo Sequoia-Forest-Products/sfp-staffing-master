@@ -152,11 +152,29 @@ sfp-staffing-master/
 Plus the four axes below, and `annual_salary`.  
 `text_bolt` — deprecated, no longer read or written; kept one release as a fallback.
 
-`wage` is an **hourly rate and nothing else**, and it belongs to BBSI: `payroll-db.updateEmployeeWage`
-rewrites it from the daily file with the service key. It is NULL for salaried people — the literal
-`'Salary'` sentinel was retired 2026-08-22. Nothing in the app may write this column; the gate in
-`permissions-lib.js` refuses it for every tier, and both client writers stopped sending it, because
-a value typed in the app would be replaced by the next morning's import with nobody told.
+`wage` is an **hourly rate and nothing else**, and it is **ours** — the record of truth behind
+every dollar this system computes. It is NULL for salaried people; the literal `'Salary'` sentinel
+was retired 2026-08-22. It is typed on the **Salaries & Wages** page by any signed-in user
+(`permissions-lib.js` allows it at the base tier), and every change is recorded in `wage_history`,
+which is append-only — the server writes the history row **before** the rate, so a failure between
+the two leaves a record with no change rather than a change with no record.
+
+It belonged to BBSI until 2026-08-22: the daily file carried a Pay Rate column and
+`payroll-db.updateEmployeeWage` rewrote this column every morning. That rate was never a source of
+truth — BBSI keyed it by hand out of their payroll system into Timenet so the feed could exist, and
+nobody maintains it there any more. The import stopped reading it; see **daily_hours** below and
+`SCHEMA_RATE_OWNED_BY_APP.sql`.
+
+The client writers do not send `wage`, and that is now load-bearing rather than belt-and-braces:
+the server would accept it. A roster Save carrying the browser's stale copy would overwrite a rate
+and append a `wage_history` row saying it moved when nobody touched it. Rates are set one row at a
+time, on one page.
+
+`syncToSheet()` — a loop that PATCHed **every** roster row — was deleted for this reason. Its
+button had been gone since `531018b` and it had been unreachable (and would have thrown on its
+first line) ever since, but a dormant whole-roster writer against the compensation table is not
+worth keeping now that the column is writable. If a bulk roster write is ever wanted again it needs
+a design, not that function restored.
 
 `hire_date` (DATE) exists and is **empty**. Added by `SCHEMA_PHASE_D_PERMISSIONS.sql` §4 with no
 backfill: a guessed start date reads as a fact. BBSI likely has the real ones.
@@ -213,9 +231,34 @@ because that is a decision about the shape of the app and belongs where it can b
 
 | tier | stored? | unlocks |
 |---|---|---|
-| `hourly_wages` | **never** | the base. Every signed-in user holds it. `wage` is readable by everyone by decision. |
+| `hourly_wages` | **never** | the base. Every signed-in user holds it. `wage` is readable **and writable** by everyone by decision — see `employees` above. |
 | `salaries` | yes | `annual_salary`, read and write |
-| `admin` | yes | may grant and revoke the other two. Does not by itself unlock compensation. |
+| `admin` | yes | may grant and revoke the other two, and change everything on Settings. Does not by itself unlock compensation. |
+
+### READ THIS BEFORE GRANTING ANYBODY ACCESS
+
+**Adding someone to this app gives them the ability to change anyone's pay rate.**
+
+That is a real change in what app access means, made deliberately on 2026-08-22, and it is
+stated here rather than left to be discovered. Since the daily file stopped carrying a rate,
+`employees.wage` is the record of truth behind every dollar the system computes, and it is
+writable at the base tier — no grant, no tier, nothing to configure. A new user's first login
+gives them a field on Salaries & Wages next to every hourly employee in the company.
+
+What that is bounded by:
+
+- **Nothing is silent.** Every change writes a `wage_history` row carrying the previous rate,
+  the new one, the percentage move, and the email of whoever typed it. The table is append-only,
+  enforced by a trigger the service key cannot bypass, so the record cannot be edited away.
+- **A large move is flagged**, not blocked — `WAGE_CHANGE_ALERT_PCT`, default 20%.
+- **The blast radius is one row at a time.** There is no bulk rate writer in the app; the one
+  that existed was deleted for exactly this reason.
+- **`annual_salary` is not included.** That stays behind the `salaries` tier in both directions.
+
+The alternative was gating rates behind a tier, which would have meant the two accounts holding
+`salaries` doing every rate correction for the whole mill. That was rejected knowingly. If the
+roster of app users ever widens beyond people who should see and set pay, this is the decision
+to revisit first.
 
 A missing row means the base tier, **not no access** — which is why `hourly_wages` is refused by a
 CHECK rather than merely ignored by the code. A row asserting it would make presence and absence
@@ -370,9 +413,70 @@ created_at`
 
 One row per employee per work day, `unique (work_date, employee_number)` so a re-send is
 idempotent. `is_scheduled_day` is generated: Mon-Thu true, Fri-Sun false. `department` is a
-**snapshot** taken at import, never a live join. `ot_dollars` is the residual
-`total_earnings - regular_hours * pay_rate`, never `ot_hours * rate * 1.5`. See
-`PAYROLL_INGESTION.md` for why both of those matter.
+**snapshot** taken at import, never a live join.
+
+**THE FEED IS HOURS-ONLY SINCE 2026-08-22.** `pay_rate`, `total_earnings`, `ot_dollars` and
+`regular_dollars` are **NULL on every row imported since**, and hold real vendor figures on every
+row before it. That discontinuity is deliberate: what is in the old rows is the only record of what
+BBSI said the money was, so it is kept rather than rewritten. Nothing in the app reads any of the
+four — every dollar is computed from `employees.wage` × these hours. `SCHEMA_RATE_OWNED_BY_APP.sql`
+makes them nullable and drops their zero defaults, so a column nobody names cannot become `$0.00`.
+**It must be applied before the hours-only importer deploys**, or the morning import fails on the
+NOT NULL constraint.
+
+`regular_hours`, `ot_hours` and `total_hours` are the file's and are unchanged. The file decides
+**how many** hours are overtime; `netlify/functions/pay-rules-lib.js` decides what each is paid at —
+1.5× for hours 10–12 in a day, 2.0× above 12, which is what California's 4×10 alternative workweek
+pays and what the old `ot_dollars` residual inherited for free. See `PAYROLL_INGESTION.md`.
+
+### settings
+`key, value, updated_at` — one row per key; the app uses `emailSettings`.
+
+`/api/settings` **reads for everyone, writes for admins only.** The write gate resolves through
+the same `fetchTiers` as every other gate and sits above the body parse and above any database
+access, so a refused POST reaches no table. It was added on 2026-08-22, when this endpoint was
+still session-only: three of the values it holds are not casual.
+
+- `managers` — **the recipient list for the weekly OT report, which carries per-person dollars.**
+  A text field any signed-in user could type an address into is a compensation disclosure with a
+  Save button, reached through a different endpoint than the one Phase D gated. (The allowlist on
+  `/api/send-ot-email` bounds this — a tampered list cannot send off-domain — but everybody who
+  could add an address is in-domain.)
+- `graceHoursPerEmployee` — the timeclock grace allowance. At ~54 hourly staff, 0.5 hrs/person/week
+  is ~27 hours of pre-approved OT, so moving it moves the headline Net OT figure on every report.
+- `otBudgetPercent` — decides what managers are **told** is over budget.
+
+Reads stay open deliberately: the figures are already visible on every report that uses them, and
+hiding the settings that produce them would make those reports less legible while protecting
+nothing. The page renders read-only values for a non-admin rather than fields that would 403.
+
+### wage_history
+`id, employee_id, employee_number, employee_name, rate, previous_rate, change_pct, effective_date,
+source, flagged, note, created_at` — `SCHEMA_V2_MODEL.sql` §6
+
+Every observed change to an hourly rate, and the only way to answer "what was this person making in
+March". **Append-only, enforced by a trigger** rather than merely intended: the service key bypasses
+row-level security but not triggers, so this holds for the app and for a person in the SQL editor
+alike. A correction is a new row. To make a genuine repair, disable the trigger, fix the row,
+re-enable it, and record why — see the comment in the migration.
+
+Keyed by `employee_number` as well as `employee_id`, and the number is NOT NULL: the daily file
+identifies people by number, and a rate cannot be recorded for somebody who has none. That is why
+the Salaries & Wages page shows no input for such a person rather than a box that fails on save.
+
+`source` is `'bbsi'` for a rate observed in the daily file — historical, nothing writes it now — or
+`'manual'` for one typed in the app. `flagged` marks a move beyond `WAGE_CHANGE_ALERT_PCT`
+(default 20%). **Flagged, never blocked**: a typo and a real raise are indistinguishable in the data
+and the difference is that one of them should be looked at, while blocking would stall a legitimate
+raise on a Friday afternoon.
+
+`effective_date` is the day the change takes effect, and it is required rather than defaulted: for
+an import it is the day the file describes (a late file must not land on the day it was processed),
+and for a typed rate it is today in the mill's zone.
+
+The table is **not** in `data.js`'s `ALLOWED_TABLES`, so no browser can read or write it directly.
+The only writer is the wage edit in `/api/data`, which inserts here before it updates
+`employees.wage`.
 
 ### processed_emails
 `message_id, processed_at, work_date, status, error, subject, from_address, received_at,
@@ -555,9 +659,11 @@ Four things about it are load-bearing and easy to undo by accident:
    action all exist to catch when that inference is wrong.
 2. **Department is snapshotted onto every row at import**, never joined live. Employees transfer;
    a live join would silently rewrite historical reports the day somebody moves.
-3. **OT dollars are the residual** `Total Earnings - Regular x Pay Rate`, not
-   `OT x rate x 1.5`. California 4x10 pays 2.0x above 12 hours, and the flat multiplier
-   undercounts by ~3%.
+3. **The premium tiers are modelled, not flattened.** OT dollars used to be the residual
+   `Total Earnings - Regular x Pay Rate`, which inherited them for free; the file's money is
+   no longer imported, so `pay-rules-lib.js` prices 1.5x from 10-12 hours and 2.0x above 12
+   explicitly. A flat `OT x rate x 1.5` undercounts by ~3% on a real day's file. The
+   seventh-consecutive-day rule is a known gap — see `PAYROLL_INGESTION.md`.
 4. **Salaried employees are excluded at import** — unconditionally, whatever the file
    carries for them — so every dollar figure here is *hourly* payroll. The UI labels it that
    way; without the label the Net OT percentage reads as company-wide and is not. A salaried
@@ -621,10 +727,16 @@ Google OAuth restricted to `sequoiafp.com`. Non-domain users can be added via `A
 Recorded here rather than in a comment nobody will find, because each one is a decision that was
 taken deliberately and each one has a visible consequence today.
 
-**~~Permissions~~ — the enforcement is DONE; the pages are not.** `user_permissions` exists and is
-seeded (`SCHEMA_PHASE_D_PERMISSIONS.sql`), and `netlify/functions/permissions-lib.js` gates both
-reads and writes of `employees`. What remains is the Salaries & Wages page itself, the admin grant
-surface, and the three items below that were waiting on the answer.
+**~~Permissions~~ — DONE.** `user_permissions` exists and is seeded
+(`SCHEMA_PHASE_D_PERMISSIONS.sql`), `netlify/functions/permissions-lib.js` gates both reads and
+writes of `employees`, and the Salaries & Wages page and the admin grant surface are shipped.
+
+One thing about that page changed afterwards and is worth reading as part of it: the tab is
+**no longer behind the salaries tier**. Its Hourly section is where every pay rate in the company
+is typed, and `employees.wage` is writable at the base tier, so the tab opens for everybody and the
+**salaried section** is what the tier gates. Bouncing somebody off the page for lacking the tier
+would take the rate editor away along with the salaries they cannot see. Staffing Economics is
+still gated as a whole tab.
 
 **~~Staffing Economics comes back, gated~~ — DONE.** The page is back behind the salaries tier with
 `max_wage` and the wage-vs-max variance column, and seat assignment works from the app again — as a

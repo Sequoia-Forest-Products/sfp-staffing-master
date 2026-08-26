@@ -1,4 +1,5 @@
 const db = require('./db');
+const perms = require('./permissions-lib');
 const { verifySession, getCookies } = require('./session-lib');
 
 // This endpoint had NO session check on either method. GET returned any
@@ -19,6 +20,41 @@ const { verifySession, getCookies } = require('./session-lib');
 // and PostgREST honoured it. Anything acceptable in a filter position could be
 // injected the same way. Encoding it makes the value a value.
 const settingsFilter = (key) => `?key=eq.${encodeURIComponent(key)}`;
+
+// ------------------------------------------------------------------------
+// WRITES ARE ADMIN-ONLY. READS ARE NOT.
+// ------------------------------------------------------------------------
+//
+// The same shape as /api/permissions, and for the same reason: this endpoint
+// carries decisions that are nobody's to make casually.
+//
+//   emailSettings.managers   THE RECIPIENT LIST FOR THE WEEKLY OT REPORT, which
+//                            carries per-person dollars. A text field anybody
+//                            signed in could type an address into is a
+//                            compensation disclosure with a Save button — the
+//                            exact thing the Phase D tiers exist to prevent,
+//                            reached through a different endpoint. That is how
+//                            this file survived the /api/data fix in the first
+//                            place: the table allowlist added there covers the
+//                            four tables that endpoint serves and never saw
+//                            this one.
+//
+//   graceHoursPerEmployee    At ~54 hourly staff, 0.5 hrs/person/week is ~27
+//                            hours of pre-approved OT. Moving it moves the
+//                            headline Net OT figure on every report, with
+//                            nothing recording that it moved or who moved it.
+//
+//   otBudgetPercent          Decides what managers are TOLD is over budget.
+//
+// Reads stay open deliberately. Everybody should be able to see what the
+// allowance and the budget currently are — the figures are already visible on
+// every report that uses them, and hiding the settings that produce them would
+// make the reports less legible without protecting anything. What is gated is
+// changing them.
+//
+// The check sits ABOVE any parsing or database access, so a refused request
+// reaches no table — the same ordering /api/permissions uses, and the thing its
+// test asserts.
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -45,8 +81,28 @@ exports.handler = async (event) => {
       }
     }
 
-    // POST /api/settings - save setting
+    // POST /api/settings - save setting. ADMIN ONLY.
     if (method === 'POST') {
+      // Resolved through the same fetchTiers every other gate uses, so an admin
+      // here is an admin there. Fails closed to the base tier: a broken
+      // permissions read costs an admin the ability to change a setting, which
+      // is the right way round.
+      //
+      // Before the body is parsed and before anything touches the settings
+      // table, so a refusal writes nothing and reads nothing.
+      const tiers = await perms.fetchTiers(perms.normalizeEmail(session.email), db);
+      if (!perms.has(tiers, perms.TIER_ADMIN)) {
+        return {
+          statusCode: 403, headers,
+          body: JSON.stringify({
+            error: 'Only an administrator may change these settings.',
+            detail: 'The manager recipient list, the timeclock grace allowance and the OT ' +
+                    'budget all change what the weekly report says and who receives it. ' +
+                    'An administrator can grant the admin tier under Settings → Access.'
+          })
+        };
+      }
+
       const body = JSON.parse(event.body || '{}');
       const settingKey = body.key;
       const settingValue = body.value;

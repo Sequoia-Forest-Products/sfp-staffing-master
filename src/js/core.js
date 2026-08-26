@@ -74,6 +74,11 @@ let state = {
   // Salaries & Wages. Keyed by employee id, so a half-typed figure on one person
   // survives a re-render caused by somebody else's row.
   salaryDrafts:{}, salarySaving:false,
+  // The same shape for hourly rates, which became editable on 2026-08-22 when
+  // the daily file stopped carrying one. Two separate maps rather than one:
+  // the two halves of the page save independently and refuse for different
+  // reasons, and a shared map would let a refused salary hold back a rate.
+  wageDrafts:{}, wageSaving:false,
   // Staffing Economics. Loaded on first open like the cost reports, not on every
   // page load: /api/data refuses the table to most of the roster, so fetching it
   // eagerly would 403 for almost everybody on every boot.

@@ -292,7 +292,9 @@ test('losing the tier bounces off this tab too', () => {
   ctx.applyTabVisibility();
   assert.strictEqual(ctx.state.tab, 'employees');
   assert.strictEqual(ctx.__el('tab:economics').hidden, true);
-  assert.strictEqual(ctx.__el('tab:salaries').hidden, true);
+  // Salaries & Wages is NOT hidden with it any more: its Hourly section is
+  // where every pay rate in the company is typed, and that is the base tier.
+  assert.strictEqual(ctx.__el('tab:salaries').hidden, false);
 });
 
 // ---------------------------------------------------------------------------

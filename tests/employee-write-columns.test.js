@@ -6,10 +6,23 @@
 // attacker and a trap for us — the roster's own Save sent `wage` on every write,
 // so the gate as shipped would have 403'd every save from the Edit modal.
 //
-// `wage` had to go from the client because BBSI owns the column: the daily
-// import writes it through payroll-db.updateEmployeeWage with the service key,
-// which this gate does not touch. Anything typed in the app would have been
+// `wage` had to go from the client because BBSI owned the column: the daily
+// import wrote it through payroll-db.updateEmployeeWage with the service key,
+// which this gate does not touch, so anything typed in the app would have been
 // replaced by the next morning's file, unannounced.
+//
+// THAT REASON EXPIRED ON 2026-08-22 AND THE ASSERTIONS DID NOT. The file's rate
+// was a hand transcription nobody maintains; the import no longer reads it and
+// employees.wage is writable at the base tier. So the gate would now ACCEPT a
+// wage from these writers, and the reason they must still not send one has
+// changed rather than gone away: a rate is set on Salaries & Wages, one row at
+// a time, where the change is recorded in wage_history. A roster Save carrying
+// the browser's stale copy would append a history row saying a rate moved when
+// nobody touched it — and syncToSheet(), which did that for EVERY row, has been
+// deleted rather than left sitting one edit away from being callable again.
+//
+// Which makes these the tests that matter MORE than they did, not less — the
+// server is no longer the backstop behind them.
 //
 // So these tests are not "does the client omit wage" — that alone would pass
 // again the day somebody adds a field. They compare the ACTUAL request bodies
@@ -71,7 +84,7 @@ function sandbox() {
       calls.push({ url: u, method, body: opts && opts.body ? JSON.parse(opts.body) : null });
       if (u.startsWith('/api/preapproved-ot')) return { ok: true, status: 200, json: async () => ({ ok: true, rows: [], otTypes: [] }) };
       if (u.startsWith('/api/allocations')) return { ok: true, status: 200, json: async () => ({ ok: true, allocations: [] }) };
-      // The reload at the end of syncToSheet: hand back the row unchanged.
+      // Any roster reload a writer does on its way out: hand back the row unchanged.
       if (method === 'GET') return { ok: true, status: 200, json: async () => ({ ok: true, data: [{ id: EMP_ID, name: 'Ana Reyes', wage: '22.00' }] }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, data: [{ id: EMP_ID }] }) };
     }
@@ -173,28 +186,36 @@ test('a new employee is created without a wage column', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sync — the whole roster, every row, one click
+// Sync — deleted, and this asserts it stays deleted
 // ---------------------------------------------------------------------------
 
-test('syncToSheet sends no wage on any row, and no column the gate refuses', async () => {
+test('there is no whole-roster writer in the frontend', () => {
+  // A test used to live here asserting that syncToSheet() sent no wage on any
+  // of its rows. The function is gone: its button was removed in 531018b, it
+  // was reachable from nothing afterwards, and it would have thrown on its
+  // first line (document.getElementById('syncBtn') is null — no such element
+  // exists in public/app.html).
+  //
+  // The test went with it rather than being kept as a guard, because a test
+  // that calls a function directly cannot tell a live writer from a dead one —
+  // which is exactly how this survived a year of being uncallable while its
+  // own test passed every run.
+  //
+  // What is asserted instead is that nothing of the shape has come back. A
+  // loop that PATCHes every roster row is one edit away from stamping this
+  // browser's stale copy of every rate over the table and appending a
+  // wage_history row per person, now that `wage` is writable at the base tier.
   const ctx = sandbox();
-  ctx.state.employees = [
-    { ...PERSON },
-    { ...PERSON, id: 'row-2', name: 'Bo Tran', payType: 'Salaried', wage: 'Salary' },
-    { ...PERSON, id: null, name: 'Unsaved Person' }
-  ];
+  assert.strictEqual(typeof ctx.syncToSheet, 'undefined',
+    'syncToSheet is back — it needs a design, not a restore');
 
-  await ctx.syncToSheet();
-
-  const writes = writesTo(ctx, 'employees');
-  assert.strictEqual(writes.length, 3, 'one write per roster row');
-  for (const w of writes) {
-    assert.ok(!('wage' in w.body), `${w.url} must not carry wage`);
-    const refused = Object.keys(w.body).filter(k => !BASE_WRITABLE.includes(k));
-    assert.deepStrictEqual(refused, [], 'refused: ' + refused.join(', '));
-  }
-  // Sync still asserts pay type, which is the fact it is allowed to carry.
-  assert.deepStrictEqual(writes.map(w => w.body.pay_type), ['Hourly', 'Salaried', 'Hourly']);
+  const source = fs.readFileSync(path.join(SRC, 'data.js'), 'utf8');
+  // The comment block that replaced it names the identifier; the code must not.
+  const inCode = source.split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.ok(!/syncToSheet|syncBtn/.test(inCode),
+    'a Sync writer is referenced in data.js outside the comment recording its removal');
 });
 
 // ---------------------------------------------------------------------------
@@ -221,7 +242,7 @@ test('the Add form has no wage input, and says where the rate comes from', () =>
   // or they will go looking for the field.
   assert.match(html, /Hourly wage/);
   assert.match(html, /not editable here/i);
-  assert.match(html, /daily payroll file/i);
+  assert.match(html, /Salaries &amp; Wages/);
 });
 
 test('adding a salaried person is told where the salary lives', () => {
@@ -252,15 +273,22 @@ test('the profile card still has no compensation field of any kind', () => {
 // the reason the whole thing exists
 // ---------------------------------------------------------------------------
 
-test('wage is readable by everyone and writable by nobody through /api/data', () => {
+test('wage is readable AND writable by everyone through /api/data', () => {
+  // The reversal. Phase D refused `wage` for every tier because BBSI overwrote
+  // it every morning and a value typed in the app would not have survived the
+  // night. The import stopped reading the file's rate on 2026-08-22, so
+  // employees.wage is the record of truth and somebody has to be able to set
+  // it. Base tier, deliberately: the people who correct a rate are supervisors.
   const base = new Set([perms.TIER_HOURLY_WAGES]);
   assert.ok(perms.employeeReadColumns(base).includes('wage'),
-    'hourly rates stay visible to every signed-in user — that was not what Phase D changed');
-  for (const tier of perms.ALL_TIERS) {
-    const held = new Set([perms.TIER_HOURLY_WAGES, tier]);
-    assert.ok(!perms.employeeWriteColumns(held).includes('wage'),
-      `${tier} must not be able to write wage; BBSI owns the column`);
-  }
+    'hourly rates stay visible to every signed-in user');
+  assert.ok(perms.employeeWriteColumns(base).includes('wage'),
+    'and are now writable at the base tier, with no grant');
+
+  // The reversal is `wage` and nothing else. annual_salary moved in neither
+  // direction, which is the whole point of the two lists being separate.
+  assert.ok(!perms.employeeReadColumns(base).includes('annual_salary'));
+  assert.ok(!perms.employeeWriteColumns(base).includes('annual_salary'));
 });
 
 // ---------------------------------------------------------------------------

@@ -208,11 +208,9 @@ const money = rate => (rate === null || rate === undefined ? 'no rate' : rate.to
 // regression this ordering exists to prevent, and tests/wage-sync.test.js pins
 // it with a salaried employee who carries a pay_rate.
 //
-// For an hourly employee a rate from the file wins, then the stored
-// employees.wage. `source: 'file'` covers both, and that is not a fudge:
-// employees.wage holds nothing but what the BBSI file last put there. The result
-// is never written back onto a salaried person's row — employees.wage means an
-// hourly rate or nothing, and pay type is employees.pay_type.
+// For an hourly employee there is one answer, employees.wage, which is typed on
+// the Salaries & Wages page and recorded in wage_history. The file's rate used
+// to win over it and no longer exists — see the hourly branch below.
 function effectiveHourlyRate(employee) {
   const emp = employee || {};
 
@@ -232,12 +230,22 @@ function effectiveHourlyRate(employee) {
   }
 
   // ---- hourly ----
-  const fileRate = normalizeRate(pick(emp, 'fileRate', 'file_rate', 'payRate', 'pay_rate'));
-  if (fileRate !== null) return { rate: fileRate, source: 'file' };
-
+  //
+  // ONE ANSWER: employees.wage. The file's rate used to win over it, and that
+  // was right while the file was believed — but it was a human transcription
+  // from BBSI's payroll system into Timenet, kept alive only so this feed could
+  // exist, and nobody maintains it there any more.
+  //
+  // There is deliberately no "fall back to the file rate" path. If you are
+  // about to add one back, it is the same regression the salaried branch above
+  // has guarded against since Phase B, one column over: a rate nobody owns
+  // silently outranking the one somebody does.
   const stored = normalizeRate(emp.wage);
-  if (stored !== null) return { rate: stored, source: 'file' };
+  if (stored !== null) return { rate: stored, source: 'employees.wage' };
 
+  // No rate on file. Null, never zero — a person with hours and no rate is a
+  // data problem to report by name, and a zero folds into a total and
+  // understates it.
   return { rate: null, source: 'none' };
 }
 
@@ -378,36 +386,26 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
       continue;
     }
 
-    const rate = normalizeRate(pick(row, 'pay_rate', 'payRate', 'Pay Rate', 'rate'));
-    if (rate === null) {
-      skipped.noRate++;
-      continue;
-    }
-
     // ---- somebody the app has never heard of ----
     //
-    // They have hours and a wage today and no department, cost class or
-    // position group, so their cost is real and is landing nowhere. Create them
-    // into the bullpen and queue the arrival; the checklist is computed from the
-    // employees row itself and is deliberately not stored (schema section 6b).
+    // THIS IS ALL THAT IS LEFT OF THE WAGE SYNC, and it is not about wages.
+    //
+    // Until 2026-08-22 this loop read Pay Rate from the file, wrote it onto
+    // employees.wage, recorded a wage_history row and flagged any move beyond
+    // the alert threshold. All of it is gone: the rate in that file was a human
+    // transcription from BBSI's payroll system into Timenet, kept alive only so
+    // this feed could exist, and nobody maintains it there any more.
+    // employees.wage is the record of truth and is edited in the app.
+    //
+    // What survives is arrival detection, which was never about money. A person
+    // in the file that the roster does not have is a new hire whose hours are
+    // landing nowhere, and the setup task is how anybody finds out. They are
+    // created with NO rate — somebody has to type one before their cost can be
+    // computed, and the task says so.
     if (!employee) {
-      const create = { employeeNumber, name, firstName: first, lastName: last, rate };
+      const create = { employeeNumber, name, firstName: first, lastName: last };
       creates.push(create);
       ops.push({ kind: 'create', employeeNumber, create });
-
-      const hist = historyRow({
-        employeeId: null,          // filled in by the applier from the new row
-        employeeNumber,
-        name,
-        rate,
-        previousRate: null,
-        changePct: null,
-        flagged: false,
-        note: `First rate observed for Emp # ${employeeNumber}, auto-created from the BBSI daily file.`,
-        effectiveDate
-      });
-      history.push(hist);
-      ops.push({ kind: 'history', employeeNumber, row: hist });
 
       const task = {
         employee_id: null,
@@ -415,67 +413,18 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
         employee_name: name,
         first_seen_date: effectiveDate,
         source: SOURCE,
-        note: `Auto-created from the BBSI daily payroll file for ${effectiveDate} at ` +
-              `${rate.toFixed(2)}/hr. Needs department, cost class and position group.`
+        note: `Auto-created from the BBSI daily file for ${effectiveDate}. Needs a pay rate, ` +
+              `department, cost class and position group. Until the rate is set on ` +
+              `Salaries & Wages this person's cost cannot be computed at all.`
       };
       setupTasks.push(task);
       ops.push({ kind: 'setupTask', employeeNumber, row: task });
       continue;
     }
 
-    // ---- somebody we already hold a rate for ----
-
-    const from = normalizeRate(employee.wage);
-
-    if (from !== null && from === rate) {
-      skipped.unchanged++;
-      continue;
-    }
-
-    const changePct = changePercent(from, rate);
-    const isFlagged = changePct !== null && Math.abs(changePct) > threshold;
-
-    let note = null;
-    if (isFlagged) {
-      note =
-        `Rate moved ${money(from)} -> ${money(rate)} (${signed(changePct)}), beyond the ` +
-        `${threshold}% alert threshold. Applied and flagged for review — a vendor keying error ` +
-        `and a genuine raise look identical here.`;
-    } else if (from === null) {
-      // Not a change: the app simply had no usable rate for this person until
-      // now. Recorded so the history has a starting point to measure from.
-      note = `First rate observed for Emp # ${employeeNumber} (employees.wage held ` +
-             `${JSON.stringify(employee.wage ?? null)}).`;
-    }
-
-    const hist = historyRow({
-      employeeId: (employee.id ?? null) || null,
-      employeeNumber,
-      name,
-      rate,
-      previousRate: from,
-      changePct,
-      flagged: isFlagged,
-      note,
-      effectiveDate
-    });
-    history.push(hist);
-    ops.push({ kind: 'history', employeeNumber, row: hist });
-
-    const update = {
-      employeeId: (employee.id ?? null) || null,
-      employeeNumber,
-      name,
-      from,
-      to: rate,
-      changePct,
-      flagged: isFlagged,
-      note
-    };
-    updates.push(update);
-    ops.push({ kind: 'update', employeeNumber, update });
-
-    if (isFlagged) flagged.push(update);
+    // Already on the roster. There is nothing to do with them here any more:
+    // their rate is ours, and this file has no opinion about it.
+    skipped.unchanged++;
   }
 
   // Everybody active who the file did not mention. Counted, never touched —
