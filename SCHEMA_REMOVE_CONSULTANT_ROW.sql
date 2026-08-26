@@ -1,4 +1,18 @@
 -- =====================================================================
+-- §1 RUN 2026-08-26 against zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- matched_rows 1; allocations, preapproved_ot, setup_tasks, wage_history
+-- and economics_seats all 0; roster_total 74. The premise holds: nothing
+-- references him.
+--
+-- The row itself: employee_number, department, cost_class, position,
+-- position_group, wage, annual_salary and hire_date ALL NULL. Salaried /
+-- Inactive, created 2026-07-08. No compensation of either kind, and with
+-- wage null he was never in the hourly flow.
+--
+-- FOUND WHILE RUNNING IT: §1's daily_hours count was vacuous — see the
+-- note below. Corrected before §2 was run rather than after.
+-- =====================================================================
 -- SFP Staffing — remove Howard Hoffman from `employees`
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 --
@@ -32,9 +46,18 @@
 -- before §2 runs.
 --
 -- daily_hours is deliberately absent from that list: it is keyed by
--- employee_number as TEXT with no foreign key, so his rows (if any)
--- would survive the delete rather than be removed by it. §1 counts them
--- too, for the same reason.
+-- employee_number as TEXT with no foreign key, so a row of his would
+-- survive the delete rather than be removed by it.
+--
+-- §1 USED TO COUNT THOSE ROWS AND THE COUNT WAS VACUOUS. It joined
+-- `d.employee_number = him.employee_number`, and his employee_number is
+-- NULL — `NULL = NULL` is never true, so that column reported 0 whether
+-- or not any rows existed, and would have been read as evidence.
+--
+-- The real answer is stronger than the join: daily_hours.employee_number
+-- is NOT NULL and he has no number at all, so no row in that table can
+-- refer to him. There is nothing to check, which is why the check is
+-- gone rather than corrected.
 -- =====================================================================
 
 
@@ -48,10 +71,9 @@
 --   setup_tasks             0
 --   wage_history            0
 --   economics_seats         0
---   daily_hours_rows        0
 --   roster_total            74
 --
--- ANY non-zero in the middle six means STOP. Do not run §2 — say what
+-- ANY non-zero in the middle five means STOP. Do not run §2 — say what
 -- came back instead. A cascade that quietly removes his allocation or
 -- his pre-approved OT is a different change from deleting an empty row,
 -- and it is not the change that was agreed.
@@ -68,18 +90,15 @@ begin
   end if;
 end $$;
 
-with him as (
-  select id, employee_number from employees where name = 'Howard Hoffman'
-)
+with him as (select id from employees where name = 'Howard Hoffman')
 select
-  (select count(*) from him)                                                   as matched_rows,
+  (select count(*) from him)                                                       as matched_rows,
   (select count(*) from employee_allocations a  join him on a.employee_id = him.id) as allocations,
   (select count(*) from preapproved_ot p        join him on p.employee_id = him.id) as preapproved_ot,
   (select count(*) from employee_setup_tasks t  join him on t.employee_id = him.id) as setup_tasks,
   (select count(*) from wage_history w          join him on w.employee_id = him.id) as wage_history,
   (select count(*) from economics e             join him on e.employee_id = him.id) as economics_seats,
-  (select count(*) from daily_hours d           join him on d.employee_number = him.employee_number) as daily_hours_rows,
-  (select count(*) from employees)                                             as roster_total;
+  (select count(*) from employees)                                                 as roster_total;
 
 -- Him, in full, so the row being deleted is looked at before it is
 -- deleted rather than trusted to be the one we mean. Two people could
