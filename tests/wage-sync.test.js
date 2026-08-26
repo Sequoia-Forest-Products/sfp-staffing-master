@@ -69,15 +69,17 @@ const plan = (fileRows, opts = {}) => planWageSync({
   fileRows,
   employees: ROSTER,
   workDate: WORK_DATE,
-  thresholdPct: 20,
   ...opts
 });
 
-const historyFor = (result, employeeNumber) =>
-  result.history.filter(h => h.employee_number === employeeNumber);
-
-const updateFor = (result, employeeNumber) =>
-  result.updates.find(u => u.employeeNumber === employeeNumber) || null;
+// historyFor() and updateFor() lived here and are gone with the arrays they
+// read. planWageSync returns no `history`, `updates`, `flagged` or
+// `thresholdPct`: it plans no rate change, so an empty array in the shape read
+// as "no changes today" when the truth is "this cannot happen".
+//
+// What replaced them as the assertion of record is that the plan carries
+// creates and setup tasks and NOTHING about money — see the arrival tests
+// below, which check the create has no `rate` key at all.
 
 // ============================================================
 // normalizeRate — "a missing or zero rate is not a rate"
@@ -114,8 +116,7 @@ test('an active employee absent from the file is not touched at all', () => {
   // there was nothing to do".
   const result = plan([fileRow('0319', 25.00)]);
 
-  assert.deepStrictEqual(result.updates, [], 'no existing employee is ever updated now');
-  assert.deepStrictEqual(result.history, [], 'and no history row comes from the file');
+  assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
 
   // 0063, 0771, 0884 and 905 are active and hourly. 0007 and 0011 are salaried
   // (outside this flow) and 0400 is terminated, so neither is counted.
@@ -131,9 +132,8 @@ test('an active employee absent from the file is not touched at all', () => {
 
 test('an empty file moves nothing and blanks nobody', () => {
   const result = plan([]);
-  assert.deepStrictEqual(result.updates, []);
+  assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
   assert.deepStrictEqual(result.creates, []);
-  assert.deepStrictEqual(result.history, []);
   assert.deepStrictEqual(result.ops, []);
   assert.strictEqual(result.skipped.absentFromFile, 5);   // every active hourly person
 });
@@ -147,7 +147,6 @@ test('an empty file moves nothing and blanks nobody', () => {
 test('a row with no employee number cannot be matched and is counted separately', () => {
   const result = plan([fileRow('', 25.00), fileRow(null, 25.00)]);
   assert.strictEqual(result.skipped.noEmployeeNumber, 2);
-  assert.strictEqual(result.skipped.noRate, 0);
   assert.deepStrictEqual(result.creates, []);
 });
 
@@ -210,9 +209,8 @@ test('an unknown employee number creates a person and a setup task — and NO ra
 
   // No history row: there is no rate to record. The create must come first so
   // the task can reference the new id.
-  assert.deepStrictEqual(result.history, []);
   assert.deepStrictEqual(result.ops.map(o => o.kind), ['create', 'setupTask']);
-  assert.deepStrictEqual(result.updates, []);
+  assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
 });
 
 test('two rows for the same unknown number produce one create and one setup task', () => {
@@ -223,7 +221,6 @@ test('two rows for the same unknown number produce one create and one setup task
 
   assert.strictEqual(result.creates.length, 1);
   assert.strictEqual(result.setupTasks.length, 1);
-  assert.deepStrictEqual(result.history, []);
   assert.strictEqual(result.skipped.duplicateInFile, 1);
   // The two rows differ only in a rate nobody reads, so which one wins cannot
   // matter any more — but the dedupe still has to happen, or the create would
@@ -240,7 +237,7 @@ test('two rows for the same unknown number produce one create and one setup task
 test('the roster deciding somebody is salaried is enough on its own', () => {
   // The file forgot to set Is Salary. employees.wage still says 'Salary'.
   const result = plan([fileRow('0007', 45.00, { is_salary: false })]);
-  assert.deepStrictEqual(result.updates, []);
+  assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
   assert.strictEqual(result.skipped.salaried, 1);
 });
 
@@ -248,7 +245,6 @@ test('a salaried row is counted as salaried, not as a missing rate', () => {
   // The real file sends salaried people with $0 and zero hours.
   const result = plan([fileRow('0007', 0, { is_salary: true, total_hours: 0 })]);
   assert.strictEqual(result.skipped.salaried, 1);
-  assert.strictEqual(result.skipped.noRate, 0);
 });
 
 
@@ -428,17 +424,15 @@ test('effective_date is the day the file describes, not the day it is processed'
   const late = planWageSync({
     fileRows: [fileRow('0319', 26.00), fileRow('0999', 20.00)],
     employees: ROSTER,
-    workDate: '2026-07-04',            // a file that arrived a month late
-    thresholdPct: 20
+    workDate: '2026-07-04'             // a file that arrived a month late
   });
 
   assert.strictEqual(late.workDate, '2026-07-04');
+  // The setup task is the only dated thing the plan still produces — the
+  // wage_history rows this used to check went with the rate.
   const today = new Date().toISOString().slice(0, 10);
-  for (const row of late.history) {
-    assert.strictEqual(row.effective_date, '2026-07-04');
-    assert.notStrictEqual(row.effective_date, today);
-  }
   assert.strictEqual(late.setupTasks[0].first_seen_date, '2026-07-04');
+  assert.notStrictEqual(late.setupTasks[0].first_seen_date, today);
 });
 
 test('a timestamp work date is reduced to its calendar date', () => {
@@ -471,6 +465,10 @@ test('a missing or unusable work date is refused, never guessed', () => {
 function fakeWriters(overrides = {}) {
   const calls = [];
   const writers = {
+    // KEPT, and load-bearing, even though payroll-db no longer has this writer:
+    // it is how 'the import has no way to write a rate at all' detects a
+    // history op that fired. Remove the stub and that test stops being able to
+    // see the thing it checks for.
     insertWageHistory: async rows => { calls.push(['history', rows[0]]); return rows; },
     createEmployee: async row => {
       calls.push(['create', row]);
@@ -566,15 +564,28 @@ test('the import has no way to write a rate at all', async () => {
   }, writers);
 
   assert.deepStrictEqual(calls, [], 'an update op wrote something');
-  assert.deepStrictEqual(applied.flagged, []);
   assert.deepStrictEqual(applied.errors, []);
+  // `flagged` and `historyWritten` are gone from the applied shape, along with
+  // the 'history' op branch and insertWageHistory. Absent, not empty: there is
+  // nothing for a caller to read as "none flagged today".
+  assert.strictEqual(applied.flagged, undefined);
+  assert.strictEqual(applied.historyWritten, undefined);
+
+  // The history op is refused the same way the update op is.
+  const second = await applyWageSync({
+    workDate: '2026-08-25',
+    ops: [{ kind: 'history', employeeNumber: '0319',
+            row: { employee_number: '0319', rate: 99.99, effective_date: '2026-08-25' } }],
+    skipped: {}
+  }, writers);
+  assert.deepStrictEqual(calls, [], 'a history op wrote something');
+  assert.deepStrictEqual(second.errors, []);
 });
 
 test('a plan with nothing in it makes no requests at all', async () => {
   const { calls, writers } = fakeWriters();
   const applied = await applyWageSync(plan([fileRow('0319', 24.50)]), writers);
   assert.deepStrictEqual(calls, []);
-  assert.strictEqual(applied.historyWritten, 0);
   assert.deepStrictEqual(applied.errors, []);
   assert.strictEqual(applied.skipped.unchanged, 1);
 });
@@ -693,12 +704,10 @@ test('planWageSync still skips a post-migration salaried person, and counts them
                        fileRow('0011', 43.27, { is_salary: false })],
                       { employees: roster });
 
-  assert.deepStrictEqual(result.updates, []);
+  assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
   assert.deepStrictEqual(result.creates, []);
-  assert.deepStrictEqual(result.history, []);
   assert.deepStrictEqual(result.ops, []);
   assert.strictEqual(result.skipped.salaried, 2);
-  assert.strictEqual(result.skipped.noRate, 0);
 });
 
 test('a post-migration salaried person absent from the file is not counted as absent', () => {

@@ -55,7 +55,7 @@
 //      data, and the difference is that one of them should be looked at.
 //      Blocking would stop a legitimate raise on a Friday afternoon.
 
-const { normalizeRate, isSalaried, DEFAULT_THRESHOLD_PCT } = require('./wage-sync');
+const { normalizeRate, isSalaried, changePercent, DEFAULT_THRESHOLD_PCT } = require('./wage-sync');
 
 // wage_history.source. 'bbsi' is the import's; this is the other one, and the
 // two are what tells a typed correction from a vendor observation.
@@ -159,9 +159,12 @@ function planWageEdit({ employee, value, editorEmail = null, now = new Date(),
   }
 
   const threshold = resolveThreshold(thresholdPct);
-  const changePct = previousRate === null || previousRate === 0
-    ? null
-    : Math.round(((rate - previousRate) / previousRate) * 10000) / 100;
+  // changePercent, not an inline expression. It rounds to two places BEFORE
+  // anything compares the result to the threshold, which is what stops
+  // (30 - 25) / 25 * 100 === 20.000000000000004 reading as "over 20%". This
+  // file had its own copy of that arithmetic; a rule whose whole point is a
+  // floating-point subtlety must not exist twice.
+  const changePct = changePercent(previousRate, rate);
   const flagged = changePct !== null && Math.abs(changePct) > threshold;
 
   const who = textOf(editorEmail) || 'an app user';

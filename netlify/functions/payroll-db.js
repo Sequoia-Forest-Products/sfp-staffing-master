@@ -499,36 +499,19 @@ async function restampDepartments(fromDate, toDate) {
 // key does not bypass it: there is no PATCH and no DELETE here, and there never
 // can be. A correction is a new row.
 
-// One POST per call, chunked only against a bulk back-fill.
+// insertWageHistory() WAS HERE, and the 'history' op that called it is gone
+// from applyWageSync above.
 //
-// Nothing in the import emits a history row any more — the file carries no rate
-// to record. This is kept, unlike updateEmployeeWage above, because it only
-// APPENDS to an append-only table: it cannot overwrite anything, and a back-fill
-// that ever needs to record observed rates has somewhere to go. The app's own
-// edits do not come through here; data.js writes them directly.
-async function insertWageHistory(rows) {
-  const list = (rows || []).filter(Boolean);
-  if (!list.length) return [];
-
-  const written = [];
-  for (let i = 0; i < list.length; i += CHUNK_SIZE) {
-    written.push(...await requestRows('POST', 'wage_history', { body: list.slice(i, i + CHUNK_SIZE) }));
-  }
-  return written;
-}
-
-// THE IMPORT HAS NO WAY TO WRITE A RATE, and that is the point.
+// It was kept once on the argument that it only APPENDS to an append-only table
+// and a future back-fill might want it. That argument does not survive the
+// file having no rate to record: a back-fill of observed rates has nothing to
+// observe. The app's own edits never came through here — data.js writes them
+// directly, and it writes the history row BEFORE the rate, which this path
+// could not do from inside a loop over ops.
 //
-// updateEmployeeWage lived here. It PATCHed employees.wage with the service
-// key, which no permission gate touches, and it ran every morning off the daily
-// file. It is gone with the rate it wrote — the file's Pay Rate was a hand
-// transcription nobody maintains, and employees.wage is now typed in the app.
-//
-// Deleted rather than left unreachable. Nothing emits the op that called it, so
-// it was dead either way; but a service-key writer for the one column the app
-// now owns is not the kind of dead code to keep around, and the wage edit in
-// data.js records a wage_history row BEFORE it writes the rate, which this
-// never could from here.
+// If a bulk wage_history writer is ever needed again it should be written
+// against whatever is actually being recorded, not resurrected against a shape
+// built for a vendor column that no longer exists.
 
 async function createEmployee(row) {
   const rows = await requestRows('POST', 'employees', { body: row });
@@ -579,7 +562,6 @@ async function upsertSetupTask(row) {
 // writers is injectable so this can be tested without a network.
 async function applyWageSync(plan, writers = {}) {
   const w = {
-    insertWageHistory:  writers.insertWageHistory  || insertWageHistory,
     createEmployee:     writers.createEmployee     || createEmployee,
     upsertSetupTask:    writers.upsertSetupTask    || upsertSetupTask
   };
@@ -588,12 +570,7 @@ async function applyWageSync(plan, writers = {}) {
     workDate: (plan && plan.workDate) || null,
     thresholdPct: plan && plan.thresholdPct !== undefined ? plan.thresholdPct : null,
     created: [],
-    historyWritten: 0,
     setupTasks: 0,
-    // Always empty now: nothing plans a rate change, so nothing can be a large
-    // one. Kept in the shape rather than removed so a caller reading it gets an
-    // empty list instead of undefined.
-    flagged: [],
     skipped: (plan && plan.skipped) || null,
     errors: [],
     blocked: []
@@ -605,8 +582,9 @@ async function applyWageSync(plan, writers = {}) {
   const createdIds = new Map();
   const blocked = new Set();
 
-  // A create or a history row for a brand-new person is planned with a null
-  // employee_id, because the id does not exist until the insert returns.
+  // A setup task for a brand-new person is planned with a null employee_id,
+  // because the id does not exist until the insert returns. This used to serve
+  // the planned wage_history row too, which is gone with the file's rate.
   const withId = row => ({
     ...row,
     employee_id: row.employee_id || createdIds.get(row.employee_number) || null
@@ -639,10 +617,6 @@ async function applyWageSync(plan, writers = {}) {
         });
         createdIds.set(op.create.employeeNumber, created.id);
         applied.created.push({ ...op.create, employeeId: created.id });
-
-      } else if (op.kind === 'history') {
-        await w.insertWageHistory([withId(op.row)]);
-        applied.historyWritten++;
 
       } else if (op.kind === 'setupTask') {
         await w.upsertSetupTask(withId(op.row));
@@ -717,7 +691,6 @@ module.exports = {
   fetchOvertime,
   // Wage sync writers, plus the applier that orders them. The decisions live in
   // wage-sync.js; nothing here decides anything.
-  insertWageHistory,
   createEmployee,
   upsertSetupTask,
   applyWageSync,

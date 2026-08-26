@@ -941,8 +941,13 @@ test('an employee number the roster does not have is an arrival, and alerts', as
   assert.strictEqual(plan.creates.length, 1);
   assert.strictEqual(plan.creates[0].employeeNumber, '0202');
   assert.ok(!('rate' in plan.creates[0]), 'a create must not carry a rate');
-  assert.strictEqual(plan.updates.length, 0, 'no wage is written for anybody');
-  assert.strictEqual(plan.history.length, 0, 'and no history row is recorded');
+  // Not "an empty array" — ABSENT. The plan carries no rate-update or
+  // wage_history field at all, so there is nothing for a future caller to read
+  // as "no changes today" when the truth is that this cannot happen.
+  assert.strictEqual(plan.updates, undefined, 'no wage is written for anybody');
+  assert.strictEqual(plan.history, undefined, 'and no history row is planned');
+  assert.strictEqual(plan.flagged, undefined);
+  assert.strictEqual(plan.thresholdPct, undefined, 'nothing is compared to a threshold');
 
   // 0101 is on the roster: known, and there is nothing left to do with them.
   assert.strictEqual(plan.skipped.unchanged, 1);

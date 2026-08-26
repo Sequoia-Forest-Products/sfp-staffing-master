@@ -30,9 +30,19 @@ const DEFAULT_TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles'
 
 const EXPECTED_SHEET = 'Work Summary Payroll';
 
+// PAY RATE AND TOTAL EARNINGS ARE NOT HERE, as of 2026-08-22.
+//
+// The file still carries both columns and this import does not look at either.
+// They were REQUIRED headers, so a vendor tidying their export would have
+// failed tomorrow's ingestion over two columns nobody reads — a live fragility
+// in exchange for nothing.
+//
+// Their values are not parsed either. An unreadable Pay Rate used to raise an
+// `unparseable_number` anomaly: the import complaining about a number it was
+// about to discard, in a panel somebody has to triage.
 const EXPECTED_HEADERS = [
   'Emp #', 'Last Name', 'First Name', 'Is Salary',
-  'Pay Rate', 'Regular', 'OT', 'Total Hours', 'Total Earnings'
+  'Regular', 'OT', 'Total Hours'
 ];
 
 // The PRODUCTION reporting departments, plus the bucket that null lands
@@ -247,12 +257,13 @@ const HEADER_ALIASES = {
   'Last Name':      ['last name', 'lastname', 'last'],
   'First Name':     ['first name', 'firstname', 'first'],
   'Is Salary':      ['is salary', 'issalary', 'salary', 'salaried', 'is salaried'],
-  'Pay Rate':       ['pay rate', 'payrate', 'rate', 'hourly rate', 'base rate'],
   'Regular':        ['regular', 'regular hours', 'reg', 'reg hours', 'regular hrs'],
   'OT':             ['ot', 'ot hours', 'ot hrs', 'overtime', 'overtime hours'],
-  'Total Hours':    ['total hours', 'totalhours', 'total hrs', 'hours'],
-  'Total Earnings': ['total earnings', 'totalearnings', 'total earning', 'earnings',
-                     'gross earnings', 'total pay']
+  'Total Hours':    ['total hours', 'totalhours', 'total hrs', 'hours']
+  // 'Pay Rate' and 'Total Earnings' had alias lists here. Both are unreachable
+  // now that neither is in EXPECTED_HEADERS — mapHeaders only ever looks up
+  // aliases for headers it expects — so they were spellings for columns nothing
+  // asks about.
 };
 
 // Names are only ever displayed, so a file missing them still imports; every
@@ -422,8 +433,7 @@ function buildImport({
 
     const numbers = {};
     for (const [key, canonical] of [
-      ['payRate', 'Pay Rate'], ['regularHours', 'Regular'], ['otHours', 'OT'],
-      ['totalHours', 'Total Hours'], ['totalEarnings', 'Total Earnings']
+      ['regularHours', 'Regular'], ['otHours', 'OT'], ['totalHours', 'Total Hours']
     ]) {
       const coerced = coerceNumber(cell(record, canonical));
       if (!coerced.ok) {
@@ -454,8 +464,10 @@ function buildImport({
     // wage-sync.effectiveHourlyRate) and never a number out of this file.
     //
     // Skipped is not silent, though. They normally arrive as a row of zeroes;
-    // one carrying actual hours or earnings means the vendor's file changed
-    // shape, and that is worth knowing even though the row is still dropped.
+    // one carrying actual HOURS means the vendor's file changed shape, and that
+    // is worth knowing even though the row is still dropped. Earnings used to
+    // count as evidence here too and no longer can: the import does not read
+    // that column, so it has no opinion about what is in it.
     // So it is counted separately and reported as an anomaly naming what it
     // carried, rather than imported and flagged as it once was.
     if (isSalary) {
@@ -467,10 +479,13 @@ function buildImport({
           employeeNumber,
           name: displayName(salariedEmployee, { lastName, firstName }),
           type: 'salaried_with_hours',
+          // HOURS ONLY. This used to quote the row's earnings and pay rate as
+          // well — two figures the import no longer reads, so quoting them
+          // would have been reporting numbers nothing had validated.
           detail: `Emp # ${employeeNumber} is marked Is Salary = Yes but reported ` +
-                  `${numbers.totalHours} hours / ${numbers.totalEarnings.toFixed(2)} earnings ` +
-                  `at a pay rate of ${numbers.payRate.toFixed(2)}. Skipped like every salaried ` +
-                  `row — not imported, and contributing nothing to any total or department. ` +
+                  `${numbers.totalHours} hours (${numbers.regularHours} regular, ` +
+                  `${numbers.otHours} OT). Skipped like every salaried row — not ` +
+                  `imported, and contributing nothing to any total or department. ` +
                   `Reported because a salaried row carrying activity means the payroll ` +
                   `system's behaviour changed.`
         });

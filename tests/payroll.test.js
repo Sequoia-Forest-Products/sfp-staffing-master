@@ -84,9 +84,41 @@ test('hashFile is a stable sha256 of the bytes, so a re-send is detectable', () 
   assert.strictEqual(hashFile(a), hashFile(Buffer.from(a)));
 });
 
-test('the expected sheet and headers are the vendor file, verbatim', () => {
+test('the expected headers are a SUBSET of the vendor file, and carry no money', () => {
+  // This asserted equality with the vendor's nine columns. It cannot any more,
+  // and the inequality is the point: the file still sends Pay Rate and Total
+  // Earnings, and this import expects neither.
+  //
+  // They were REQUIRED headers, so a vendor tidying their export would have
+  // failed the next morning's ingestion over two columns nobody reads.
   assert.strictEqual(EXPECTED_SHEET, 'Work Summary Payroll');
-  assert.deepStrictEqual(EXPECTED_HEADERS, PAYROLL_HEADERS);
+
+  for (const h of EXPECTED_HEADERS) {
+    assert.ok(PAYROLL_HEADERS.includes(h), `${h} is expected but the vendor does not send it`);
+  }
+  assert.ok(!EXPECTED_HEADERS.includes('Pay Rate'), 'the file rate is expected again');
+  assert.ok(!EXPECTED_HEADERS.includes('Total Earnings'), 'the file money is expected again');
+
+  // And the hours ARE still expected — this is what the feed is for.
+  for (const h of ['Emp #', 'Is Salary', 'Regular', 'OT', 'Total Hours']) {
+    assert.ok(EXPECTED_HEADERS.includes(h), `${h} must stay required`);
+  }
+});
+
+test('a file with the money columns REMOVED still imports', () => {
+  // The fragility this closed. BBSI could drop two columns we never read and
+  // the import would have failed with 'missing required column'.
+  const headers = PAYROLL_HEADERS.filter(h => h !== 'Pay Rate' && h !== 'Total Earnings');
+  const buf = buildXlsx({
+    sheetName: EXPECTED_SHEET,
+    rows: [headers, ['0063', 'Smith', 'Ana', 'No', 30, 3, 33]]
+  });
+
+  const result = buildImport({ fileBuffer: buf, workDate: MONDAY, employees: ROSTER, timeZone: TZ });
+  assert.strictEqual(result.counts.imported, 1);
+  assert.strictEqual(result.rows[0].total_hours, 33);
+  assert.strictEqual(result.rows[0].pay_rate, null);
+  assert.strictEqual(result.rows[0].total_earnings, null);
 });
 
 // ============================================================
@@ -222,7 +254,11 @@ test('a salaried row carrying real hours is skipped too, and reported as an anom
   assert.ok(anomaly, 'expected a salaried_with_hours anomaly');
   assert.strictEqual(anomaly.employeeNumber, '9002');
   assert.match(anomaly.detail, /10 hours/);
-  assert.match(anomaly.detail, /400\.00 earnings/);
+  assert.match(anomaly.detail, /10 regular/);
+  // NOT the earnings. The import does not read that column any more, so quoting
+  // it here would be reporting a number nothing had validated.
+  assert.ok(!/400\.00 earnings/.test(anomaly.detail));
+  assert.ok(!/pay rate/i.test(anomaly.detail));
   assert.match(anomaly.detail, /[Ss]kipped/);
   assert.strictEqual(/[Ii]mported anyway/.test(anomaly.detail), false);
   // The all-zero row is not reported — only the one that carried something.
@@ -652,16 +688,19 @@ test('header aliases and stray whitespace are tolerated', () => {
 });
 
 test('a missing required column names the column and lists what was found', () => {
-  const headers = PAYROLL_HEADERS.filter(h => h !== 'Total Earnings');
+  // Total Hours, not Total Earnings — the money columns are no longer required,
+  // so dropping one is not an error any more and this test would have passed
+  // for the wrong reason.
+  const headers = PAYROLL_HEADERS.filter(h => h !== 'Total Hours');
   const buf = buildXlsx({
     sheetName: EXPECTED_SHEET,
-    rows: [headers, ['0063', 'Smith', 'Ana', 'No', 30, 10, 3, 13]]
+    rows: [headers, ['0063', 'Smith', 'Ana', 'No', 30, 10, 3, 300]]
   });
 
   assert.throws(
     () => buildImport({ fileBuffer: buf, workDate: MONDAY, employees: ROSTER, timeZone: TZ }),
     err => {
-      assert.match(err.message, /Total Earnings/);
+      assert.match(err.message, /Total Hours/);
       assert.match(err.message, /Emp #/);          // the headers that WERE found
       assert.match(err.message, /Total Hours/);
       return true;
