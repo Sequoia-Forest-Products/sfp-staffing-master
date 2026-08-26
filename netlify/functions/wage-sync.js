@@ -1,49 +1,47 @@
-// Pure logic for the daily wage sync. No network, no database, no clock — the
-// work date, the roster and the parsed file rows all arrive as arguments, so
+// Pure logic for the daily file's ARRIVAL CHECK, and for deciding what an hour
+// of somebody costs. No network, no database, no clock — the work date, the
+// roster and the parsed file rows all arrive as arguments, so
 // payroll-import.js, the email ingester and the unit tests run the identical
 // code path.
 //
-// WHY THIS EXISTS
+// THE NAME IS HISTORICAL. There is no wage sync any more.
 //
-// The payroll vendor is BBSI. Their daily file carries a Pay Rate for every
-// hourly employee, and that file is the source of truth for hourly wages: it
-// overwrites whatever the app holds, every day, and nobody types an hourly wage
-// into the app by hand. employees.wage is therefore a cache of the vendor's
-// number, and wage_history is the only durable record of how it moved.
+// The payroll vendor is BBSI, and their daily file used to carry a Pay Rate for
+// every hourly employee. This module existed to move that rate onto
+// employees.wage every morning, record every move in wage_history, and flag
+// anything past a threshold. Four rules governed it, each of them a way the
+// sync could quietly destroy payroll data.
 //
-// Four rules are load-bearing. Each of them is a way this module could quietly
-// destroy payroll data, so none of them is a preference:
+// All four are retired, because the thing they protected is gone. The rate in
+// that file was re-keyed by hand out of BBSI's payroll system into Timenet so
+// the feed could exist, and nobody maintains it there. On 2026-08-22 the import
+// stopped reading it and employees.wage became the record of truth, typed on
+// the Salaries & Wages page.
 //
-//   1. OVERWRITE ONLY ON PRESENCE. The sync is driven by the rows in the file
-//      and never by the roster. An active employee who is not in today's file —
-//      vacation, sick, leave, light duty — is not updated, not blanked, not
-//      touched at all. Iterating the roster and reading a rate out of the file
-//      would zero the rate of everybody who took a day off.
+// What the retired rules were, because each named a real hazard and the hazards
+// have moved rather than vanished:
 //
-//   2. A MISSING OR ZERO RATE IS NOT A RATE. Absent, blank, zero, negative or
-//      unparseable all mean "this row carries no wage information". They are
-//      skipped and counted, never written as 0. Same failure mode as (1),
-//      arriving one column further in.
+//   1. OVERWRITE ONLY ON PRESENCE — never iterate the roster and read a rate
+//      out of the file, or everybody who took a day off is zeroed. Now moot:
+//      nothing here writes a rate at all.
+//   2. A MISSING OR ZERO RATE IS NOT A RATE. Still true, and still enforced —
+//      by normalizeRate below, and by wage-edit-lib on the typed side.
+//   3. SALARIED ROWS ARE OUTSIDE THIS FLOW. Still true. payroll-lib drops every
+//      salaried row at import, and anything reaching here marked salaried is
+//      skipped. An hourly rate is never written onto a salaried person.
+//   4. NOTHING MOVES SILENTLY. Still true, and now wage-edit-lib's to keep: it
+//      writes the wage_history row BEFORE the rate, and data.js performs them
+//      in that order.
 //
-//   3. SALARIED ROWS ARE OUTSIDE THIS FLOW. payroll-lib drops EVERY salaried
-//      row at import — unconditionally, whatever it carries for pay rate, hours
-//      or earnings — and anything that still reaches here marked salaried, by
-//      the file's Is Salary column or by the roster's own pay type, is skipped.
-//      An hourly rate is never written onto a salaried person. Pay type is
-//      employees.pay_type, with the retired employees.wage = 'Salary' sentinel
-//      read only as a fallback (see isSalaried below and SCHEMA_V2_MODEL.sql
-//      section 5b). A salaried
-//      person's hourly cost is annual_salary / 2080 and nothing else; see
-//      effectiveHourlyRate below.
+// WHAT THIS MODULE STILL DOES:
 //
-//   4. NOTHING MOVES SILENTLY. Every change gets a wage_history row, ordered
-//      before the employees.wage write that follows it, and a first observation
-//      gets one too (previous_rate null) so the history has a starting point.
-//
-// A change larger than the threshold is APPLIED AND FLAGGED, never blocked. A
-// vendor keying error and a genuine raise are indistinguishable in the data; the
-// only difference is that one of them should be looked at. Blocking would stall
-// a whole day's import over one row.
+//   planWageSync        finds people in the file the roster has never seen, and
+//                       raises a setup task for each. Arrival detection. It
+//                       plans no rate change, because there is no rate to plan
+//                       one from.
+//   effectiveHourlyRate what an hour of somebody costs — employees.wage for an
+//                       hourly person, annual_salary / 2080 for a salaried one.
+//                       Read by cost-lib for every costing report.
 //
 // planWageSync decides and does not write. payroll-db.js owns the writers and
 // applyWageSync(); this module never touches either.
@@ -53,6 +51,11 @@ const { normalizeEmpNumber, round2 } = require('./payroll-lib');
 // Percent. A move whose magnitude EXCEEDS this is flagged for a human; a move
 // exactly equal to it is not, so a policy "flag anything over 20%" reads the
 // way it is written. Override with WAGE_CHANGE_ALERT_PCT.
+//
+// NOTHING IN THIS FILE USES IT. It is declared here and exported for
+// wage-edit-lib, which applies it to a rate somebody types, because moving it
+// would mean two modules importing each other. The threshold survived the
+// retirement of the wage sync; the sync did not.
 const DEFAULT_THRESHOLD_PCT = 20;
 
 // 40 hours x 52 weeks. The mill's own week is 4x10, which is the same 40, so
@@ -166,6 +169,12 @@ function normalizeRate(value) {
 // Percent change from `from` to `to`, signed and rounded to two places before
 // anything compares it to the threshold. Rounding first is what stops
 // (30 - 25) / 25 * 100 === 20.000000000000004 from being "over 20%".
+//
+// Nothing HERE calls it any more — no rate in the file to compare. It is
+// exported for wage-edit-lib, which had reimplemented the same expression
+// inline, rounding included. Two copies of a rule whose whole point is a
+// floating-point subtlety is exactly the drift this project has paid for
+// before, so there is one.
 function changePercent(from, to) {
   if (from === null || from === undefined || !(from > 0)) return null;
   return round2(((to - from) / from) * 100);
@@ -269,22 +278,14 @@ function effectiveHourlyRate(employee) {
 // THE PLAN
 // ============================================================
 
-// Env is read per call rather than at module load, so a manual run or a test can
-// change the threshold between runs. An explicit thresholdPct always wins, which
-// is what keeps planWageSync deterministic for its callers.
-function resolveThreshold(thresholdPct) {
-  if (thresholdPct !== undefined && thresholdPct !== null && thresholdPct !== '') {
-    const explicit = Number(thresholdPct);
-    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
-  }
-  const fromEnv = Number(process.env.WAGE_CHANGE_ALERT_PCT);
-  if (Number.isFinite(fromEnv) && fromEnv >= 0) return fromEnv;
-  return DEFAULT_THRESHOLD_PCT;
-}
+// resolveThreshold() WAS HERE TOO, and planWageSync called it on every run to
+// compute a number it then did nothing with. The threshold is a real rule and
+// it lives in wage-edit-lib now, where a typed rate is compared against it.
+// The file has no rate to compare.
 
 // The work date of the file, not the day it is processed. A file that arrives
 // late must record its rate against the day it describes, so this is required
-// and never defaulted to "today" — wage_history.effective_date is NOT NULL and a
+// and never defaulted to "today" — the setup task's first_seen_date and a
 // guessed date is worse than a refused import.
 function resolveWorkDate(workDate) {
   const raw = textOf(workDate);
@@ -292,7 +293,9 @@ function resolveWorkDate(workDate) {
   if (!match) {
     throw new Error(
       `planWageSync needs the file's work date as YYYY-MM-DD (got ${JSON.stringify(workDate ?? null)}). ` +
-      `wage_history.effective_date is the day the file describes, never the day it was processed.`
+      `employee_setup_tasks.first_seen_date is the day the file describes, never the day it ` +
+      `was processed. (This message named wage_history.effective_date until the file stopped ` +
+      `carrying a rate; the setup task is the only dated thing this plan still produces.)`
     );
   }
   return match[1];
@@ -305,39 +308,29 @@ function nameFromRow(row) {
   return { first, last, name: joined || textOf(pick(row, 'name')) };
 }
 
-function historyRow({ employeeId, employeeNumber, name, rate, previousRate, changePct, flagged, note, effectiveDate }) {
-  // Exactly the wage_history columns from SCHEMA_V2_MODEL.sql section 6, ready
-  // to POST. id and created_at are database defaults and are never sent.
-  return {
-    employee_id: employeeId,
-    employee_number: employeeNumber,
-    employee_name: name,
-    rate,
-    previous_rate: previousRate,
-    change_pct: changePct,
-    effective_date: effectiveDate,
-    source: SOURCE,
-    flagged,
-    note
-  };
-}
+// historyRow() WAS HERE. It built a wage_history row from a rate observed in
+// the daily file — employee, rate, previous_rate, change_pct, flagged, all of
+// it. Nothing has called it since the file stopped carrying a rate, and the
+// shape it built is now wage-edit-lib's to build, from a rate somebody typed.
+// Deleted rather than kept: a ready-made wage_history row sitting in the
+// importer is an invitation to start writing them from the file again.
 
-// Decide what the day's file means for wages. Writes nothing.
+// Who is in the day's file that the roster has never seen. Writes nothing.
 //
-// Returns updates / creates / history / setupTasks / skipped / flagged, plus:
+// Returns creates / setupTasks / skipped, plus:
 //
-//   ops           every write this plan implies, in the order it must happen.
-//                 The applier walks this rather than the four arrays, because
-//                 the ordering IS the safety property: the wage_history row for
-//                 a change is emitted before the employees.wage update that
-//                 makes the old rate unrecoverable, and a create is emitted
-//                 before its own history row (the row needs the new employee's
-//                 id, and wage_history is append-only — it cannot be patched
-//                 afterwards).
-//   thresholdPct  what was actually used, so the alert email can say so.
-//   workDate      the resolved effective date, for the same reason.
-function planWageSync({ fileRows = [], employees = [], workDate = null, thresholdPct } = {}) {
-  const threshold = resolveThreshold(thresholdPct);
+//   ops       every write this plan implies, in the order it must happen. The
+//             applier walks this rather than the arrays, because the ordering
+//             IS the safety property: a create is emitted before its own setup
+//             task, which references the new employee's id.
+//
+//             It used to carry rate updates and wage_history rows too, and the
+//             ordering mattered far more then — the history row had to precede
+//             the employees.wage write that made the old rate unrecoverable.
+//             That ordering rule still exists; it lives in data.js now, on the
+//             typed edit.
+//   workDate  the resolved effective date, for the setup task.
+function planWageSync({ fileRows = [], employees = [], workDate = null } = {}) {
   const effectiveDate = resolveWorkDate(workDate);
 
   // Roster lookup is by normalized employee_number and nothing else — the same
@@ -350,21 +343,25 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
     if (key && !byNumber.has(key)) byNumber.set(key, emp);
   }
 
-  const updates = [];
   const creates = [];
-  const history = [];
   const setupTasks = [];
-  const flagged = [];
   const ops = [];
 
+  // `updates`, `history` and `flagged` are gone from this plan. They were
+  // always empty — nothing has planned a rate change since the file stopped
+  // carrying one — and an empty array in a returned shape reads as "no changes
+  // today" rather than "this cannot happen", which is the more dangerous of
+  // the two.
   const skipped = {
-    noRate: 0,
     salaried: 0,
     unchanged: 0,
     absentFromFile: 0,
-    // Two more that would otherwise hide inside the four above. A row with no
-    // employee number carries no wage information but is not "no rate", and the
-    // second row for one person is neither.
+    // `noRate` is gone with them: no rate is read, so nobody can be skipped
+    // for the want of one. It counted zero on every run.
+    //
+    // These two would otherwise hide inside the three above. A row with no
+    // employee number is not "unchanged", and the second row for one person is
+    // neither.
     noEmployeeNumber: 0,
     duplicateInFile: 0
   };
@@ -457,18 +454,15 @@ function planWageSync({ fileRows = [], employees = [], workDate = null, threshol
 
   return {
     workDate: effectiveDate,
-    thresholdPct: threshold,
-    updates,
     creates,
-    history,
     setupTasks,
     skipped,
-    flagged,
     ops
   };
 }
 
 module.exports = {
+  changePercent,
   normalizeRate,
   effectiveHourlyRate,
   planWageSync,

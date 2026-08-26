@@ -164,10 +164,22 @@ test('vendor fixture: readWorkbook finds the vendor sheet by name', () => {
   assert.deepStrictEqual(wb.sheetNames, [EXPECTED_SHEET]);
 });
 
-test('vendor fixture: the sheet reads as 61 rows under the nine canonical headers', () => {
+test('vendor fixture: the sheet reads as 61 rows, and still carries all nine columns', () => {
+  // The REAL file, unchanged: BBSI still sends nine columns including Pay Rate
+  // and Total Earnings. What changed is that this import expects seven of them
+  // — see EXPECTED_HEADERS — so equality with the sheet's own headers is the
+  // wrong assertion now. Containment is the right one, in this direction: every
+  // header we expect must actually be in the file.
   const sheet = readSheet(bytes(), EXPECTED_SHEET);
-  assert.deepStrictEqual(sheet.headers, EXPECTED_HEADERS);
   assert.strictEqual(sheet.rows.length, 61);
+  assert.strictEqual(sheet.headers.length, 9, 'the vendor file itself has not changed');
+
+  for (const h of EXPECTED_HEADERS) {
+    assert.ok(sheet.headers.includes(h), `${h} is expected but is not in the real file`);
+  }
+  // And the two we stopped reading are still sitting there, unread.
+  assert.ok(sheet.headers.includes('Pay Rate'));
+  assert.ok(sheet.headers.includes('Total Earnings'));
 });
 
 test('vendor fixture: Emp # stays a string, keeping its leading zero', () => {
