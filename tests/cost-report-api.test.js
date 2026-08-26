@@ -372,7 +372,7 @@ test('a rate gap is named and counted', async (t) => {
   assert.strictEqual(body.report.totals.peopleWithoutRate, 1);
   const gap = body.report.rateGaps[0];
   assert.strictEqual(gap.name, 'New Hire');
-  assert.match(gap.reason, /no annual_salary/);
+  assert.match(gap.reason, /no annual salary on file/);
 });
 
 // ---------------------------------------------------------------------------

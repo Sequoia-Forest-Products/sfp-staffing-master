@@ -62,11 +62,6 @@ const SALARY_HOURS_PER_YEAR = 2080;
 // wage_history.source / employee_setup_tasks.source. The vendor, named.
 const SOURCE = 'bbsi';
 
-// The one cost class whose salaried staff are converted to an hourly rate.
-// Keyed on the cost class, deliberately: it is a general rule about how
-// manufacturing cost is measured, not a special case for a named person.
-const MANUFACTURING = 'Manufacturing';
-
 // ============================================================
 // SMALL PIECES
 // ============================================================
@@ -199,14 +194,37 @@ const money = rate => (rate === null || rate === undefined ? 'no rate' : rate.to
 // did.
 //
 // For a salaried employee the ONLY answer is annual_salary / 2080, using the
-// salary entered in the app, and only for cost class Manufacturing — a general
-// rule about how manufacturing cost is measured, keyed on the cost class rather
-// than on a named person. A salaried person in any other cost class has no
-// hourly rate at all, and neither does one whose annual_salary is missing.
-// Both say null. There is deliberately no "use the file rate if it looks
-// usable" path here: if you are about to add one back, that is the exact
-// regression this ordering exists to prevent, and tests/wage-sync.test.js pins
-// it with a salaried employee who carries a pay_rate.
+// salary entered in the app. A missing annual_salary says null; nothing else
+// does. There is deliberately no "use the file rate if it looks usable" path
+// here: if you are about to add one back, that is the exact regression this
+// ordering exists to prevent, and tests/wage-sync.test.js pins it with a
+// salaried employee who carries a pay_rate.
+//
+// THE COST CLASS IS NOT ASKED ABOUT HERE, AND THAT IS A FIX, NOT A RELAXATION.
+//
+// This function used to return null for any salaried person whose cost class
+// was not Manufacturing, before it looked at annual_salary at all. The rule it
+// was reaching for is real — a salaried person outside Manufacturing does not
+// belong in MANUFACTURING cost — but it was enforced in the wrong place, and
+// the effect was that nobody salaried outside Manufacturing was costed
+// ANYWHERE.
+//
+// Mill Overhead is three salaried people and SG&A is almost entirely salaried.
+// Both tabs exist to report exactly those costs, and both were reporting
+// almost none of them: the figures were understated by the whole salaried
+// payroll of the class being displayed, every week, since the tabs shipped.
+// Worse, cost-lib's gap message read "salaried with no annual_salary on file",
+// so the screen blamed missing data for a salary that was sitting right there.
+//
+// buildCostReport ALREADY filters its members by cost class before pricing
+// anybody (see cost-lib.js, `members`). By the time this function runs, the
+// caller has established that this person belongs in this report. Asking the
+// question a second time here could only ever disagree with the caller — and
+// where it disagreed, it won, silently.
+//
+// So the cost class decides WHICH REPORT somebody appears in, which is the
+// caller's job. This decides WHAT AN HOUR OF THEM COSTS, which does not depend
+// on the report they are being shown in.
 //
 // For an hourly employee there is one answer, employees.wage, which is typed on
 // the Salaries & Wages page and recorded in wage_history. The file's rate used
@@ -216,13 +234,11 @@ function effectiveHourlyRate(employee) {
 
   // ---- salaried: the file is not read, at all, on any branch ----
   if (isSalaried(emp)) {
-    const costClass = textOf(pick(emp, 'cost_class', 'costClass'));
-    if (costClass !== MANUFACTURING) return { rate: null, source: 'none' };
-
-    // A null annual_salary here is audit query 8e's finding: the conversion
-    // cannot be computed and that person's cost is missing from the
-    // manufacturing figures. Say null rather than invent a number — and
-    // rather than reaching for the file rate, which is not their wage.
+    // A null annual_salary is audit query 8e's finding: the conversion cannot
+    // be computed and that person's cost is missing from the figures. Say null
+    // rather than invent a number — and rather than reaching for the file rate,
+    // which is not their wage. This is now the ONLY reason a salaried person
+    // has no rate, which is what lets the caller say so without guessing.
     const annual = normalizeRate(pick(emp, 'annual_salary', 'annualSalary'));
     if (annual === null) return { rate: null, source: 'none' };
 

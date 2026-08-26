@@ -125,6 +125,98 @@ test('an hourly person is costed on the hours they actually worked', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A salaried person is costed in whichever class they belong to
+// ---------------------------------------------------------------------------
+//
+// THE BUG THESE TESTS EXIST FOR, found on the live Overhead tab 2026-08-26.
+//
+// effectiveHourlyRate returned null for any salaried person outside cost class
+// Manufacturing, before reading annual_salary. buildCostReport already filters
+// members by cost class before pricing, so the check was overruling a decision
+// the caller had made — and the result was that Mill Overhead (three salaried
+// people) and SG&A (almost entirely salaried) reported almost none of their own
+// cost, every week, since those tabs shipped.
+//
+// The unit-level assertion lives in tests/wage-sync.test.js. These are the ones
+// that would have caught it: they ask the REPORT, which is where it was wrong.
+
+const SALARIED_SGA = {
+  id: 'sga-1', name: 'Mary Bower', status: 'Active', cost_class: 'SG&A',
+  pay_type: 'Salaried', department: 'Sales & Marketing', position: 'Sales',
+  employee_number: null, wage: null, annual_salary: 104000
+};
+
+const SALARIED_OVERHEAD = {
+  id: 'mo-1', name: 'Tony Griffith', status: 'Active', cost_class: 'Mill Overhead',
+  pay_type: 'Salaried', department: 'Mill Overhead', position: 'VP Operations',
+  employee_number: null, wage: null, annual_salary: 208000
+};
+
+test('a salaried SG&A person is costed in the SG&A report', () => {
+  const r = buildCostReport({
+    employees: [SALARIED_SGA], costClass: 'SG&A', minBucketHeadcount: 1
+  });
+
+  // 104000 / 2080 = 50.00/hr, at a standard 40-hour week.
+  assert.strictEqual(r.totals.cost, 2000);
+  assert.strictEqual(r.totals.peopleWithoutRate, 0, 'costed, not a gap');
+  assert.deepStrictEqual(r.rateGaps, []);
+});
+
+test('a salaried Mill Overhead person is costed in the Overhead report', () => {
+  const r = buildCostReport({
+    employees: [SALARIED_OVERHEAD], costClass: 'Mill Overhead', minBucketHeadcount: 1
+  });
+
+  // 208000 / 2080 = 100.00/hr x 40.
+  assert.strictEqual(r.totals.cost, 4000);
+  assert.strictEqual(r.totals.peopleWithoutRate, 0);
+});
+
+test('the cost class still decides WHICH report they appear in', () => {
+  // The rule the old guard was reaching for, enforced where it belongs: in the
+  // member filter, not in the pricing. An SG&A person contributes nothing to
+  // Manufacturing — not because they have no rate, but because they are not a
+  // member of that report.
+  const r = buildCostReport({
+    employees: [SALARIED_SGA, SALARIED_OVERHEAD, EDUARDO],
+    costClass: 'Manufacturing', minBucketHeadcount: 1
+  });
+
+  assert.strictEqual(r.headcount, 1, 'only Eduardo is in Manufacturing');
+  assert.ok(!JSON.stringify(r).includes('Mary Bower'));
+  assert.ok(!JSON.stringify(r).includes('Tony Griffith'));
+});
+
+test('a salaried person with no salary is STILL a gap, in every class', () => {
+  // The one reason a salaried person has no rate, and it survived the fix.
+  for (const costClass of ['Manufacturing', 'Mill Overhead', 'SG&A']) {
+    const person = { ...SALARIED_SGA, name: 'No Salary', cost_class: costClass,
+                     annual_salary: null };
+    const r = buildCostReport({ employees: [person], costClass, minBucketHeadcount: 1 });
+
+    assert.strictEqual(r.totals.peopleWithoutRate, 1, costClass);
+    assert.match(r.rateGaps[0].reason, /no annual salary on file/, costClass);
+    // totals.cost is 0 here rather than null — with suppression off, a report
+    // whose only member has no rate sums to nothing. That reads as a real $0
+    // and is exactly why peopleWithoutRate and rateGaps are published beside
+    // it: the zero is disclosed rather than left to be believed.
+    assert.strictEqual(r.totals.cost, 0, costClass);
+  }
+});
+
+test('the gap message no longer blames a salary that is on file', () => {
+  // The message read "salaried with no annual_salary on file" for every
+  // null-rate salaried person, including the ones refused for the cost-class
+  // reason. Somebody reading it would have gone looking for a missing figure
+  // that was already there.
+  const r = buildCostReport({
+    employees: [SALARIED_SGA], costClass: 'SG&A', minBucketHeadcount: 1
+  });
+  assert.deepStrictEqual(r.rateGaps, [], 'a person with a salary on file is not a gap');
+});
+
+// ---------------------------------------------------------------------------
 // Gaps are shown, never zeroed and never dropped
 // ---------------------------------------------------------------------------
 
@@ -135,7 +227,9 @@ test('a salaried person with no annual_salary is a named gap, not a free employe
   assert.strictEqual(r.headcount, 1, 'still counted in headcount');
   assert.strictEqual(r.totals.peopleWithoutRate, 1);
   assert.strictEqual(r.rateGaps[0].name, 'No Salary');
-  assert.match(r.rateGaps[0].reason, /no annual_salary/);
+  assert.match(r.rateGaps[0].reason, /no annual salary on file/);
+  assert.match(r.rateGaps[0].reason, /Salaries & Wages/,
+    'the gap says where to fix it — and now says it truthfully, see wage-sync');
 
   // A one-person cost class suppresses its own total, so the cost here reads
   // null rather than 0. What matters for THIS test is the gap, not the total:
