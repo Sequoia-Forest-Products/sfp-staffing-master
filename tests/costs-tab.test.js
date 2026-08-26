@@ -427,6 +427,26 @@ test('Manufacturing keeps both breakdowns and the bullpen', async () => {
   assert.match(html, /Bullpen/);
 });
 
+// NO CLIENT-SIDE BULLPEN TEST, DELIBERATELY.
+//
+// One was written here and deleted before it shipped. It set
+// report.bullpen = [] on an Overhead view with suppression lifted and asserted
+// that nothing rendered — which asserts that an empty array renders nothing.
+// It passed with the server-side guard REMOVED, which is the definition of a
+// test that cannot fail for the reason it claims to check.
+//
+// The client is not the gate here and should not pretend to be: costBullpenBlock
+// renders whatever report.bullpen contains, correctly. The rule — position group
+// is mill-floor only, so its absence is a finding for Manufacturing and the right
+// answer everywhere else — lives in cost-lib, and the tests that bite are
+// 'office staff with no position group are NOT in the bullpen' (cost-lib) and
+// 'membership is cost class alone' (cost-report-api).
+//
+// What made the bug visible on this side was the totals-only early return in
+// costSection: it hid the bullpen on Overhead by accident, until the salaries
+// tier lifted suppression and it stopped firing. That is covered by
+// 'Manufacturing keeps both breakdowns and the bullpen' above.
+
 test('a cost class too small for a total says so instead of showing dashes', async () => {
   const ctx = sandbox({
     costBody: {

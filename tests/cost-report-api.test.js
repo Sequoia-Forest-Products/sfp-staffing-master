@@ -257,8 +257,11 @@ test('membership is cost class alone — the salaried supervisor is in, the hour
 
   const { body: sga } = await run(t, { class: 'SG&A' });
   assert.strictEqual(sga.report.headcount, 1, 'the hourly clerk is SG&A, not Manufacturing');
-  assert.ok(sga.report.bullpen.some(p => p.name === 'Axeri Ramirez'),
-    'no position group puts her in the bullpen, with her position named');
+  // She has no position group and that is CORRECT — the axis is mill-floor
+  // only. This used to assert the opposite, and the Overhead tab listed her
+  // and three colleagues as unclassified.
+  assert.deepStrictEqual(sga.report.bullpen, [],
+    'a null position group is not a finding outside Manufacturing');
 });
 
 // ---------------------------------------------------------------------------

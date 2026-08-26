@@ -461,6 +461,45 @@ test('the bullpen is empty but present when everyone is classified', () => {
   assert.deepStrictEqual(r.bullpen, []);
 });
 
+test('office staff with no position group are NOT in the bullpen', () => {
+  // Found on the live Overhead tab 2026-08-26: four SG&A people listed under
+  // "Bullpen — no position group", all four correctly classified.
+  //
+  // Position group is the PLANNING axis — where in the mill somebody
+  // physically works (architecture section 4). It is mill-floor only and
+  // carries no accounting meaning, so a null one is not a gap for office
+  // staff, it is the only possible answer. Their profile cards already say
+  // "none — not mill floor staff".
+  //
+  // The comment in cost-lib said "A Manufacturing person..." and the code
+  // never checked. A findings panel that names people who are already correct
+  // is worse than no panel: it teaches the reader to skim past the ones who
+  // are not.
+  for (const costClass of ['Mill Overhead', 'SG&A']) {
+    const person = { ...AXERI, cost_class: costClass, position_group: null };
+    const r = buildCostReport({ employees: [person], costClass, minBucketHeadcount: 1 });
+
+    assert.deepStrictEqual(r.bullpen, [], costClass);
+    // Still a member, still costed — this is about the findings list only.
+    assert.strictEqual(r.headcount, 1, costClass);
+  }
+});
+
+test('the bullpen still fires for Manufacturing, which is the point of it', () => {
+  // The guard must not have turned the bucket off altogether. A new hire
+  // arriving unclassified through the BBSI auto-create path is exactly what it
+  // exists to surface.
+  const r = buildCostReport({
+    employees: [
+      hourly({ name: 'New Hire', position_group: null, employee_number: '1212' }),
+      { ...AXERI, cost_class: 'SG&A', position_group: null }
+    ],
+    costClass: 'Manufacturing'
+  });
+  assert.strictEqual(r.bullpen.length, 1);
+  assert.strictEqual(r.bullpen[0].name, 'New Hire');
+});
+
 // ---------------------------------------------------------------------------
 // Allocations: cost splits, hours do not
 // ---------------------------------------------------------------------------
