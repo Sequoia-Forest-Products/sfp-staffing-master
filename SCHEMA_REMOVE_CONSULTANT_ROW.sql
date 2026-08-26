@@ -1,4 +1,9 @@
 -- =====================================================================
+-- APPLIED 2026-08-26 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- §2: 1 row deleted. §3: still_there 0, roster_total 73 — down from the
+-- 74 confirmed twice beforehand, once through the MCP and once by §1.
+-- =====================================================================
 -- §1 RUN 2026-08-26 against zwghbbyzrycpnesuuzgi (sfp-staffing).
 --
 -- matched_rows 1; allocations, preapproved_ot, setup_tasks, wage_history
