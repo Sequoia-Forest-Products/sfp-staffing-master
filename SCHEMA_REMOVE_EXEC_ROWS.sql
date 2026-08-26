@@ -1,4 +1,57 @@
 -- =====================================================================
+-- APPLIED 2026-08-26 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+-- 3 rows deleted. still_there 0, roster_total 70 (73 before).
+--
+-- THE RECORD OF WHAT WAS DELETED. There is no undo and no backup of
+-- these rows anywhere else in this repository, so the business fields
+-- are written down here. Contact details (phone, birthday, the text_bolt
+-- address) were in the deleted rows and are deliberately NOT copied into
+-- version control — they are in the session output that produced this
+-- delete, which is where they should stay.
+--
+--   Jeff Cook
+--     id             d0d2f2b8-e588-481b-911f-04f197baa063
+--     email          jeffrey.cook@sequoiafp.com
+--     position       President
+--     department     Sales & Marketing      cost_class  SG&A
+--     annual_salary  375,000                pay_type    Salaried
+--
+--   Peter Stroble
+--     id             8c917e7a-e79c-4647-a82f-56b3b3d0128a
+--     email          peter.stroble@sequoiafp.com
+--     position       CEO
+--     department     Corporate              cost_class  SG&A
+--     annual_salary  375,000                pay_type    Salaried
+--
+--   Ryley Stanley
+--     id             375baa00-a703-480d-9c31-96c9210fa151
+--     email          ryley.stanley@sequoiafp.com
+--     position       CFO
+--     department     Accounting             cost_class  SG&A
+--     annual_salary  250,000                pay_type    Salaried
+--
+-- All three: status Active, days MON-THU, breaks 07:00 / 12:45, no
+-- employee_number, no hire_date, wage NULL. Created 2026-07-08.
+--
+-- ------------------------------------------------------------------
+-- WHAT WAS LOST WITHOUT BEING RECORDED
+-- ------------------------------------------------------------------
+--
+-- JEFF COOK'S TWO ALLOCATION ROWS. §1's third query — the one that would
+-- have printed their exact departments and percentages — was not run
+-- before §2, and ON DELETE CASCADE removed them. Their contents are now
+-- unrecoverable from this database.
+--
+-- The best available reconstruction is section 8 of the architecture
+-- document, which states the split as 50% Corporate / 50% Sales. His
+-- primary department here was 'Sales & Marketing', so the second half
+-- most likely pointed at that. TREAT THOSE PERCENTAGES AS A RECOLLECTION,
+-- NOT A RECORD — if the allocation is ever re-created, confirm the split
+-- with a person rather than with this comment.
+--
+-- Nothing else was attached: preapproved_ot, employee_setup_tasks,
+-- wage_history and economics_seats were all 0 for all three.
+-- =====================================================================
 -- SFP Staffing — remove Jeff Cook, Peter Stroble and Ryley Stanley
 -- from `employees`
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
