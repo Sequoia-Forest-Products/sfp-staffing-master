@@ -88,13 +88,26 @@ function personCost(employee, actualHours) {
   const hours = costedHours(employee, actualHours);
 
   if (rate === null) {
+    // ONE CAUSE EACH, and they used to share a sentence.
+    //
+    // The salaried branch read "salaried with no annual_salary on file" for
+    // every null-rate salaried person — including the ones whose salary WAS on
+    // file and who were refused for a different reason entirely
+    // (effectiveHourlyRate used to null anybody outside cost class
+    // Manufacturing). The screen blamed missing data for a figure sitting right
+    // there, and pointed whoever read it at a fix that would not have worked.
+    //
+    // That second cause is gone, so this sentence is true again — and it is
+    // written to stay true: if a future edit gives effectiveHourlyRate a second
+    // way to say null for a salaried person, this message becomes a lie again
+    // and the fix is to make the reason travel with the null, not to reword it.
     return {
       rate: null,
       source,
       hours,
       cost: null,
       gap: isSalaried(employee)
-        ? 'salaried with no annual_salary on file — cost cannot be computed'
+        ? 'no annual salary on file — set one on Salaries & Wages, or their cost cannot be computed'
         : 'no hourly rate on file — set one on Salaries & Wages, or their cost cannot be computed'
     };
   }

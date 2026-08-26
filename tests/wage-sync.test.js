@@ -310,26 +310,49 @@ test('a salaried Manufacturing employee with no annual_salary is null, even carr
   );
 });
 
-test('a salaried employee outside Manufacturing has no effective hourly rate', () => {
+test('a salaried employee outside Manufacturing IS costed — the cost class is not asked here', () => {
+  // THE REVERSE OF WHAT THIS TEST USED TO ASSERT, and the old assertion was
+  // pinning a live bug.
+  //
+  // effectiveHourlyRate returned null for any salaried person outside cost
+  // class Manufacturing, before it looked at annual_salary. The rule it was
+  // reaching for is real — such a person does not belong in MANUFACTURING cost
+  // — but buildCostReport already filters its members by cost class before
+  // pricing anybody, so this was answering a question the caller had answered
+  // and overruling it.
+  //
+  // The effect: nobody salaried outside Manufacturing was costed anywhere.
+  // Mill Overhead is three salaried people; SG&A is almost entirely salaried.
+  // Both tabs reported almost none of their own cost, and cost-lib's gap
+  // message blamed a missing annual_salary for a figure that was on file.
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', annual_salary: 90000 }),
-    { rate: null, source: 'none' }
+    { rate: 43.27, source: 'salary/2080' }
   );
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: 'Mill Overhead', annual_salary: 90000 }),
-    { rate: null, source: 'none' }
+    { rate: 43.27, source: 'salary/2080' }
   );
+  // No cost class at all is still a rate: which report they belong in is a
+  // separate question from what an hour of them costs, and it is not this
+  // function's to answer.
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: null, annual_salary: 90000 }),
-    { rate: null, source: 'none' }
+    { rate: 43.27, source: 'salary/2080' }
   );
-  // A file rate does not buy them one either — the cost class is the whole rule.
+
+  // WHAT DID NOT CHANGE. A missing salary is still the one reason a salaried
+  // person has no rate, and the file still buys them nothing.
   assert.deepStrictEqual(
-    effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', annual_salary: 90000, pay_rate: 61.25 }),
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A' }),
     { rate: null, source: 'none' }
   );
   assert.deepStrictEqual(
     effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', pay_rate: 61.25 }),
+    { rate: null, source: 'none' }
+  );
+  assert.deepStrictEqual(
+    effectiveHourlyRate({ wage: 'Salary', cost_class: 'SG&A', annual_salary: 0, pay_rate: 61.25 }),
     { rate: null, source: 'none' }
   );
 });
@@ -634,11 +657,12 @@ test('effectiveHourlyRate is keyed on pay_type, not on the wage sentinel', () =>
                           annual_salary: 104000, pay_rate: 45.00 }),
     { rate: 50, source: 'salary/2080' }
   );
-  // Outside Manufacturing there is still no hourly rate to give them.
+  // Outside Manufacturing they are costed the same way — see the cost-class
+  // test above for why that reversed.
   assert.deepStrictEqual(
     effectiveHourlyRate({ pay_type: 'Salaried', wage: null,
                           cost_class: 'SG&A', annual_salary: 90000 }),
-    { rate: null, source: 'none' }
+    { rate: 43.27, source: 'salary/2080' }
   );
   // A stale sentinel under an explicit Hourly does NOT divert into the salaried
   // branch — the stored wage is unreadable as a rate, so there is no rate.
