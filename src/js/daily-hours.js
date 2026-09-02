@@ -51,7 +51,6 @@ async function commitDailyImport(){
   if(overwrite&&!confirm('Overwrite the '+(p.existing.rowCount||0)+' rows already imported for '+fmtDate(f.workDate)+'?\n\nThe day is deleted and re-inserted, so anyone dropped from a corrected re-send disappears too.')) return;
 
   state.dailyBusy=true; render();
-  let imported=false;
   try{
     const body={action:'commit',fileName:f.fileName,fileBase64:f.fileBase64,workDate:f.workDate,confirmOverwrite:overwrite};
     if(crossDate) body.confirmDuplicateFile=true;
@@ -66,21 +65,22 @@ async function commitDailyImport(){
     state.dailyPreview=null; state.dailyPreviewFile=null; state.dailyDupAck=false;
     state.otReport=null;  // the week that just changed has to be refetched
     await loadDailyDays();
-    imported=true;
   }catch(err){
     toast('Import failed: '+err.message,'error');
   }
-  // Auto-send is a courtesy on top of the import and never fails it. The week has to be
-  // reloaded first, or the email reports whatever was on screen before this import.
-  if(imported&&state.emailSettings.autoSend&&(state.emailSettings.managers||[]).length){
-    try{
-      await loadOTReport(f.workDate);
-      if(state.otReport) await sendOTReportEmail({auto:true});
-      else toast('Imported, but the OT report would not load — no manager email sent','warning');
-    }catch(err){
-      toast('Imported, but the manager email failed: '+err.message,'warning');
-    }
-  }
+  // An import used to send the manager email from here, in the browser, when
+  // autoSend was on. It was the only automatic sender and it quietly stopped
+  // being reachable: hours arrive by email now, collected hourly by the
+  // payroll-email-ingest function, and nothing about that path opens a browser
+  // or runs this file. The checkbox stayed on and the email stopped going out.
+  //
+  // The automatic send is now netlify/functions/ot-weekly-email.js — a Monday
+  // schedule over the week that just finished, which cannot be bypassed by a
+  // change to how the data arrives. Nothing replaces it here on purpose: two
+  // automatic senders covering different weeks is worse than one.
+  //
+  // The "Email managers" button on the OT Report tab is untouched, so a
+  // corrected import can still be sent out by hand straight away.
   state.dailyBusy=false; render();
 }
 

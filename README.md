@@ -42,6 +42,8 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
   breakdown, manager email), and the **Points Tracker** (attendance points, disciplinary flags)
 - **Payroll email ingestion** — hourly scheduled function reads the `payroll import` Gmail
   label on `info@` over IMAP and imports the daily report automatically
+- **Weekly manager OT email** — Monday scheduled function emails the Mon–Sun week that just
+  finished to the manager list. Refuses to send an incomplete week and alerts instead
 - **Birthday notifications** — daily scheduled function sends bilingual TextBolt texts
 - **Copy TextBolt list** — derives addresses from phone for all active, opted-in employees
 
@@ -105,7 +107,9 @@ sfp-staffing-master/
         ├── payroll-db.js       # Supabase helpers for daily_hours / processed_emails
         ├── payroll-import.js   # /api/payroll-import — preview, commit, days, re-stamp
         ├── ot-report-lib.js    # Weekly OT aggregation (pure)
-        ├── payroll-report.js   # /api/payroll-report
+        ├── payroll-report.js   # /api/payroll-report + the shared week builders
+        ├── ot-weekly-email-lib.js     # Monday manager email logic (shared)
+        ├── ot-weekly-email.js         # Monday scheduled manager email
         ├── payroll-email-lib.js       # IMAP ingestion logic (shared)
         ├── payroll-email-ingest.js    # Hourly scheduled ingestion
         ├── payroll-missed-check.js    # Daily missed-delivery check
@@ -142,6 +146,8 @@ sfp-staffing-master/
 | `PAYROLL_LOOKBACK_DAYS` | Rolling IMAP search window, default `7` |
 | `PAYROLL_TRIGGER_SECRET` | Shared secret for the manual ingestion trigger (optional) |
 | `PAYROLL_DRY_RUN` | Set to `true` to make the scheduled ingest parse and log without writing |
+| `OT_WEEKLY_DRY_RUN` | Set to `true` to make the Monday manager email compose and log without sending |
+| `OT_REPORT_LINK` | Override the "Open OT Report" link in the manager email (optional) |
 
 ---
 
@@ -445,6 +451,10 @@ still session-only: three of the values it holds are not casual.
 - `graceHoursPerEmployee` — the timeclock grace allowance. At ~54 hourly staff, 0.5 hrs/person/week
   is ~27 hours of pre-approved OT, so moving it moves the headline Net OT figure on every report.
 - `otBudgetPercent` — decides what managers are **told** is over budget.
+- `autoSend` — the on/off switch for the Monday manager email. Absent counts as **on**: every row
+  written since the checkbox shipped carries an explicit boolean, so a missing value means a row
+  that predates it or one that got mangled, and defaulting a damaged setting to silence is the
+  failure nobody notices.
 
 Reads stay open deliberately: the figures are already visible on every report that uses them, and
 hiding the settings that produce them would make those reports less legible while protecting
@@ -701,11 +711,51 @@ GET navigation does — so before this, a plain link or an `<img src>` on any pa
 a signed-in browser import live payroll. Keeping the dry run on GET preserves the useful "just open
 it in a browser" affordance without that exposure.
 
-**What a red scheduled run means.** `payroll-email-ingest` and `payroll-missed-check` return a 5xx
-only when the *alerting itself* failed, or Supabase could not be read — not when a message was bad.
-A bad message is a green run with `status: "attention"`, because the alert about it went out. So a
-function error in Netlify means the watchdog is blind, which is the one condition nobody would
-otherwise notice. Netlify's function-error alerting keys on exactly that.
+### The Monday manager email
+
+`ot-weekly-email` (schedule in `netlify.toml`, logic in `ot-weekly-email-lib.js`) emails the
+Mon–Sun week **that just finished** to everyone on `settings.emailSettings.managers`.
+
+**Why 17:00 UTC Monday.** Sunday's hours do not exist until Monday: BBSI sends the daily file at
+~6:04 AM Pacific and `payroll-email-ingest` collects it on the next `:15`. 17:00 UTC is 10:00 AM
+Pacific in summer and 9:00 AM in winter — three to four hours and three to four ingest attempts
+after the file is due. Anything earlier risks a six-day week wearing a seven-day label. Anything
+before ~08:00 UTC is worse than late: Pacific has not reached Monday yet, so `todayInZone` still
+says Sunday and the job would send *the week before last* with nothing looking wrong about it.
+`tests/ot-weekly-email.test.js` pins both ends of that.
+
+**The week is derived from the date, not from the schedule**, so a manual Netlify → **Run now** on
+a Wednesday sends exactly what Monday's run would have.
+
+**It refuses to send an incomplete week.** If any day of the week has no rows, or the week's own
+rows came back short of what the week index says exist, nothing goes out and `PAYROLL_ALERT_EMAIL`
+is told why. BBSI sends seven days a week, so an empty day is a failed delivery and never a quiet
+Sunday — the same premise `payroll-missed-check` runs on. A week short a day understates every
+figure in the email, and managers act on those figures. The manual **Email managers** button has no
+such rule on purpose: a person looking at the truncation banner on screen can decide to send a
+partial week; a cron cannot.
+
+**It shares the report assembly with the tab.** `payroll-report.js` exports `loadWeekWindow` and
+`buildWeekReport`, and both `/api/payroll-report` and this job go through them — same window, same
+fetch, same grace allowance, same standing allowance, same pure `buildReport`. The email payload is
+the one thing with two implementations (`buildOtEmailPayload` server-side,
+`otEmailPayload()` in `src/js/ot-report.js` behind the button), and a test runs both over one
+report and demands they are byte-identical.
+
+**What replaced what.** The automatic send used to be a hook in `commitDailyImport()` in
+`src/js/daily-hours.js` — in the *browser*, after a manual upload on the Daily Hours tab. When
+hours moved to the hourly email ingest, that hook stopped being reachable: nothing about a cron
+opens a browser. The checkbox stayed on and the email silently never went out again. It is removed
+rather than kept alongside the schedule, because two automatic senders covering different weeks is
+worse than one.
+
+**What a red scheduled run means.** `payroll-email-ingest`, `payroll-missed-check` and
+`ot-weekly-email` return a 5xx only when the *alerting itself* failed, or Supabase could not be
+read — not when a message was bad and not when a week was deliberately withheld. A bad message is a
+green run with `status: "attention"`, because the alert about it went out; a withheld week is a
+green run with `skipped: "incomplete-week"`, for the same reason. So a function error in Netlify
+means the watchdog is blind, which is the one condition nobody would otherwise notice. Netlify's
+function-error alerting keys on exactly that.
 
 ---
 
