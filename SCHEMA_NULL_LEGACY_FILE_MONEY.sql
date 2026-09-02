@@ -1,4 +1,15 @@
 -- =====================================================================
+-- APPLIED 2026-09-02 to zwghbbyzrycpnesuuzgi (sfp-staffing).
+--
+-- §1: 811 rows, 233 with money, 2026-08-19 to 2026-08-25, mixed_days 0,
+--     hours_total 7913.72.
+-- §2: ran clean.
+-- §3: rows_total 811, any_money_left 0, hours_total 7913.72 — IDENTICAL
+--     to §1, which is the check that this touched money and nothing else.
+--     rows_with_hours 774, span 2026-08-01 to 2026-09-01.
+--
+-- daily_hours is now one shape: hours everywhere, money nowhere.
+-- =====================================================================
 -- SFP Staffing — one shape for daily_hours
 -- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
 --
