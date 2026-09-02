@@ -95,11 +95,11 @@ function renderSettings(){
           ${editable?`
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
             <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;saveEmailSettings();render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
-            <span style="font-size:14px;font-weight:600">Auto-send the weekly OT report after a Daily Hours import</span>
+            <span style="font-size:14px;font-weight:600">Email the completed week to managers every Monday morning</span>
           </label>`:`
-          <div style="font-size:14px;font-weight:600">Auto-send the weekly OT report after a Daily Hours import — ${
+          <div style="font-size:14px;font-weight:600">Email the completed week to managers every Monday morning — ${
             state.emailSettings.autoSend?'<span style="color:#4A7C59">on</span>':'<span style="color:var(--muted)">off</span>'}</div>`}
-          <div style="font-size:12px;color:var(--muted);margin-top:6px;${editable?'margin-left:26px':''}">When a day is imported on the Daily Hours tab, the whole Mon–Sun week it belongs to is reloaded and emailed to every manager below. You can also send it by hand from the OT Report tab.</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px;${editable?'margin-left:26px':''}">Every Monday mid-morning, the Mon–Sun week that just finished is emailed to every manager below — after Sunday’s hours have arrived. A week missing a day is not sent at all; the alert address is told why instead. You can send any week by hand at any time from the OT Report tab.</div>
         </div>
 
         <div style="margin-bottom:20px">

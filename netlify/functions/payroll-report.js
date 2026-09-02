@@ -112,6 +112,97 @@ async function loadStandingAllowance() {
   }
 }
 
+// ---- the week window and the week itself ------------------------------
+//
+// Both of these are exported and called by ot-weekly-email-lib.js as well as by
+// the handler below. That is the whole point of them being functions: the
+// Monday email states figures managers act on, and if it assembled its own week
+// from its own inputs it would eventually disagree with the tab the same people
+// open to check it. Same window, same fetch, same grace, same allowance, same
+// pure buildReport — the only thing the two callers decide separately is WHICH
+// week they want.
+
+async function loadWeekWindow(today) {
+  // Snapped to whole weeks — back to a Monday, forward to the current week's
+  // Sunday — so every week it reports is a complete week.
+  const from = weekStartFor(shiftDays(today, -WINDOW_DAYS));
+  const to   = weekDates(today)[6];
+  const index = await fetchWeekIndex(from, to);
+  return {
+    from,
+    to,
+    weeks: summarizeWeeks(index.rows, { weekStartFor, weekDates }),
+    rowsScanned: index.rows.length,
+    rowsAvailable: index.total,   // null when the count could not be read
+    truncated: index.truncated
+  };
+}
+
+async function buildWeekReport({ weekStart, today, weekWindow }) {
+  const dates = weekDates(weekStart);
+
+  // The seven days being reported are always fetched in full and on their
+  // own. They are what every number is built from, so they get every column
+  // and their own bounded query — ~60 people across 7 days, small enough that
+  // no row cap can reach it — rather than being sifted out of the
+  // deliberately narrow window scan.
+  const dailyRows = await payrollDb.fetchDailyHours(dates[0], dates[6]) || [];
+
+  // ...and then cross-checked against the window scan, which counted the same
+  // rows a second, cheaper way. If the detail fetch came back with fewer rows
+  // than the index says exist for these seven days, something dropped rows and
+  // every total is understated. Only meaningful when the index is itself
+  // complete and the week sits inside the window; otherwise there is nothing to
+  // compare against and the answer is an honest null.
+  const indexedWeek = weekWindow.weeks.find(w => w.weekStart === weekStart) || null;
+  const weekRowsExpected = (!weekWindow.truncated && weekStart >= weekWindow.from && dates[6] <= weekWindow.to)
+    ? (indexedWeek ? indexedWeek.rows : 0)
+    : null;
+  const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
+
+  const [standing, employees, graceHoursPerEmployee] = await Promise.all([
+    loadStandingAllowance(),
+    payrollDb.fetchEmployees(),
+    loadGraceHours()
+  ]);
+
+  // A delivery is expected for every day that has already happened — BBSI
+  // sends the report seven days a week, so Saturday is owed one just like
+  // Tuesday. The `d < today` half stays: flagging tomorrow as a missed
+  // delivery would cry wolf, and the report is meant to be trusted when it
+  // does say a day is missing.
+  const expectedDays = dates.filter(d => d < today);
+
+  const report = buildReport({
+    weekStart,
+    dailyRows,
+    preApprovedRows: standing.rows,
+    employees: employees || [],
+    expectedDays,
+    graceHoursPerEmployee
+  });
+
+  return {
+    report,
+    // Which table the standing allowance came from. The UI says so when it is
+    // still the old one, because "pre-approved OT is not per-employee yet" is
+    // not something a reader can otherwise tell from the numbers.
+    preApprovedSource: standing.source,
+    // dataWindow carries the numbers behind the truncation banner, so it can
+    // say which half is short and by how much.
+    dataWindow: {
+      from: weekWindow.from,
+      to: weekWindow.to,
+      rowsScanned: weekWindow.rowsScanned,
+      rowsAvailable: weekWindow.rowsAvailable,
+      weekIndexTruncated: weekWindow.truncated,
+      weekRowsExpected,                      // null when there is nothing to compare against
+      weekRowsFetched: dailyRows.length,
+      weekDetailTruncated
+    }
+  };
+}
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
@@ -141,75 +232,16 @@ exports.handler = async (event) => {
       }
     }
 
-    // The window is snapped to whole weeks — back to a Monday, forward to the
-    // current week's Sunday — so every week it reports is a complete week.
-    const windowFrom = weekStartFor(shiftDays(today, -WINDOW_DAYS));
-    const windowTo   = weekDates(today)[6];
-
-    const weekIndex      = await fetchWeekIndex(windowFrom, windowTo);
-    const availableWeeks = summarizeWeeks(weekIndex.rows, { weekStartFor, weekDates });
+    const weekWindow = await loadWeekWindow(today);
+    const availableWeeks = weekWindow.weeks;
 
     // No ?week=: the most recent week that actually has data, and failing that
     // the current week (which then reports honestly as having nothing in it).
     const weekStart = requestedWeek
       || (availableWeeks.length ? availableWeeks[0].weekStart : weekStartFor(today));
 
-    const dates = weekDates(weekStart);
-
-    // The seven days being reported are always fetched in full and on their
-    // own. They are what every number on the page is built from, so they get
-    // every column and their own bounded query — ~60 people across 7 days,
-    // small enough that no row cap can reach it — rather than being sifted out
-    // of the deliberately narrow window scan.
-    const dailyRows = await payrollDb.fetchDailyHours(dates[0], dates[6]) || [];
-
-    // ...and then cross-checked against the window scan, which counted the same
-    // rows a second, cheaper way. If the detail fetch came back with fewer rows
-    // than the index says exist for these seven days, something dropped rows
-    // and every total below is understated. Only meaningful when the index is
-    // itself complete and the week sits inside the window; otherwise there is
-    // nothing to compare against and the answer is an honest null.
-    const indexedWeek = availableWeeks.find(w => w.weekStart === weekStart) || null;
-    const weekRowsExpected = (!weekIndex.truncated && weekStart >= windowFrom && dates[6] <= windowTo)
-      ? (indexedWeek ? indexedWeek.rows : 0)
-      : null;
-    const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
-
-    const [standing, employees, graceHoursPerEmployee] = await Promise.all([
-      loadStandingAllowance(),
-      payrollDb.fetchEmployees(),
-      loadGraceHours()
-    ]);
-
-    // A delivery is expected for every day that has already happened — BBSI
-    // sends the report seven days a week, so Saturday is owed one just like
-    // Tuesday. The `d < today` half stays: flagging tomorrow as a missed
-    // delivery would cry wolf, and the report is meant to be trusted when it
-    // does say a day is missing.
-    const expectedDays = dates.filter(d => d < today);
-
-    const report = buildReport({
-      weekStart,
-      dailyRows,
-      preApprovedRows: standing.rows,
-      employees: employees || [],
-      expectedDays,
-      graceHoursPerEmployee
-    });
-
-    // `truncated` is the one flag the page needs to decide whether to show a
-    // "this may be incomplete" banner; dataWindow carries the numbers behind it
-    // so the banner can say which half is short and by how much.
-    const dataWindow = {
-      from: windowFrom,
-      to: windowTo,
-      rowsScanned: weekIndex.rows.length,
-      rowsAvailable: weekIndex.total,        // null when the count could not be read
-      weekIndexTruncated: weekIndex.truncated,
-      weekRowsExpected,                      // null when there is nothing to compare against
-      weekRowsFetched: dailyRows.length,
-      weekDetailTruncated
-    };
+    const { report, preApprovedSource, dataWindow } =
+      await buildWeekReport({ weekStart, today, weekWindow });
 
     return {
       statusCode: 200, headers,
@@ -217,11 +249,10 @@ exports.handler = async (event) => {
         ok: true,
         report,
         availableWeeks,
-        // Which table the standing allowance came from. The UI says so when it is
-        // still the old one, because "pre-approved OT is not per-employee yet" is
-        // not something a reader can otherwise tell from the numbers.
-        preApprovedSource: standing.source,
-        truncated: weekIndex.truncated || weekDetailTruncated,
+        preApprovedSource,
+        // `truncated` is the one flag the page needs to decide whether to show a
+        // "this may be incomplete" banner.
+        truncated: weekWindow.truncated || dataWindow.weekDetailTruncated,
         dataWindow
       })
     };
@@ -235,3 +266,10 @@ exports.handler = async (event) => {
 // Exported so the settings-shape rule can be exercised without a handler around
 // it, the way send-ot-email.js exports managersFromSettingsRow.
 module.exports.graceHoursFromSettingsRow = graceHoursFromSettingsRow;
+
+// Exported so the Monday manager email assembles its week through exactly this
+// code rather than through a second copy of it. See the note above
+// loadWeekWindow.
+module.exports.loadWeekWindow = loadWeekWindow;
+module.exports.buildWeekReport = buildWeekReport;
+module.exports.TIME_ZONE = TIME_ZONE;

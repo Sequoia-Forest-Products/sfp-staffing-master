@@ -12,8 +12,15 @@
 //
 //   sendOTReportEmail()   src/js/ot-report.js
 //     <- the "Email managers" button in renderOTReport()
-//     <- daily-hours.js, auto-send after an import when autoSend is on
 //     -> POST /api/send-ot-email
+//
+// That second caller — daily-hours.js auto-sending after an import — is gone.
+// It was the only AUTOMATIC sender and it died the same quiet death this file
+// was written about: hours stopped arriving by manual upload and started
+// arriving through payroll-email-ingest, so the hook was simply never reached
+// again. The checkbox stayed on. Nothing said anything. The automatic path is
+// now netlify/functions/ot-weekly-email.js, on a Monday schedule, and it is
+// pinned further down.
 //
 // The other thing worth pinning is the lazy load. As a top-level tab, the OT
 // Report loaded via a hook in switchTab() keyed on tab==='otreport'. That key no
@@ -234,8 +241,10 @@ test('with no managers configured it does not send', async () => {
 });
 
 test('the Email managers button is still rendered by the OT Report view', () => {
-  // The button lives in renderOTReport(), which Reports delegates to. If the
-  // consolidation dropped it, the only remaining sender would be the auto-send.
+  // The button lives in renderOTReport(), which Reports delegates to. It is now
+  // the ONLY way to send a week on demand — the schedule sends last week, on
+  // Monday, and nothing else sends at all — so losing it loses a capability
+  // rather than a convenience.
   const src = fs.readFileSync(path.join(SRC, 'ot-report.js'), 'utf8');
   assert.ok(/onclick="sendOTReportEmail\(\)"/.test(src),
     'the Email managers button must still call sendOTReportEmail()');
@@ -252,10 +261,32 @@ test('the Settings manager list is still live, not inert UI', () => {
     'and something must READ the list, or it is decoration again');
 });
 
-test('the auto-send after an import still reaches the email path', () => {
+// This test used to assert the OPPOSITE: that commitDailyImport() still called
+// sendOTReportEmail({auto:true}). That hook was the only automatic sender, and it
+// died quietly when hours moved to the hourly email ingest — a browser hook cannot
+// fire on a path that never opens a browser. The checkbox stayed on and nothing
+// went out.
+//
+// So the invariant being pinned is not "the import sends" but the one that was
+// actually violated: SOMETHING automatic must reach the manager list. It is now a
+// schedule, which no change to how the data arrives can walk away from.
+test('an automatic sender still exists, and it is the schedule rather than the import', () => {
   const daily = fs.readFileSync(path.join(SRC, 'daily-hours.js'), 'utf8');
-  assert.ok(/sendOTReportEmail\(\{auto:true\}\)/.test(daily),
-    'the post-import auto-send must still call the email function');
+  assert.ok(!/sendOTReportEmail\(/.test(daily),
+    'the browser-side auto-send is gone; two automatic senders would cover different weeks');
+
+  const toml = fs.readFileSync(path.join(ROOT, 'netlify.toml'), 'utf8');
+  assert.ok(/\[functions\."ot-weekly-email"\]/.test(toml),
+    'the weekly email must be a scheduled function');
+  assert.ok(/schedule = "0 17 \* \* 1"/.test(toml),
+    'Monday 17:00 UTC — late enough that Sunday\'s hours have been ingested');
+
+  // And the schedule has to actually reach the saved manager list, which is the
+  // Phase A failure this whole file exists to prevent.
+  const lib = fs.readFileSync(
+    path.join(ROOT, 'netlify', 'functions', 'ot-weekly-email-lib.js'), 'utf8');
+  assert.ok(/managersFromSettingsRow/.test(lib), 'the schedule must read the manager list');
+  assert.ok(/sendEmail/.test(lib), 'and must actually send');
 });
 
 // ---------------------------------------------------------------------------

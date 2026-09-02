@@ -323,6 +323,12 @@ exports.handler = async (event) => {
 
 // Exported for tests — the allowlist rule is the security boundary, so it is
 // checked directly rather than through the handler.
+//
+// sendEmail and generateEmailHTML are also what the Monday scheduled email
+// sends through (ot-weekly-email-lib.js). One transport, one template, one
+// return address: the automatic email and the "Email managers" button must not
+// be able to look like two different reports.
+module.exports.sendEmail = sendEmail;
 module.exports.resolveRecipients = resolveRecipients;
 module.exports.managersFromSettingsRow = managersFromSettingsRow;
 module.exports.generateEmailHTML = generateEmailHTML;

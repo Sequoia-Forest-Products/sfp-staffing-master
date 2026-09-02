@@ -49,9 +49,16 @@ function otWeekRangeLabel(a,b){
   return lbl(a,pa)+' – '+lbl(b,pb)+', '+pb[0];
 }
 
-// Every dollar figure here comes straight off the report, which takes OT dollars as the
-// residual of the payroll system's own blended earnings — a flat 1.5x undercounts the
-// 4x10 double-time hours by ~3%, so nothing is recomputed from hours and a rate.
+// Every dollar figure here comes straight off the report and nothing is recomputed
+// from hours and a rate. This comment used to say the report took OT dollars as the
+// residual of the vendor's own blended earnings; it does not, and has not since the
+// feed became hours-only. ot-report-lib prices the week from employees.wage through
+// pay-rules-lib, which models the California 4x10 tiers (1.5x for hours 10-12,
+// 2.0x above 12) explicitly rather than inheriting them from someone else's totals.
+//
+// netlify/functions/ot-weekly-email-lib.js builds this same payload server-side for
+// the Monday email. Change the shape here and change it there; the test that pins
+// them together is tests/ot-weekly-email.test.js.
 function otEmailPayload(){
   const r=state.otReport; if(!r) return null;
   const s=r.summary||{};

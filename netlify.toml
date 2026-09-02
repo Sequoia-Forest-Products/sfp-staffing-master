@@ -68,6 +68,28 @@
 [functions."payroll-missed-check"]
   schedule = "0 19 * * *"
 
+# Weekly manager overtime email — Monday, 17:00 UTC.
+#
+# 17:00 UTC is 10:00 AM Pacific in summer (PDT) and 9:00 AM in winter (PST).
+# Netlify cron is UTC and does not shift with DST, so one of the two is what you
+# get; both are mid-morning Monday, which is when a manager can act on the week.
+#
+# The margin is the whole reason for the hour. Sunday's hours do not exist until
+# Monday: BBSI sends the daily file at ~6:04 AM Pacific and payroll-email-ingest
+# above collects it on the next :15. That is 13:04 UTC in summer, 14:04 in
+# winter, so 17:00 leaves three to four hours and three or four ingest attempts
+# after the file is due. Move this earlier and the email becomes a six-day week
+# wearing a seven-day label.
+#
+# It sends the week that just FINISHED (previous Mon-Sun), derived from the
+# date rather than from the schedule — so a manual "Run now" on a Wednesday
+# sends the same week this would have.
+#
+# If any day of that week has no hours, it sends nothing and alerts
+# PAYROLL_ALERT_EMAIL instead. See ot-weekly-email-lib.js.
+[functions."ot-weekly-email"]
+  schedule = "0 17 * * 1"
+
 [[redirects]]
   from = "/auth/callback"
   to = "/.netlify/functions/auth"

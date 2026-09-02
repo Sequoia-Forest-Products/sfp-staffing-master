@@ -131,7 +131,7 @@ test('a non-admin sees every figure and no control to change one', () => {
   // hiding them would make those reports less legible while protecting nothing.
   assert.match(html, /ryley@sequoiafp\.com/);
   assert.match(html, /0\.5/);
-  assert.match(html, /Auto-send the weekly OT report/);
+  assert.match(html, /Email the completed week to managers every Monday morning/);
 
   // And nothing to type into or click.
   assert.ok(!/setOTBudgetPercent\(/.test(html), 'the OT budget is editable');
