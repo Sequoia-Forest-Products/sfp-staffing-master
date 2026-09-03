@@ -38,7 +38,7 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
   hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the
   profile card.
 - **Reports tab** — three sub-views: **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend),
-  the weekly **OT Report** (All / Pre-Approved / Net OT, production vs. weekend split, department
+  the weekly **OT Report** (All / Pre-Approved / Net OT, production vs. maintenance day split, department
   breakdown, manager email), and the **Points Tracker** (attendance points, disciplinary flags)
 - **Payroll email ingestion** — hourly scheduled function reads the `payroll import` Gmail
   label on `info@` over IMAP and imports the daily report automatically
@@ -423,13 +423,17 @@ idempotent. `department` is a **snapshot** taken at import, never a live join.
 `is_scheduled_day` is generated: Mon-Thu true, Fri-Sun false. **The column name is misleading and
 the split it drives is not.** Fri-Sun is not unscheduled — maintenance crews are scheduled those
 days — it is simply not production. The OT report calls the two blocks **Production · Mon-Thu** and
-**Weekend · Fri-Sun** for that reason, and the Daily Hours tab shows no such column at all: it was
-labelling every day of the week with a claim about who was rostered. The split itself is what keeps
-weekend labour visible as its own line instead of dissolving into a weekly total, so it stays.
+**Maintenance · Fri-Sun** for that reason, and the Daily Hours tab shows no such column at all: it
+was labelling every day of the week with a claim about who was rostered. The split itself is what
+keeps Fri-Sun labour visible as its own line instead of dissolving into a weekly total, so it stays.
 
-"Weekend" rather than "Maintenance" is a deliberately weaker label: it only has to be true of every
-Fri-Sun row, and nobody has established that production never runs a weekend. If that is confirmed,
-`Weekend · Fri-Sun` becomes `Maintenance · Fri-Sun` and says more.
+**"Maintenance" names the day block, not the department, and that distinction is live.**
+Production-department people do work Fri-Sun, and their rows keep `department = 'Production'` —
+that is where a person works, not what ran that day. So the OT report legitimately shows Production
+rows under a Maintenance heading. Both sections carrying the label are followed by a line saying so,
+and `tests/reports-tab.test.js` fails if either is removed: without them the report reads as though
+production ran a weekend. For the same reason the figures are `Maintenance-day OT $` rather than
+`Maintenance OT $` — they are every department's overtime on Fri-Sun, not one department's.
 
 **THE FEED IS HOURS-ONLY SINCE 2026-08-22.** `pay_rate`, `total_earnings`, `ot_dollars` and
 `regular_dollars` are **NULL on every row imported since**, and hold real vendor figures on every

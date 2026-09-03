@@ -250,26 +250,35 @@ function renderOTReport(){
         Change the rate on the Settings tab.${graceMissing.length?` <strong style="color:var(--brick)">${graceMissing.length} employee${graceMissing.length===1?'':'s'} had no rate on file</strong> — their grace hours are counted but contribute $0: ${graceMissing.map(esc).join(', ')}.`:''}</div>
     </div>`;
 
-  // 3. Production days vs weekend days
+  // 3. Production days vs maintenance days
   //
-  // NAMING. These used to read "Scheduled" and "Non-scheduled", which was a
-  // wrong label rather than a wrong split. Maintenance crews ARE scheduled
-  // Fri–Sun; what they are not is production. Calling those days unscheduled
-  // said something untrue about the people working them.
+  // NAMING, and it has moved twice. It used to read "Scheduled" and
+  // "Non-scheduled", which was a wrong label rather than a wrong split:
+  // maintenance crews ARE scheduled Fri–Sun, so calling those days unscheduled
+  // said something untrue about the people working them. It then read "Weekend"
+  // for one deploy, as a placeholder while it was unconfirmed whether production
+  // ever runs a Saturday. It does not — production runs Mon–Thu only — so the
+  // block is named for what it is.
   //
-  // "Weekend days" rather than "Maintenance" deliberately: the label only has to
-  // be true of every Fri–Sun row, and nobody has established that production
-  // never runs a weekend. If it turns out weekend work is always maintenance,
-  // this becomes "Maintenance · Fri–Sun" and says more. Until then it says less
-  // and stays right.
+  // THE TRAP THIS COMMENT EXISTS FOR. "Maintenance" here names the DAY BLOCK,
+  // not the department. Production-department people do work Fri–Sun, and their
+  // rows keep department = Production, because that is where a person works
+  // rather than what ran that day. So the tables below WILL show Production rows
+  // under a Maintenance heading and that is correct. Every heading in this
+  // section is followed by a line saying so, and removing one of those lines
+  // makes this report read as though production ran a weekend.
   //
   // The DATA keys are untouched — split.nonScheduled, e.nonScheduledHours,
   // is_scheduled_day. The split is correct and load-bearing (it is what keeps
-  // weekend cost visible as its own line instead of dissolving into a weekly
-  // total); only what it is called on screen was wrong.
+  // maintenance-day cost visible as its own line instead of dissolving into a
+  // weekly total); only what it is called on screen was wrong.
+  const dayBlockNote=`Production runs Mon–Thu. Fri–Sun is the maintenance block —
+    that names the <strong>days</strong>, not the departments: someone in Production who works a
+    Saturday still shows as Production, because that is where they work, not what ran that day.`;
   const splitBlock=`
-    <div class="section-head"><span>Production days vs weekend days</span></div>
+    <div class="section-head"><span>Production days vs maintenance days</span></div>
     <div class="ot-panel">
+      <div class="ot-note" style="margin:0 0 12px">${dayBlockNote}</div>
       <div class="ot-split">
         <div class="ot-split-card">
           <div class="ot-split-hdr">Production · Mon–Thu</div>
@@ -280,17 +289,17 @@ function renderOTReport(){
           <div class="ot-kv"><span>Headcount</span><span>${sched.headcount||0}</span></div>
         </div>
         <div class="ot-split-card nonsched">
-          <div class="ot-split-hdr">Weekend · Fri–Sun</div>
+          <div class="ot-split-hdr">Maintenance · Fri–Sun</div>
           <div class="ot-kv"><span>Hours</span><span>${fmtHrs(nons.hours)}</span></div>
-          <div class="ot-kv"><span>Weekend OT $</span><span>${fmt$(nons.otDollars)}</span></div>
+          <div class="ot-kv"><span>Maintenance-day OT $</span><span>${fmt$(nons.otDollars)}</span></div>
           <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(nons.otHours)}</span></div>
-          <div class="ot-kv"><span>Total weekend labor $</span><span>${fmt$(nons.earnings)}</span></div>
+          <div class="ot-kv"><span>Total maintenance-day labor $</span><span>${fmt$(nons.earnings)}</span></div>
           <div class="ot-kv"><span>Headcount</span><span>${nons.headcount||0}</span></div>
         </div>
       </div>
       <div class="ot-note" style="margin:12px 0 0">Two different numbers matter here and they are not interchangeable:
-        <strong>weekend OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
-        <strong>total weekend labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for Fri–Sun work, which is the real cost of running those days.</div>
+        <strong>maintenance-day OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
+        <strong>total maintenance-day labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for Fri–Sun work, which is the real cost of running those days.</div>
     </div>`;
 
   // 4. Departments
@@ -369,12 +378,17 @@ function renderOTReport(){
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th style="width:130px">Day</th><th style="width:190px">Classification</th><th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">OT $</th><th class="num">Earnings</th><th style="width:120px"></th></tr></thead>
+        <thead><tr><th style="width:130px">Day</th><th style="width:190px">Day block</th><th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">OT $</th><th class="num">Earnings</th><th style="width:120px"></th></tr></thead>
         <tbody>${dayRows||'<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">No days in this week</td></tr>'}</tbody>
       </table>
     </div>`;
 
-  // 6. Weekend labor as its own block — small headcount, so name names.
+  // 6. Maintenance-day labor as its own block — small headcount, so name names.
+  //
+  // This is the table where the day-block/department distinction is visible
+  // rather than theoretical: it prints a Department column, and Production
+  // appears in it. dayBlockNote is repeated here for that reason, not for
+  // symmetry — a reader who scrolled straight to this section never saw it.
   const weekendDays=days.filter(d=>!d.isScheduledDay&&d.hasData);
   const weekendPeople={};
   weekendDays.forEach(d=>(d.workers||[]).forEach(w=>{
@@ -387,20 +401,21 @@ function renderOTReport(){
   }));
   const weekendList=Object.values(weekendPeople).sort((a,b)=>b.hours-a.hours);
   const weekendBlock=`
-    <div class="section-head"><span>Weekend labor · Friday to Sunday</span></div>
+    <div class="section-head"><span>Maintenance-day labor · Friday to Sunday</span></div>
     <div class="ot-panel">
+      <div class="ot-note" style="margin:0 0 12px">${dayBlockNote}</div>
       <div class="ot-split">
         <div class="ot-split-card nonsched">
-          <div class="ot-split-hdr">Weekend totals</div>
+          <div class="ot-split-hdr">Fri–Sun totals</div>
           <div class="ot-kv"><span>Hours</span><span>${fmtHrs(s.weekendHours)}</span></div>
-          <div class="ot-kv"><span>Total weekend labor $</span><span>${fmt$(s.weekendDollars)}</span></div>
+          <div class="ot-kv"><span>Total maintenance-day labor $</span><span>${fmt$(s.weekendDollars)}</span></div>
           <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(s.weekendOtHours)}</span></div>
-          <div class="ot-kv"><span>Weekend OT $</span><span>${fmt$(s.weekendOtDollars)}</span></div>
+          <div class="ot-kv"><span>Maintenance-day OT $</span><span>${fmt$(s.weekendOtDollars)}</span></div>
           <div class="ot-kv"><span>People</span><span>${s.weekendHeadcount||0}</span></div>
         </div>
         <div style="grid-column:span 2">
-          <div class="ot-split-hdr">Who worked the weekend</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Friday counts as weekend here: these are the same Fri–Sun rows as the weekend block above, so production plus weekend equals the whole week.</div>
+          <div class="ot-split-hdr">Who worked Fri–Sun</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Friday belongs to this block: these are the same Fri–Sun rows as the maintenance block above, so production days plus maintenance days equals the whole week. The Department column is where each person works — production days are Mon–Thu regardless of what it says.</div>
           ${weekendList.length?`<div class="table-wrap" style="margin-bottom:0"><table>
             <thead><tr><th>Employee</th><th>Department</th><th>Days</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">Earnings</th></tr></thead>
             <tbody>${weekendList.map(w=>`<tr>
@@ -416,11 +431,13 @@ function renderOTReport(){
       </div>
     </div>`;
 
-  // 7. Per-employee, sortable, with production and weekend days split apart.
+  // 7. Per-employee, sortable, with production days and maintenance days split
+  // apart. "Maint hrs" is hours worked in the Fri–Sun block — not hours worked
+  // by the Maintenance department.
   const empCols=[
     ['name','Employee'],['department','Department'],
     ['scheduledHours','Prod hrs'],['scheduledEarnings','Prod $'],
-    ['nonScheduledHours','Wknd hrs'],['nonScheduledEarnings','Wknd $'],
+    ['nonScheduledHours','Maint hrs'],['nonScheduledEarnings','Maint $'],
     ['otHours','OT hrs'],['otDollars','OT $'],
     ['preApprovedHours','OT-table hrs'],['graceHours','Grace hrs'],
     ['netOtHours','Net OT hrs'],['netOtDollars','Net OT $'],
