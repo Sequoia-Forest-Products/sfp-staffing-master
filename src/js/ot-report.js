@@ -250,13 +250,29 @@ function renderOTReport(){
         Change the rate on the Settings tab.${graceMissing.length?` <strong style="color:var(--brick)">${graceMissing.length} employee${graceMissing.length===1?'':'s'} had no rate on file</strong> — their grace hours are counted but contribute $0: ${graceMissing.map(esc).join(', ')}.`:''}</div>
     </div>`;
 
-  // 3. Scheduled vs non-scheduled
+  // 3. Production days vs weekend days
+  //
+  // NAMING. These used to read "Scheduled" and "Non-scheduled", which was a
+  // wrong label rather than a wrong split. Maintenance crews ARE scheduled
+  // Fri–Sun; what they are not is production. Calling those days unscheduled
+  // said something untrue about the people working them.
+  //
+  // "Weekend days" rather than "Maintenance" deliberately: the label only has to
+  // be true of every Fri–Sun row, and nobody has established that production
+  // never runs a weekend. If it turns out weekend work is always maintenance,
+  // this becomes "Maintenance · Fri–Sun" and says more. Until then it says less
+  // and stays right.
+  //
+  // The DATA keys are untouched — split.nonScheduled, e.nonScheduledHours,
+  // is_scheduled_day. The split is correct and load-bearing (it is what keeps
+  // weekend cost visible as its own line instead of dissolving into a weekly
+  // total); only what it is called on screen was wrong.
   const splitBlock=`
-    <div class="section-head"><span>Scheduled vs non-scheduled</span></div>
+    <div class="section-head"><span>Production days vs weekend days</span></div>
     <div class="ot-panel">
       <div class="ot-split">
         <div class="ot-split-card">
-          <div class="ot-split-hdr">Scheduled · Mon–Thu</div>
+          <div class="ot-split-hdr">Production · Mon–Thu</div>
           <div class="ot-kv"><span>Hours</span><span>${fmtHrs(sched.hours)}</span></div>
           <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(sched.otHours)}</span></div>
           <div class="ot-kv"><span>OT $</span><span>${fmt$(sched.otDollars)}</span></div>
@@ -264,17 +280,17 @@ function renderOTReport(){
           <div class="ot-kv"><span>Headcount</span><span>${sched.headcount||0}</span></div>
         </div>
         <div class="ot-split-card nonsched">
-          <div class="ot-split-hdr">Non-scheduled · Fri–Sun</div>
+          <div class="ot-split-hdr">Weekend · Fri–Sun</div>
           <div class="ot-kv"><span>Hours</span><span>${fmtHrs(nons.hours)}</span></div>
-          <div class="ot-kv"><span>Non-scheduled OT $</span><span>${fmt$(nons.otDollars)}</span></div>
+          <div class="ot-kv"><span>Weekend OT $</span><span>${fmt$(nons.otDollars)}</span></div>
           <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(nons.otHours)}</span></div>
-          <div class="ot-kv"><span>Total non-scheduled labor $</span><span>${fmt$(nons.earnings)}</span></div>
+          <div class="ot-kv"><span>Total weekend labor $</span><span>${fmt$(nons.earnings)}</span></div>
           <div class="ot-kv"><span>Headcount</span><span>${nons.headcount||0}</span></div>
         </div>
       </div>
-      <div class="ot-note" style="margin:12px 0 0">Nobody is scheduled on a non-scheduled day, so every hour worked Fri–Sun is incremental.
-        Two different numbers matter and they are not interchangeable: <strong>non-scheduled OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
-        <strong>total non-scheduled labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for weekend work, which is the real cost of running those days.</div>
+      <div class="ot-note" style="margin:12px 0 0">Two different numbers matter here and they are not interchangeable:
+        <strong>weekend OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
+        <strong>total weekend labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for Fri–Sun work, which is the real cost of running those days.</div>
     </div>`;
 
   // 4. Departments
@@ -384,7 +400,7 @@ function renderOTReport(){
         </div>
         <div style="grid-column:span 2">
           <div class="ot-split-hdr">Who worked the weekend</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Friday counts as weekend here: these are the same Fri–Sun rows as the non-scheduled block above, so scheduled plus weekend equals the whole week.</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Friday counts as weekend here: these are the same Fri–Sun rows as the weekend block above, so production plus weekend equals the whole week.</div>
           ${weekendList.length?`<div class="table-wrap" style="margin-bottom:0"><table>
             <thead><tr><th>Employee</th><th>Department</th><th>Days</th><th class="num">Hours</th><th class="num">OT hrs</th><th class="num">Earnings</th></tr></thead>
             <tbody>${weekendList.map(w=>`<tr>
@@ -400,11 +416,11 @@ function renderOTReport(){
       </div>
     </div>`;
 
-  // 7. Per-employee, sortable, with scheduled and non-scheduled split apart.
+  // 7. Per-employee, sortable, with production and weekend days split apart.
   const empCols=[
     ['name','Employee'],['department','Department'],
-    ['scheduledHours','Sched hrs'],['scheduledEarnings','Sched $'],
-    ['nonScheduledHours','Non-sched hrs'],['nonScheduledEarnings','Non-sched $'],
+    ['scheduledHours','Prod hrs'],['scheduledEarnings','Prod $'],
+    ['nonScheduledHours','Wknd hrs'],['nonScheduledEarnings','Wknd $'],
     ['otHours','OT hrs'],['otDollars','OT $'],
     ['preApprovedHours','OT-table hrs'],['graceHours','Grace hrs'],
     ['netOtHours','Net OT hrs'],['netOtDollars','Net OT $'],

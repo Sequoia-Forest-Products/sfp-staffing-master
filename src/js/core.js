@@ -568,7 +568,10 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','
 
 // Fri/Sat/Sun work is normal here — maintenance crews run weekends — so this
 // labels the day, it never warns about it.
-function schedBadge(isSched){return isSched?'<span class="badge active">Scheduled Mon–Thu</span>':'<span class="badge en">Non-scheduled Fri–Sun</span>';}
+// Mon–Thu is the production block; Fri–Sun is not. It is NOT unscheduled —
+// maintenance crews are scheduled those days — so the badge says which kind of
+// day it is rather than making a claim about who was rostered.
+function schedBadge(isSched){return isSched?'<span class="badge active">Production Mon–Thu</span>':'<span class="badge en">Weekend Fri–Sun</span>';}
 
 // Every /api/payroll-import call goes through here so a failed request raises
 // instead of leaving a panel spinning on nothing.
