@@ -340,10 +340,18 @@ function dayState({ rowCount, delivery, workDate, today }) {
 async function days(body) {
   const { from, to } = resolveRange(body);
 
-  // Two reads, not one. daily_hours answers "what was worked"; processed_emails
-  // answers "what was delivered". Asking only the first is what made a
-  // no-work day indistinguishable from a missing file.
-  const [rows, deliveries] = await Promise.all([
+  // Three reads. daily_hours answers "what was worked"; processed_emails answers
+  // "what was delivered"; the roster answers "is this person actually
+  // unclassified, or is the row's department snapshot just old".
+  //
+  // That third question matters because daily_hours.department is a SNAPSHOT
+  // taken at import, deliberately, so a transfer never rewrites history. The
+  // consequence is that somebody classified AFTER their hours were imported
+  // still carries null on those rows — and this tab was calling that "no payroll
+  // department on the roster", which is false, and sent you to a profile that
+  // already had one. The remedy for that person is the Re-stamp action further
+  // down this same tab, not the employee card.
+  const [rows, deliveries, roster] = await Promise.all([
     db.fetchDaySummaries(from, to),
     db.fetchDeliveriesForDates(from, to).catch(err => {
       // A ledger that cannot be read must not take the day list down with it.
@@ -352,10 +360,26 @@ async function days(body) {
       // day a missed one.
       console.error('processed_emails read failed for the day list:', err.message);
       return null;
+    }),
+    db.fetchEmployees().catch(err => {
+      // Same rule as the ledger: a failed read must not take the day list down,
+      // and must not be mistaken for an answer. With no roster in hand, an empty
+      // department is reported as unclassified rather than guessed either way.
+      console.error('roster read failed for the day list:', err.message);
+      return null;
     })
   ]);
 
   const deliveryUnavailable = deliveries === null;
+  const rosterUnavailable = roster === null;
+
+  // employee_number -> what the ROSTER currently says, which is not necessarily
+  // what the imported row says.
+  const rosterDept = new Map();
+  for (const e of roster || []) {
+    const key = String((e && e.employee_number) == null ? '' : e.employee_number).trim();
+    if (key) rosterDept.set(key, e.department || null);
+  }
 
   // Newest delivery per work date wins: a re-send that imported supersedes an
   // earlier error on the same day.
@@ -382,7 +406,7 @@ async function days(body) {
         createdAt: row.created_at || null,
         emailReceivedAt: row.email_received_at || null,
         flagged: [],
-        unassigned: [],
+        unassignedRows: [],
         _employees: new Set()
       });
     }
@@ -405,7 +429,7 @@ async function days(body) {
     if (realFlags.length) {
       day.flagged.push({ ...personLabel(row), flags: row.flags.slice() });
     }
-    if (!row.department) day.unassigned.push(personLabel(row));
+    if (!row.department) day.unassignedRows.push(row);
     // Earliest created_at wins so the timestamp describes the import, not the
     // last row PostgREST happened to return.
     if (row.created_at && (!day.createdAt || row.created_at < day.createdAt)) {
@@ -429,7 +453,19 @@ async function days(body) {
 
     const rowCount = day ? day.rowCount : 0;
     const flagged = day ? day.flagged : [];
-    const unassigned = day ? day.unassigned : [];
+
+    // Two different problems wearing one label. A row with no department is
+    // either somebody the roster has not classified (fix on their profile) or
+    // somebody classified since this day was imported (fix with Re-stamp).
+    // Telling a person to go and set a department that is already set is worse
+    // than saying nothing.
+    const unassigned = [], stale = [];
+    for (const row of (day ? day.unassignedRows : [])) {
+      const label = personLabel(row);
+      const known = rosterDept.get(String(row.employee_number || '').trim());
+      if (!rosterUnavailable && known) stale.push({ ...label, rosterDepartment: known });
+      else unassigned.push(label);
+    }
 
     return {
       workDate: info.date,
@@ -456,12 +492,17 @@ async function days(body) {
       flaggedOmitted: Math.max(0, flagged.length - NAMED_LIMIT),
       unassigned: unassigned.slice(0, NAMED_LIMIT),
       unassignedOmitted: Math.max(0, unassigned.length - NAMED_LIMIT),
+      // Classified on the roster, stale on the row. Counted apart from
+      // unassignedCount so the tab can name the right remedy.
+      staleCount: stale.length,
+      stale: stale.slice(0, NAMED_LIMIT),
+      staleOmitted: Math.max(0, stale.length - NAMED_LIMIT),
       delivery
       /* no money: the feed is hours only */
     };
   }).sort((a, b) => (a.workDate < b.workDate ? 1 : a.workDate > b.workDate ? -1 : 0));
 
-  return { from, to, today, deliveryUnavailable, days: out };
+  return { from, to, today, deliveryUnavailable, rosterUnavailable, days: out };
 }
 
 async function restamp(body) {

@@ -989,8 +989,22 @@ function buildReport({
     netOtHours,
     netOtDollars,
     totalHourlyPayroll,
-    // A fraction (0.0731), not a percentage. null rather than 0 or Infinity when
+    // Fractions (0.0731), not percentages. null rather than 0 or Infinity when
     // there is no payroll to divide by — a week with no data has no percentage.
+    //
+    // BOTH are DOLLAR ratios: OT dollars over hourly payroll dollars. An hours
+    // ratio is a different number (OT hours are paid at a premium, so the dollar
+    // share always exceeds the hours share) and the screen labels which one it
+    // is showing, because a reader cannot tell from a bare percentage.
+    //
+    // allOtPctOfPayroll is the COST question — what share of wages went to
+    // overtime — and it is the one the OT budget threshold is measured against
+    // (see send-ot-email.js, which compares totalOTPercent, built from
+    // allOtDollars). netOtPctOfPayroll answers a different question: how far the
+    // week ran past what was approved. It is kept because that question matters
+    // too, but it goes NEGATIVE in a light week, and a negative share of payroll
+    // is not a meaningful cost figure and must never be the headline.
+    allOtPctOfPayroll: totalHourlyPayroll === 0 ? null : round2Pct(week.otDollars / totalHourlyPayroll),
     netOtPctOfPayroll: totalHourlyPayroll === 0 ? null : round2Pct(netOtDollars / totalHourlyPayroll),
     totalHours: week.hours,
     headcount: week.headcount,

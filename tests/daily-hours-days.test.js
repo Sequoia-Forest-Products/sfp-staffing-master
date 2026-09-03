@@ -19,12 +19,15 @@
 // Negative controls, actually run while writing this — each sabotage applied on
 // its own and reverted:
 //
-//   dayState returns 'no-file' whenever rowCount is 0   -> 4 fail (2,3,4,5)
-//   eachDate returns only the dates that have rows      -> 6 fail (1-6)
-//   NAMED_LIMIT raised so nothing is ever omitted       -> 1 fail (8)
-//   "Correct date" put back on the row                  -> 1 fail (14)
+//   dayState returns 'no-file' whenever rowCount is 0   -> 4 fail
+//   eachDate returns only the dates that have rows      -> 6 fail
+//   NAMED_LIMIT raised so nothing is ever omitted       -> 1 fail
+//   roster lookup reads e.employee_number again         -> 1 fail
+//   the overflow menu is absolutely positioned again    -> 1 fail
+//   "Delete day" put back on the row                    -> 1 fail
+//   a stale snapshot counted as unassigned again        -> 1 fail
 //
-// Restored, 17 pass.
+// Restored, 25 pass.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -313,8 +316,30 @@ const uiDay = (workDate, over = {}) => Object.assign({
   createdAt: null, emailReceivedAt: null,
   flagCount: 0, unassignedCount: 0,
   flagged: [], flaggedOmitted: 0, unassigned: [], unassignedOmitted: 0,
+  staleCount: 0, stale: [], staleOmitted: 0,
   delivery: null
 }, over);
+
+// The roster, built by the PRODUCTION mapping rather than by hand.
+//
+// This exists because the hand-built version shipped a bug. loadData() renames
+// the column when it maps a roster row — `empNum:r.employee_number||''` — and
+// the tab's lookup read `e.employee_number`, which is undefined on every person.
+// Every named person came back "(not on the roster)", including people who are
+// on it and fully classified. The test passed anyway, because its fixture had an
+// employee_number field: a fixture that agreed with the bug.
+//
+// So the fixture is now whatever loadData() actually produces from an API row.
+// If the mapping is renamed again, this goes red instead of the screen going
+// wrong.
+async function loadRoster(ctx, apiRows) {
+  ctx.fetch = async (url) => ({
+    ok: true, status: 200,
+    json: async () => ({ ok: true, data: String(url).includes('table=employees') ? apiRows : [] })
+  });
+  await ctx.loadData();
+  return ctx.state.employees;
+}
 
 function renderTab(ctx, days, extra = {}) {
   Object.assign(ctx.state, {
@@ -371,23 +396,72 @@ test('a quiet day and a missing day do not read the same', () => {
   assert.match(gone, /did not arrive/);
 });
 
-test('Correct date is off the row and behind the overflow', () => {
+test('the row carries no destructive action — both are behind the overflow', () => {
   const ctx = sandbox();
   const closed = renderTab(ctx, [uiDay('2026-08-24')]);
-  assert.doesNotMatch(closed, /Correct date/, 'not on the row any more');
-  assert.match(closed, /toggleDayMenu\('2026-08-24'\)/, 'but still reachable');
+
+  assert.doesNotMatch(closed, /Correct date/, 'not on the row');
+  assert.doesNotMatch(closed, /Delete day/,
+    'deleting a day of hours must not be one stray click on every row');
+  assert.doesNotMatch(closed, /deleteDailyDay\(/);
+  assert.match(closed, /toggleDayMenu\('2026-08-24'\)/, 'but both are still reachable');
 
   const open = renderTab(ctx, [uiDay('2026-08-24')], { dailyMenu: '2026-08-24' });
   assert.match(open, /Correct date/);
-  assert.match(open, /correctDailyDate\(/, 'and the capability is intact, not deleted');
+  assert.match(open, /correctDailyDate\(/, 'the capability is intact, not deleted');
+  assert.match(open, /Delete day/);
+  assert.match(open, /deleteDailyDay\(/);
 });
 
-test('Data quality names the person and links to their card', () => {
+test('the overflow menu is in normal flow, not absolutely positioned', () => {
+  // THE BUG THIS PINS. The first version positioned the menu absolutely inside
+  // the cell. app.html's .table-wrap sets overflow:hidden, which clipped it away
+  // completely — the markup was in the DOM, the test asserting the markup
+  // passed, and clicking the button did visibly nothing. A string test cannot
+  // see CSS clipping, so what is asserted instead is that nothing in this menu
+  // relies on escaping the wrapper.
   const ctx = sandbox();
+  const open = renderTab(ctx, [uiDay('2026-08-24')], { dailyMenu: '2026-08-24' });
+
+  const cell = open.slice(open.indexOf('toggleDayMenu'));
+  const menu = cell.slice(0, cell.indexOf('</td>'));
+  assert.doesNotMatch(menu, /position:\s*absolute/,
+    '.table-wrap has overflow:hidden — an absolutely positioned menu is invisible');
+  assert.doesNotMatch(menu, /position:\s*fixed/);
+  assert.match(menu, /class="dh-menu"/);
+
+  // And the wrapper really does clip, which is why the rule above exists.
+  const appHtml = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
+  assert.match(appHtml, /\.table-wrap\{[^}]*overflow:hidden/,
+    'if this ever stops being true the comment above is stale, not the code');
+});
+
+test('Delete names what is being destroyed, not just a row count', () => {
+  const ctx = sandbox();
+  const open = renderTab(ctx, [uiDay('2026-08-24', {
+    rowCount: 37, employees: 37, totalHours: 312.5
+  })], { dailyMenu: '2026-08-24' });
+
+  // hours and headcount reach the handler, so the confirm can weigh the loss
+  assert.match(open, /deleteDailyDay\('2026-08-24',37,312\.5,37\)/);
+
+  const src = fs.readFileSync(path.join(SRC, 'daily-hours.js'), 'utf8');
+  assert.match(src, /async function deleteDailyDay\(workDate,rowCount,totalHours,people\)/);
+  assert.match(src, /if\(!confirm\(/, 'the confirmation stays on top of the move');
+  assert.match(src, /manager email/, 'and says what else the day disappears from');
+});
+
+test('Data quality names the person and links to their card', async () => {
+  const ctx = sandbox();
+  const roster = await loadRoster(ctx, [
+    { id: 'emp-1', name: 'Shawn Owsley', employee_number: '0101', department: 'Production' }
+  ]);
+  assert.strictEqual(roster.length, 1, 'the roster has to actually load, or this proves nothing');
+
   const html = renderTab(ctx, [uiDay('2026-08-24', {
     unassignedCount: 1,
     unassigned: [{ employeeNumber: '0101', name: 'Shawn Owsley' }]
-  })], { employees: [{ id: 'emp-1', employee_number: '0101', name: 'Shawn Owsley' }] });
+  })], { employees: roster });
 
   assert.match(html, /1 unassigned — /);
   assert.match(html, /Shawn Owsley/);
@@ -395,16 +469,94 @@ test('Data quality names the person and links to their card', () => {
     'the button used to open a roster of 71 people with no indication which one');
 });
 
-test('somebody the roster has never heard of is named without a dead link', () => {
+test('somebody the roster has never heard of is named without a dead link', async () => {
   const ctx = sandbox();
+  const roster = await loadRoster(ctx, [
+    { id: 'emp-1', name: 'Somebody Else', employee_number: '0101' }
+  ]);
+
   const html = renderTab(ctx, [uiDay('2026-08-24', {
     flagCount: 1,
     flagged: [{ employeeNumber: '9999', name: 'Ghost Person', flags: ['unknown_employee'] }]
-  })], { employees: [] });
+  })], { employees: roster });
 
   assert.match(html, /Ghost Person/);
   assert.match(html, /not on the roster/);
   assert.doesNotMatch(html, /goToEmployeeProfile\('9999'\)/);
+});
+
+test('an empty roster does not accuse anybody of not being on it', () => {
+  // loadData() runs at bootstrap but this tab can render first. "Not on the
+  // roster" is a serious claim about a person and must not be made because the
+  // page was early.
+  const ctx = sandbox();
+  const html = renderTab(ctx, [uiDay('2026-08-24', {
+    unassignedCount: 1,
+    unassigned: [{ employeeNumber: '0101', name: 'Shawn Owsley' }]
+  })], { employees: [] });
+
+  assert.match(html, /Shawn Owsley/);
+  assert.doesNotMatch(html, /not on the roster/);
+});
+
+test('a stale department snapshot is not reported as an unclassified person', async (t) => {
+  // Shawn Owsley, on the screen: "1 unassigned ... no payroll department on the
+  // roster" for somebody who IS on the roster and fully classified.
+  // daily_hours.department is a snapshot taken at import — deliberately, so a
+  // transfer never rewrites history — so anybody classified after their hours
+  // landed still carries null on those rows. Sending that person's manager to
+  // the profile to set a department that is already set is worse than silence.
+  const date = shiftDay(TODAY, -1);
+  Object.assign(payrollDb, { fetchEmployees: async () => [
+    { id: 'emp-1', employee_number: '0101', name: 'Shawn Owsley', department: 'Production' },
+    { id: 'emp-2', employee_number: '0102', name: 'Nobody Classified', department: null }
+  ] });
+  stub(t, {
+    rows: [
+      hoursRow(date, '0101', { first_name: 'Shawn', last_name: 'Owsley', department: null }),
+      hoursRow(date, '0102', { first_name: 'Nobody', last_name: 'Classified', department: null })
+    ]
+  });
+
+  const { body } = await invoke({ action: 'days', from: date, to: date });
+  const day = body.days[0];
+
+  assert.strictEqual(day.staleCount, 1);
+  assert.deepStrictEqual(day.stale.map(p => p.name), ['Shawn Owsley']);
+  assert.strictEqual(day.stale[0].rosterDepartment, 'Production',
+    'and it says what the roster does know, so the remedy is obvious');
+
+  assert.strictEqual(day.unassignedCount, 1);
+  assert.deepStrictEqual(day.unassigned.map(p => p.name), ['Nobody Classified'],
+    'a genuinely unclassified person still reports as unassigned');
+});
+
+test('an unreadable roster reports every empty department as unassigned', async (t) => {
+  // No evidence means no verdict. Claiming a stale snapshot without the roster
+  // to prove it would tell somebody to re-stamp a day that needs a profile edit.
+  const date = shiftDay(TODAY, -1);
+  Object.assign(payrollDb, { fetchEmployees: async () => { throw new Error('roster 503'); } });
+  stub(t, { rows: [hoursRow(date, '0101', { department: null })] });
+
+  const { statusCode, body } = await invoke({ action: 'days', from: date, to: date });
+  assert.strictEqual(statusCode, 200, 'and it must not take the day list down');
+  assert.strictEqual(body.rosterUnavailable, true);
+  assert.strictEqual(body.days[0].unassignedCount, 1);
+  assert.strictEqual(body.days[0].staleCount, 0);
+});
+
+test('the tab points a stale department at Re-stamp, not at the profile', () => {
+  const ctx = sandbox();
+  const html = renderTab(ctx, [uiDay('2026-08-24', {
+    staleCount: 1,
+    stale: [{ employeeNumber: '0101', name: 'Shawn Owsley', rosterDepartment: 'Production' }]
+  })]);
+
+  assert.match(html, /Shawn Owsley/);
+  assert.match(html, /Classified on the roster \(Production\)/);
+  assert.match(html, /Re-stamp departments/);
+  assert.doesNotMatch(html, /no payroll department on the roster/,
+    'that message is for somebody the roster genuinely has not classified');
 });
 
 test('the summary counts each kind of day', () => {
