@@ -427,6 +427,35 @@ days — it is simply not production. The OT report calls the two blocks **Produ
 was labelling every day of the week with a claim about who was rostered. The split itself is what
 keeps Fri-Sun labour visible as its own line instead of dissolving into a weekly total, so it stays.
 
+**The Data Quality panel tells two problems apart.** `daily_hours.department` is a snapshot taken at
+import — deliberately, so a transfer never rewrites history — so anybody classified *after* their
+hours landed still carries null on those rows. The tab called that "no payroll department on the
+roster", which is false and sent you to a profile that already had one. `days` now reads the roster
+too and splits the bucket: **unassigned** (nobody has classified them — fix on their profile) and
+**stale department** (classified since import — fix with **Re-stamp departments** on the same tab).
+If the roster read fails, everything falls back to `unassigned` and `rosterUnavailable` says so; no
+evidence means no verdict.
+
+**The row's two destructive actions live behind the `⋯` overflow**, which renders *inline, in normal
+flow*. `.table-wrap` in `app.html` sets `overflow:hidden`, so an absolutely positioned menu is
+clipped away entirely — the markup lands in the DOM, a test asserting the markup passes, and the
+button visibly does nothing. That shipped once. A test now rejects `position:absolute` inside that
+cell.
+
+### The two "% of hourly payroll" figures
+
+Both are **dollar** ratios — OT dollars over hourly payroll dollars — and both cards say so, because
+they display hours and dollars side by side and a bare percentage does not say which drives it.
+
+- **All OT %** is the cost question: what share of wages went to overtime. This is the headline, and
+  it is what the OT budget threshold in Settings is measured against (`send-ot-email.js` builds
+  `budgetVariance` from `totalOTPercent`, which is `pct(allOtDollars)`).
+- **Net OT %** answers a different question — how far the week ran past the approved allowance. It
+  goes **negative** in a week where less overtime was worked than was approved, which is a real
+  finding but not a cost share. It was the headline card until 2026-09-03; a negative percentage of
+  payroll is not a meaningful figure and must never be one again. A test pins both the card and the
+  budget comparison.
+
 **"Maintenance" names the day block, not the department, and that distinction is live.**
 Production-department people do work Fri-Sun, and their rows keep `department = 'Production'` —
 that is where a person works, not what ran that day. So the OT report legitimately shows Production

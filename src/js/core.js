@@ -64,7 +64,7 @@ let state = {
   dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null, dailyDupAck:false, dailyLastImport:null,
   dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
   // dailyMenu holds the work date whose ... menu is open, or null.
-  dailyMenu:null, dailyDeliveryUnavailable:false,
+  dailyMenu:null, dailyDeliveryUnavailable:false, dailyRosterUnavailable:false,
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,

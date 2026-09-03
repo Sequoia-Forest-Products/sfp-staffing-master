@@ -94,6 +94,7 @@ async function loadDailyDays(){
     // as missing, which is the safe direction, but the table has to say so
     // rather than let a day nobody worked look like a failed delivery.
     state.dailyDeliveryUnavailable=!!json.deliveryUnavailable;
+    state.dailyRosterUnavailable=!!json.rosterUnavailable;
     state.dailyLoaded=true;
   }catch(err){
     state.dailyDays=[];
@@ -118,8 +119,19 @@ async function correctDailyDate(uploadBatchId,current){
   }catch(err){toast('Could not change the date: '+err.message,'error');}
 }
 
-async function deleteDailyDay(workDate,rowCount){
-  if(!confirm('Delete all '+rowCount+' rows imported for '+fmtDate(workDate)+'?\n\nThis cannot be undone — the day would have to be imported again.')) return;
+// The confirmation already existed and is kept — moving the button into the
+// overflow is on top of it, not instead of it. What it now names is what is
+// actually being destroyed: the hours and the headcount, not just a row count.
+// "37 rows" is not a quantity anybody can weigh; "37 rows · 312.50 hrs · 37
+// people" is.
+async function deleteDailyDay(workDate,rowCount,totalHours,people){
+  const scale=rowCount+' row'+(rowCount===1?'':'s')
+    +(totalHours?' · '+fmtHrs(totalHours)+' hrs':'')
+    +(people?' · '+people+' '+(people===1?'person':'people'):'');
+  if(!confirm('Delete '+scale+' imported for '+fmtDate(workDate)+'?\n\n'
+    +'This cannot be undone. The day disappears from the OT report, the weekly '
+    +'manager email and every cost report that covers it, and would have to be '
+    +'imported again.')) return;
   try{
     const json=await payrollPost({action:'deleteDay',workDate});
     toast((json.deleted||0)+' rows deleted for '+fmtDate(workDate),'success');
@@ -220,19 +232,32 @@ function countDayStates(){
 // already in memory is what bridges the two. Somebody the roster has never heard
 // of (an unknown_employee flag) has no card to open, and gets named without a
 // link rather than a link that goes nowhere.
+// THE FIELD IS empNum, NOT employee_number. loadData() in data.js renames the
+// column when it maps a roster row (`empNum:r.employee_number||''`), so a lookup
+// on e.employee_number reads undefined for every person and quietly reports the
+// whole roster as unknown. That is exactly what shipped: every named person on
+// this tab came back "(not on the roster)", including people who are on it and
+// fully classified.
+//
+// It survived a test because the test built its own fixture with a
+// employee_number field — a fixture that agreed with the bug. The test now
+// builds its roster row through the same mapping data.js uses.
 function employeeIdForNumber(employeeNumber){
   const n=String(employeeNumber==null?'':employeeNumber).trim();
   if(!n) return null;
-  const hit=(state.employees||[]).find(e=>String(e.employee_number||'').trim()===n);
+  const hit=(state.employees||[]).find(e=>String(e.empNum||'').trim()===n);
   return hit?hit.id:null;
 }
 
 function personChip(p){
   const label=p.name||('#'+(p.employeeNumber||'?'));
   const id=employeeIdForNumber(p.employeeNumber);
-  return id
-    ? `<a href="#" onclick="event.preventDefault();goToEmployeeProfile('${esc(String(id))}')" style="color:inherit;text-decoration:underline;cursor:pointer">${esc(label)}</a>`
-    : `${esc(label)}<span style="font-weight:400;color:var(--muted)"> (not on the roster)</span>`;
+  if(id) return `<a href="#" onclick="event.preventDefault();goToEmployeeProfile('${esc(String(id))}')" style="color:inherit;text-decoration:underline;cursor:pointer">${esc(label)}</a>`;
+  // No match and no roster in memory are different answers. loadData() runs at
+  // bootstrap, but this tab can render first, and "not on the roster" is a
+  // serious claim to make about somebody because the page was early.
+  if(!(state.employees||[]).length) return esc(label);
+  return `${esc(label)}<span style="font-weight:400;color:var(--muted)"> (not on the roster)</span>`;
 }
 
 function namedList(people,omitted){
@@ -240,11 +265,24 @@ function namedList(people,omitted){
   return names+(omitted>0?`<span style="font-weight:400;color:var(--muted)"> and ${omitted} more</span>`:'');
 }
 
+// The row's two rare actions, both behind this rather than on the row.
+//
 // "Correct date" is a hedge against date inference going wrong and is used
-// roughly never, so it sits behind this rather than on every row. It is not
-// deleted: the work date is still derived from when the email arrived, and if
-// BBSI ever sends late enough to cross midnight, a day genuinely lands on the
-// wrong date with nothing else able to move it.
+// roughly never. It is not deleted: the work date is still derived from when
+// the email arrived, and if BBSI ever sends late enough to cross midnight a day
+// genuinely lands on the wrong date with nothing else able to move it.
+//
+// "Delete day" is here because it is the most destructive thing on this screen —
+// it drops a day of imported hours out of every report built on it — and it was
+// a primary button on every row, one stray click from gone. It keeps its
+// confirmation on top of that.
+//
+// THE MENU IS RENDERED INLINE, IN NORMAL FLOW, and that is load-bearing rather
+// than a style choice. The first version positioned it absolutely inside the
+// cell, and app.html's `.table-wrap{overflow:hidden}` clipped it away entirely:
+// the markup was in the DOM, a test asserting the markup passed, and clicking
+// the button did visibly nothing. Anything absolutely positioned inside that
+// wrapper has the same fate.
 function toggleDayMenu(workDate){
   state.dailyMenu=state.dailyMenu===workDate?null:workDate;
   render();
@@ -267,6 +305,9 @@ const dailyStyle=`<style>
   .dh-chip{display:inline-block;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px 3px 2px 0}
   .dh-ack{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding:8px 10px;background:var(--surface);border:1px solid #e0a5a5;border-radius:4px;cursor:pointer;font-weight:600;line-height:1.45}
   .dh-ack input{margin-top:2px;width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brick)}
+  .dh-menu{margin-top:6px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:8px;min-width:200px}
+  .dh-menu-note{font-size:10px;color:var(--muted);margin-top:5px;line-height:1.4}
+  .dh-danger{background:var(--brick);border:1px solid var(--brick);color:#fff;font-weight:700}
   .dh-qhead{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px}
   tr.dh-quiet td{background:var(--surface2);color:var(--muted)}
   tr.dh-quiet td.sub{font-weight:400}
@@ -468,15 +509,19 @@ function renderDailyHours(){
                 ${d.flagCount?`<div style="color:var(--brick);font-weight:700">${d.flagCount} flagged — ${namedList(d.flagged,d.flaggedOmitted)}
                   <div style="font-weight:400;color:var(--muted)">${esc([...new Set((d.flagged||[]).flatMap(f=>f.flags||[]))].join(', '))}</div></div>`:''}
                 ${d.unassignedCount?`<div style="color:#9a600a;font-weight:700;margin-top:${d.flagCount?'4px':'0'}">${d.unassignedCount} unassigned — ${namedList(d.unassigned,d.unassignedOmitted)}
-                  <div style="font-weight:400;color:var(--muted)">no payroll department on the roster</div></div>`:''}
-                ${!d.flagCount&&!d.unassignedCount?'<span style="color:#2a7a47">clean</span>':''}
+                  <div style="font-weight:400;color:var(--muted)">no payroll department on the roster — set one on their profile</div></div>`:''}
+                ${d.staleCount?`<div style="color:var(--muted);font-weight:700;margin-top:${(d.flagCount||d.unassignedCount)?'4px':'0'}">${d.staleCount} stale department — ${namedList(d.stale,d.staleOmitted)}
+                  <div style="font-weight:400">Classified on the roster${d.stale&&d.stale[0]&&d.stale[0].rosterDepartment?' ('+esc(d.stale[0].rosterDepartment)+')':''}, but this day was imported before that.
+                  <code>daily_hours</code> stores the department as it was at import, on purpose. Use <strong>Re-stamp departments</strong> below to bring the day up to date — nothing needs changing on their profile.</div></div>`:''}
+                ${!d.flagCount&&!d.unassignedCount&&!d.staleCount?'<span style="color:#2a7a47">clean</span>':''}
               </td>
-              <td style="position:relative">
-                <button class="btn btn-outline btn-sm" onclick="deleteDailyDay('${d.workDate}',${d.rowCount||0})">Delete day</button>
-                <button class="btn btn-outline btn-sm" style="padding:2px 7px" title="More actions" onclick="toggleDayMenu('${d.workDate}')">⋯</button>
-                ${menuOpen?`<div style="position:absolute;right:0;top:100%;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px;box-shadow:0 4px 14px rgba(0,0,0,.15);min-width:210px">
+              <td>
+                <button class="btn btn-outline btn-sm" style="padding:2px 9px" title="${menuOpen?'Close':'More actions'}" onclick="toggleDayMenu('${d.workDate}')">${menuOpen?'✕':'⋯'}</button>
+                ${menuOpen?`<div class="dh-menu">
                   <button class="btn btn-outline btn-sm" style="width:100%" onclick="toggleDayMenu('${d.workDate}');correctDailyDate('${esc(d.uploadBatchId)}','${d.workDate}')">Correct date</button>
-                  <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.4">The work date comes from when the email arrived. Use this only if a day landed on the wrong one.</div>
+                  <div class="dh-menu-note">The work date comes from when the email arrived. Use this only if a day landed on the wrong one.</div>
+                  <button class="btn btn-sm dh-danger" style="width:100%;margin-top:8px" onclick="toggleDayMenu('${d.workDate}');deleteDailyDay('${d.workDate}',${d.rowCount||0},${Number(d.totalHours)||0},${d.employees||0})">Delete day</button>
+                  <div class="dh-menu-note">Drops all ${d.rowCount||0} rows for this day. Every report covering it changes. Asks first.</div>
                 </div>`:''}
               </td>
             </tr>`;

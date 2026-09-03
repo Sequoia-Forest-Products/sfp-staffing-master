@@ -401,6 +401,63 @@ test('renaming the blocks moved none of the figures', () => {
   assert.match(html, /Maintenance-day OT \$<\/span><span>\$60/);
 });
 
+// ---------------------------------------------------------------------------
+// The headline percentage is a cost share, so it is gross
+// ---------------------------------------------------------------------------
+
+test('the % of payroll card reports ALL OT, not net', () => {
+  // Net OT goes negative in a week where less overtime was worked than was
+  // approved, and a negative share of payroll is not a meaningful cost figure.
+  // Gross answers the cost question — what share of wages went to overtime —
+  // and it is the figure the OT budget threshold is measured against.
+  const html = withOtReport(sandbox());
+  assert.match(html, /All OT % of hourly payroll/);
+  assert.match(html, /Net OT % of hourly payroll/, 'and the net card stays');
+});
+
+test('both percentage cards say they are on dollars', () => {
+  // The cards show hours AND dollars, and a bare percentage does not say which
+  // drives it. It is dollars, on both, and they now say so.
+  const html = withOtReport(sandbox());
+  const cards = html.slice(html.indexOf('All OT % of hourly payroll'));
+  assert.strictEqual((cards.match(/by dollars/g) || []).length, 2);
+});
+
+test('the gross and net percentages are different numbers, computed from dollars', () => {
+  const { buildReport } = require('../netlify/functions/ot-report-lib');
+  const report = buildReport({
+    weekStart: '2026-08-24', dailyRows: [], preApprovedRows: [], employees: [],
+    expectedDays: [], graceHoursPerEmployee: 0
+  });
+  // An empty week has no payroll to divide by, so both are an honest null
+  // rather than 0 or Infinity.
+  assert.strictEqual(report.summary.allOtPctOfPayroll, null);
+  assert.strictEqual(report.summary.netOtPctOfPayroll, null);
+
+  // And the field exists on the summary at all, which is what the card reads.
+  assert.ok('allOtPctOfPayroll' in report.summary);
+});
+
+test('the manager email measures the OT budget against gross, not net', () => {
+  // The question was whether the "over budget" flag had been comparing the wrong
+  // thing. It has not: budgetVariance is built from totalOTPercent, which is
+  // pct(allOtDollars). Pinned so it stays that way — with net, a light week
+  // reads as a NEGATIVE percentage against a 10% budget, which is nonsense.
+  const send = fs.readFileSync(
+    path.join(ROOT, 'netlify', 'functions', 'send-ot-email.js'), 'utf8');
+  assert.match(send, /const budgetVariance = \(totalOTPercent - otBudgetPercent\)/);
+  assert.doesNotMatch(send, /netOTPercent - otBudgetPercent/);
+
+  const otReport = fs.readFileSync(path.join(SRC, 'ot-report.js'), 'utf8');
+  assert.match(otReport, /totalOTPercent:pct\(s\.allOtDollars\)/,
+    'totalOTPercent — the figure the budget is compared against — is gross dollars');
+
+  const lib = fs.readFileSync(
+    path.join(ROOT, 'netlify', 'functions', 'ot-weekly-email-lib.js'), 'utf8');
+  assert.match(lib, /totalOTPercent: pct\(s\.allOtDollars\)/,
+    'and the scheduled email builds it the same way');
+});
+
 test('the per-employee columns still split the two blocks apart', () => {
   const html = withOtReport(sandbox());
   assert.match(html, /Prod hrs/);
