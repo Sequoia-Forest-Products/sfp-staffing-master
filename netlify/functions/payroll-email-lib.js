@@ -290,6 +290,7 @@ function resolveDeps(deps = {}) {
     getProcessedEmail:    deps.getProcessedEmail    || from(db, 'getProcessedEmail'),
     upsertProcessedEmail: deps.upsertProcessedEmail || from(db, 'upsertProcessedEmail'),
     listProcessedEmails:  deps.listProcessedEmails  || from(db, 'listProcessedEmails'),
+    fetchDeliveriesForDates: deps.fetchDeliveriesForDates || from(db, 'fetchDeliveriesForDates'),
     buildImport:          deps.buildImport          || from(lib, 'buildImport'),
     // The wage sync: planWageSync decides (pure), applyWageSync writes. Both
     // injectable, and applyWageSync makes no request at all for a plan with
@@ -1245,20 +1246,55 @@ async function runMissedDeliveryCheck({
     log(`Could not read daily_hours: ${err.message}`);
   }
 
+  // A day nobody worked writes NO daily_hours rows. That is correct — there are
+  // no hours to record — but it means daily_hours cannot tell "nobody worked"
+  // apart from "no file came", and this check called both of them a missed
+  // delivery. Every quiet day escalated, and an alert that cries wolf is an
+  // alert nobody reads on the morning it is right.
+  //
+  // processed_emails is the evidence. A row with status 'imported' for a work
+  // date means the file arrived and was parsed, whatever number of rows came out
+  // of it. Those days are reported as quiet, not missing.
+  //
+  // A ledger read that FAILS falls back to the old behaviour on purpose: with no
+  // evidence of delivery, an empty day is unexplained, and over-reporting is the
+  // safe direction for a watchdog. It says so in deliveryError.
+  let deliveryError = null;
+  const delivered = new Set();
+  try {
+    const ledger = await d.fetchDeliveriesForDates(fromDate, checkedDate);
+    for (const r of Array.isArray(ledger) ? ledger : []) {
+      if (r && r.status === 'imported' && r.work_date) {
+        delivered.add(String(r.work_date).slice(0, 10));
+      }
+    }
+  } catch (err) {
+    deliveryError = err.message;
+    log(`Could not read processed_emails for delivery evidence: ${err.message}`);
+  }
+
   const missing = [];
+  const quiet = [];
   if (!dataError) {
     for (let date = fromDate; date <= checkedDate; date = addDays(date, 1)) {
       if (haveData.has(date)) continue;
       const info = dayInfo(date);
+      if (delivered.has(date)) {
+        // Delivered and empty. A fact about the day, not a fault in the
+        // pipeline: nobody logged time. Listed so the digest can say so, never
+        // escalated.
+        quiet.push({ date, dayName: info.dayName, isScheduledDay: info.isScheduledDay });
+        continue;
+      }
       missing.push({
         date,
         dayName: info.dayName,
         isScheduledDay: info.isScheduledDay,
         // EVERY day is a promise. BBSI sends the report seven days a week, so a
-        // day with no rows is a delivery that did not happen — not a quiet
-        // weekend. isScheduledDay stays on the record because the OT report
-        // still distinguishes scheduled from weekend hours, but it no longer
-        // decides whether anyone hears about a missing day.
+        // day with no rows AND no delivery is a delivery that did not happen —
+        // not a quiet weekend. isScheduledDay stays on the record because the OT
+        // report still distinguishes scheduled from weekend hours, but it no
+        // longer decides whether anyone hears about a missing day.
         escalate: true
       });
     }
@@ -1314,7 +1350,18 @@ async function runMissedDeliveryCheck({
   const escalating = missing.filter(m => m.escalate);
   const duePending = pendingReview.filter(p => p.dueForAlert);
   const quietPending = pendingReview.filter(p => !p.dueForAlert);
-  const shouldAlert = !!dataError || !!ledgerError || escalating.length > 0 || duePending.length > 0;
+  // quiet days are deliberately absent from this condition. They are a fact
+  // worth printing when an email is going out anyway, and never a reason to send
+  // one.
+  //
+  // deliveryError is absent too, and that is not an oversight. Unreadable
+  // delivery evidence changes nothing on a day that has hours on it — there was
+  // nothing to classify. When it DOES matter, the day it matters about lands in
+  // `escalating` (the fallback over-reports on purpose), which alerts on its own
+  // and carries the caveat above. Alerting on the read failure by itself would
+  // mail somebody every morning about a distinction that made no difference.
+  const shouldAlert = !!dataError || !!ledgerError
+    || escalating.length > 0 || duePending.length > 0;
 
   let notified = false;
   let notifiedAt = null;
@@ -1334,13 +1381,27 @@ async function runMissedDeliveryCheck({
       lines.push(`Could not read the processed_emails ledger: ${ledgerError}`);
       lines.push('Emails waiting on a decision could not be listed this run.');
     }
+    if (deliveryError) {
+      lines.push('');
+      lines.push(`Could not read delivery evidence from processed_emails: ${deliveryError}`);
+      lines.push('So a day where nobody worked cannot be told apart from a day whose file never');
+      lines.push('arrived, and any empty day below may be the harmless one.');
+    }
     if (escalating.length) {
       if (lines.length) lines.push('');
-      lines.push(`Day(s) with no payroll data (checked ${fromDate} .. ${checkedDate}):`);
+      lines.push(`Day(s) with no payroll file at all (checked ${fromDate} .. ${checkedDate}):`);
       for (const m of escalating) lines.push(`  - ${m.date} (${m.dayName})`);
       lines.push('');
       lines.push('Either the vendor email never arrived, the Gmail label did not apply, or the');
       lines.push('import failed. Check the "payroll import" label in info@, then import by hand.');
+      lines.push('');
+      lines.push('A day whose file arrived and reported no hours is NOT in this list — that is a');
+      lines.push('day nobody worked, and it is reported below rather than escalated.');
+    }
+    if (quiet.length) {
+      lines.push('');
+      lines.push(`Day(s) delivered with no hours on them — nobody worked, nothing to do:`);
+      for (const q of quiet) lines.push(`  - ${q.date} (${q.dayName})`);
     }
     if (duePending.length) {
       lines.push('');
@@ -1359,7 +1420,7 @@ async function runMissedDeliveryCheck({
     const subject = dataError
       ? 'Payroll check FAILED — could not confirm whether payroll arrived'
       : escalating.length
-        ? `Payroll data missing for ${escalating.map(m => m.date).join(', ')}`
+        ? `No payroll file for ${escalating.map(m => m.date).join(', ')}`
         : duePending.length
           ? `Payroll import: ${duePending.length} email(s) waiting on review` + oldestSuffix(duePending)
           : 'Payroll check: the processed_emails ledger could not be read';
@@ -1405,7 +1466,7 @@ async function runMissedDeliveryCheck({
     : 'ok';
 
   log(`Missed-delivery check ${status}: prior work day ${checkedDate}, ` +
-      `${missing.length} day(s) without data (${escalating.length} scheduled), ` +
+      `${missing.length} day(s) with no file, ${quiet.length} delivered with no hours, ` +
       `${pendingReview.length} email(s) pending review (${duePending.length} reported).`);
   if (alertFailed) log(`Missed-delivery check could not deliver its alert: ${alertError}`);
 
@@ -1416,6 +1477,10 @@ async function runMissedDeliveryCheck({
     checkedDate,
     fromDate,
     missing,
+    // Delivered, parsed, and empty. Separated from `missing` because conflating
+    // them is the bug this exists to fix: for months every day nobody worked was
+    // reported as a failed delivery.
+    quiet,
     pendingReview,
     pendingAlerted: duePending.length,
     pendingSuppressed: quietPending.length,
@@ -1425,6 +1490,10 @@ async function runMissedDeliveryCheck({
     alertError,
     dataError,
     ledgerError,
+    // Set when the delivery evidence could not be read. The check then falls
+    // back to treating every empty day as missing — over-reporting on purpose,
+    // because with no evidence an empty day is genuinely unexplained.
+    deliveryError,
     failed
   };
 }

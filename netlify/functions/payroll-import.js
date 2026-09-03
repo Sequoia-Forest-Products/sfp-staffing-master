@@ -291,20 +291,89 @@ async function commit(body) {
 }
 
 // One entry per day that has data, newest first — the Daily Hours tab's list.
+// Up to three names, then a count. A panel that says "1 flagged" and nothing
+// else is telling the truth in a way nobody can act on: the next stop was a
+// roster of 71 people with no indication which one.
+const NAMED_LIMIT = 3;
+
+function personLabel(row) {
+  const name = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+  return {
+    employeeNumber: row.employee_number || null,
+    name: name || null
+  };
+}
+
+// Every day in the range gets an entry, including the ones with no rows — see
+// dayState below for why that is the whole point rather than a presentation
+// choice.
+function eachDate(from, to) {
+  const out = [];
+  let cur = from, guard = 0;
+  while (cur && to && cur <= to && guard++ < 800) {
+    out.push(cur);
+    cur = shiftDate(cur, 1);
+  }
+  return out;
+}
+
+// The five things a date can be. Only the first two used to be distinguishable,
+// and 'no-hours' was being reported as 'no-file' — a day nobody worked read as a
+// failed delivery, every day, in the tab and in the missed-delivery alert.
+//
+//   data          rows exist
+//   no-hours      a file arrived and was imported, and it reported no hours.
+//                 A real, known fact about the day. NOT a gap.
+//   not-imported  a file arrived and did not import (error, pending review).
+//                 The pending queue below is where that gets resolved.
+//   no-file       nothing arrived. This is the only one that is a missed
+//                 delivery, and the only one worth an alert.
+//   future        the day has not happened yet, so nothing is owed.
+function dayState({ rowCount, delivery, workDate, today }) {
+  if (rowCount > 0) return 'data';
+  if (delivery && delivery.status === 'imported') return 'no-hours';
+  if (delivery) return 'not-imported';
+  if (workDate >= today) return 'future';
+  return 'no-file';
+}
+
 async function days(body) {
   const { from, to } = resolveRange(body);
-  const rows = await db.fetchDaySummaries(from, to);
+
+  // Two reads, not one. daily_hours answers "what was worked"; processed_emails
+  // answers "what was delivered". Asking only the first is what made a
+  // no-work day indistinguishable from a missing file.
+  const [rows, deliveries] = await Promise.all([
+    db.fetchDaySummaries(from, to),
+    db.fetchDeliveriesForDates(from, to).catch(err => {
+      // A ledger that cannot be read must not take the day list down with it.
+      // Every day then reports the delivery it can prove — none — and says so
+      // through deliveryUnavailable rather than by silently calling every quiet
+      // day a missed one.
+      console.error('processed_emails read failed for the day list:', err.message);
+      return null;
+    })
+  ]);
+
+  const deliveryUnavailable = deliveries === null;
+
+  // Newest delivery per work date wins: a re-send that imported supersedes an
+  // earlier error on the same day.
+  const byDeliveryDate = new Map();
+  for (const d of deliveries || []) {
+    const date = d.work_date ? String(d.work_date).slice(0, 10) : null;
+    if (!date) continue;
+    const prior = byDeliveryDate.get(date);
+    if (!prior || (prior.status !== 'imported' && d.status === 'imported')) {
+      byDeliveryDate.set(date, d);
+    }
+  }
 
   const byDate = new Map();
   for (const row of rows) {
     if (!byDate.has(row.work_date)) {
-      const info = workDateInfo(row.work_date, TIME_ZONE);
       byDate.set(row.work_date, {
-        workDate: info.date,
-        isScheduledDay: info.isScheduledDay,
-        dayName: info.dayName,
         rowCount: 0,
-        employees: 0,
         totalHours: 0,
         otHours: 0,
         source: row.source || null,
@@ -312,8 +381,8 @@ async function days(body) {
         uploadBatchId: row.upload_batch_id || null,
         createdAt: row.created_at || null,
         emailReceivedAt: row.email_received_at || null,
-        flagCount: 0,
-        unassignedCount: 0,
+        flagged: [],
+        unassigned: [],
         _employees: new Set()
       });
     }
@@ -322,8 +391,21 @@ async function days(body) {
     day.totalHours += Number(row.total_hours) || 0;
     day.otHours += Number(row.ot_hours) || 0;
     day._employees.add(row.employee_number);
-    if (Array.isArray(row.flags) && row.flags.length) day.flagCount++;
-    if (!row.department) day.unassignedCount++;
+    // missing_department is deliberately not counted as a flag here. buildImport
+    // sets it on the same rows that have no department, so one person with no
+    // payroll department produced "1 flagged" AND "1 unassigned" — the same
+    // person, under two headings, reading as two problems. Across a Mon-Thu week
+    // that is one person rendering as eight.
+    //
+    // The unassigned line below says it, once, and names them. A row whose flags
+    // are ONLY missing_department therefore contributes nothing here; a row
+    // carrying anything else still does, and keeps its full flag list.
+    const realFlags = (Array.isArray(row.flags) ? row.flags : [])
+      .filter(f => f !== 'missing_department');
+    if (realFlags.length) {
+      day.flagged.push({ ...personLabel(row), flags: row.flags.slice() });
+    }
+    if (!row.department) day.unassigned.push(personLabel(row));
     // Earliest created_at wins so the timestamp describes the import, not the
     // last row PostgREST happened to return.
     if (row.created_at && (!day.createdAt || row.created_at < day.createdAt)) {
@@ -331,18 +413,55 @@ async function days(body) {
     }
   }
 
-  const out = [...byDate.values()].map(day => {
-    const { _employees, ...rest } = day;
+  const today = workDateInfo(null, TIME_ZONE).date;
+
+  const out = eachDate(from, to).map(workDate => {
+    const day = byDate.get(workDate) || null;
+    const info = workDateInfo(workDate, TIME_ZONE);
+    const raw = byDeliveryDate.get(workDate) || null;
+    const delivery = raw ? {
+      status: raw.status || null,
+      rowsImported: raw.rows_imported == null ? null : Number(raw.rows_imported),
+      messageId: raw.message_id || null,
+      receivedAt: raw.received_at || null,
+      subject: raw.subject || null
+    } : null;
+
+    const rowCount = day ? day.rowCount : 0;
+    const flagged = day ? day.flagged : [];
+    const unassigned = day ? day.unassigned : [];
+
     return {
-      ...rest,
-      employees: _employees.size,
-      totalHours: Math.round(rest.totalHours * 100) / 100,
-      otHours: Math.round(rest.otHours * 100) / 100,
+      workDate: info.date,
+      dayName: info.dayName,
+      // Still sent. The Daily Hours tab no longer renders it — Mon-Thu vs
+      // Fri-Sun is not "scheduled vs not", maintenance works weekends — but the
+      // OT report splits on it and this is the same shape both read.
+      isScheduledDay: info.isScheduledDay,
+      state: dayState({ rowCount, delivery, workDate, today }),
+      rowCount,
+      employees: day ? day._employees.size : 0,
+      totalHours: day ? Math.round(day.totalHours * 100) / 100 : 0,
+      otHours: day ? Math.round(day.otHours * 100) / 100 : 0,
+      source: day ? day.source : null,
+      dateSource: day ? day.dateSource : null,
+      uploadBatchId: day ? day.uploadBatchId : null,
+      createdAt: day ? day.createdAt : null,
+      emailReceivedAt: day ? day.emailReceivedAt : (delivery ? delivery.receivedAt : null),
+      flagCount: flagged.length,
+      unassignedCount: unassigned.length,
+      // Named, capped, with the remainder counted. The client deep-links these
+      // to the person rather than to the roster.
+      flagged: flagged.slice(0, NAMED_LIMIT),
+      flaggedOmitted: Math.max(0, flagged.length - NAMED_LIMIT),
+      unassigned: unassigned.slice(0, NAMED_LIMIT),
+      unassignedOmitted: Math.max(0, unassigned.length - NAMED_LIMIT),
+      delivery
       /* no money: the feed is hours only */
     };
   }).sort((a, b) => (a.workDate < b.workDate ? 1 : a.workDate > b.workDate ? -1 : 0));
 
-  return { from, to, days: out };
+  return { from, to, today, deliveryUnavailable, days: out };
 }
 
 async function restamp(body) {

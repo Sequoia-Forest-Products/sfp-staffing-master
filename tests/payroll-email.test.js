@@ -428,9 +428,13 @@ test('a failure on one message does not stop the others', async () => {
 // ============================================================
 
 function missedHarness(now, overrides = {}, runOpts = {}) {
-  const calls = { alerts: [], ranges: [], ledgerOpts: [], stamps: [] };
+  const calls = { alerts: [], ranges: [], deliveryRanges: [], ledgerOpts: [], stamps: [] };
   const deps = Object.assign({
     fetchDailyHours: async (from, to) => { calls.ranges.push([from, to]); return []; },
+    // Delivery evidence: which dates a payroll email actually arrived for.
+    // Empty by default, so the default harness models "no file came" and every
+    // empty day still escalates — the behaviour these tests were written for.
+    fetchDeliveriesForDates: async (from, to) => { calls.deliveryRanges.push([from, to]); return []; },
     listProcessedEmails: async (opts) => { calls.ledgerOpts.push(opts); return []; },
     upsertProcessedEmail: async rec => { calls.stamps.push(rec); return rec; },
     sendAlert: async (subject, body) => { calls.alerts.push({ subject, body }); }
@@ -489,8 +493,8 @@ test('a missing Sunday alerts too', async () => {
 
 test('the alert no longer carries a non-scheduled-day footnote', async () => {
   // The old body appended "Non-scheduled day(s) with no data (normal if nobody
-  // worked)". Every missing day now escalates, so nothing may be filed under
-  // normal-if-nobody-worked.
+  // worked)". A day off is not decided by the calendar here — Fri-Sun
+  // maintenance is real work — so nothing may be filed under that heading.
   const { calls } = await missedHarness('2026-08-19T18:00:00Z', {}, { lookbackDays: 4 });
 
   assert.strictEqual(calls.alerts.length, 1);
@@ -498,7 +502,81 @@ test('the alert no longer carries a non-scheduled-day footnote', async () => {
   assert.doesNotMatch(calls.alerts[0].body, /normal if nobody worked/);
   // and the surviving heading no longer claims to be about scheduled days only
   assert.doesNotMatch(calls.alerts[0].body, /Scheduled work day/);
-  assert.match(calls.alerts[0].body, /Day\(s\) with no payroll data/);
+  // The heading says FILE now, not DATA. "No payroll data" was true of two
+  // different situations — no file, and a file reporting no hours — and only
+  // one of them is a problem.
+  assert.match(calls.alerts[0].body, /Day\(s\) with no payroll file at all/);
+});
+
+// ---------------------------------------------------------------------------
+// A day nobody worked is not a missed delivery
+//
+// This is the bug these three tests exist for. A file reporting no hours builds
+// no daily_hours rows — correctly, there are no hours — so daily_hours alone
+// cannot tell "nobody worked" from "nothing arrived", and the check called both
+// a missed delivery. Every quiet day escalated.
+// ---------------------------------------------------------------------------
+
+test('a delivered day with no hours is quiet, not missing, and sends no alert', async () => {
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    fetchDailyHours: async () => [],
+    fetchDeliveriesForDates: async () => [
+      { work_date: '2026-08-17', status: 'imported', rows_imported: 0, message_id: 'm1' }
+    ]
+  });
+
+  assert.deepStrictEqual(result.missing, [], 'a delivered day is not a missed delivery');
+  assert.strictEqual(result.quiet.length, 1);
+  assert.strictEqual(result.quiet[0].date, '2026-08-17');
+  assert.strictEqual(result.quiet[0].dayName, 'Monday');
+  assert.strictEqual(calls.alerts.length, 0, 'nobody worked — there is nothing to tell anyone');
+  assert.strictEqual(result.status, 'ok');
+});
+
+test('a delivery that did NOT import still counts the day as missing', async () => {
+  // pending_review, error, duplicate_day: an email arrived and its hours did not
+  // land. That day still has no data and the reason is actionable, so it
+  // escalates exactly as before.
+  for (const status of ['pending_review', 'error', 'duplicate_file']) {
+    const { result } = await missedHarness('2026-08-18T18:00:00Z', {
+      fetchDailyHours: async () => [],
+      fetchDeliveriesForDates: async () => [
+        { work_date: '2026-08-17', status, rows_imported: null, message_id: 'm1' }
+      ]
+    });
+    assert.strictEqual(result.missing.length, 1, `${status} must not suppress the day`);
+    assert.strictEqual(result.quiet.length, 0);
+  }
+});
+
+test('unreadable delivery evidence falls back to reporting the day as missing', async () => {
+  // Over-report on purpose. With no evidence either way an empty day is
+  // genuinely unexplained, and a watchdog that goes quiet when it cannot see is
+  // worse than one that repeats itself.
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    fetchDailyHours: async () => [],
+    fetchDeliveriesForDates: async () => { throw new Error('processed_emails 503'); }
+  });
+
+  assert.strictEqual(result.deliveryError, 'processed_emails 503');
+  assert.strictEqual(result.missing.length, 1);
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].body, /may be the harmless one/,
+    'the alert has to admit it could not tell the difference');
+});
+
+test('a failed delivery read on a day that HAS hours alerts nobody', async () => {
+  // The read failure only matters when there was an empty day to classify.
+  // Alerting on it unconditionally would mail somebody every morning about a
+  // distinction that made no difference.
+  const { result, calls } = await missedHarness('2026-08-18T18:00:00Z', {
+    fetchDailyHours: async () => [{ work_date: '2026-08-17', employee_number: '0101' }],
+    fetchDeliveriesForDates: async () => { throw new Error('processed_emails 503'); }
+  });
+
+  assert.strictEqual(result.deliveryError, 'processed_emails 503');
+  assert.deepStrictEqual(result.missing, []);
+  assert.strictEqual(calls.alerts.length, 0);
 });
 
 test('a day that has rows is not missing', async () => {

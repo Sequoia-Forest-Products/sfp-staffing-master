@@ -90,10 +90,15 @@ async function loadDailyDays(){
   try{
     const json=await payrollPost({action:'days',from:state.dailyFrom,to:state.dailyTo});
     state.dailyDays=json.days||[];
+    // Set when the delivery ledger could not be read. Every empty day then reads
+    // as missing, which is the safe direction, but the table has to say so
+    // rather than let a day nobody worked look like a failed delivery.
+    state.dailyDeliveryUnavailable=!!json.deliveryUnavailable;
     state.dailyLoaded=true;
   }catch(err){
     state.dailyDays=[];
-    toast('Could not load imported days: '+err.message,'error');
+    state.dailyDeliveryUnavailable=false;
+    toast('Could not load the day list: '+err.message,'error');
   }
   state.dailyLoading=false; render();
 }
@@ -170,22 +175,79 @@ async function resolveIngestionEmail(messageId){
   state.dailyBusy=false; render();
 }
 
-// The days action omits dates that have no rows, so gaps have to be derived from
-// the range itself. BBSI sends the report seven days a week, so ANY past day
-// with nothing imported is a probable missed delivery — weekends included. This
-// used to skip Fri–Sun as unknowable, which was true of the mill's schedule and
-// never true of the vendor's.
-function missingDays(){
-  const have={};
-  (state.dailyDays||[]).forEach(d=>{have[d.workDate]=true;});
-  const today=isoToday();
-  const out=[];
-  let cur=state.dailyFrom, guard=0;
-  while(cur&&state.dailyTo&&cur<=state.dailyTo&&guard++<400){
-    if(cur<today&&!have[cur]) out.push(cur);
-    cur=isoShift(cur,1);
+// Every date in the range now comes back from /api/payroll-import days, including
+// the ones with no rows, each carrying a `state`. Gaps used to be derived here by
+// walking the range and subtracting what came back — which could only ever
+// produce one kind of absence, and so reported a day nobody worked and a day
+// whose file never arrived as the same thing.
+//
+// The five states are decided server-side (see dayState in payroll-import.js).
+// This is only how they read.
+const DAY_STATES={
+  data:null,
+  'no-hours':{
+    label:'No hours reported',
+    hint:'The file arrived and was imported. Nobody logged time.',
+    color:'var(--muted)', tone:'quiet'
+  },
+  'not-imported':{
+    label:'File arrived, not imported',
+    hint:'Waiting on a decision — see Ingestion issues below.',
+    color:'#9a600a', tone:'warn'
+  },
+  'no-file':{
+    label:'No file received',
+    hint:'BBSI sends every day, so this one did not arrive, was not labelled, or failed to import.',
+    color:'var(--brick)', tone:'bad'
+  },
+  future:{
+    label:'Not yet due',
+    hint:'This day has not happened yet.',
+    color:'var(--muted)', tone:'quiet'
   }
-  return out;
+};
+
+function dayStateOf(d){ return DAY_STATES[d&&d.state]||null; }
+
+function countDayStates(){
+  const c={data:0,'no-hours':0,'not-imported':0,'no-file':0,future:0};
+  (state.dailyDays||[]).forEach(d=>{ if(c[d.state]!==undefined) c[d.state]++; });
+  return c;
+}
+
+// The Data Quality panel names people and links to them. daily_hours carries an
+// employee_number; the profile card is opened by employees.id, so the roster
+// already in memory is what bridges the two. Somebody the roster has never heard
+// of (an unknown_employee flag) has no card to open, and gets named without a
+// link rather than a link that goes nowhere.
+function employeeIdForNumber(employeeNumber){
+  const n=String(employeeNumber==null?'':employeeNumber).trim();
+  if(!n) return null;
+  const hit=(state.employees||[]).find(e=>String(e.employee_number||'').trim()===n);
+  return hit?hit.id:null;
+}
+
+function personChip(p){
+  const label=p.name||('#'+(p.employeeNumber||'?'));
+  const id=employeeIdForNumber(p.employeeNumber);
+  return id
+    ? `<a href="#" onclick="event.preventDefault();goToEmployeeProfile('${esc(String(id))}')" style="color:inherit;text-decoration:underline;cursor:pointer">${esc(label)}</a>`
+    : `${esc(label)}<span style="font-weight:400;color:var(--muted)"> (not on the roster)</span>`;
+}
+
+function namedList(people,omitted){
+  const names=(people||[]).map(personChip).join(', ');
+  return names+(omitted>0?`<span style="font-weight:400;color:var(--muted)"> and ${omitted} more</span>`:'');
+}
+
+// "Correct date" is a hedge against date inference going wrong and is used
+// roughly never, so it sits behind this rather than on every row. It is not
+// deleted: the work date is still derived from when the email arrived, and if
+// BBSI ever sends late enough to cross midnight, a day genuinely lands on the
+// wrong date with nothing else able to move it.
+function toggleDayMenu(workDate){
+  state.dailyMenu=state.dailyMenu===workDate?null:workDate;
+  render();
 }
 
 const dailyStyle=`<style>
@@ -209,7 +271,6 @@ const dailyStyle=`<style>
   tr.dh-quiet td{background:var(--surface2);color:var(--muted)}
   tr.dh-quiet td.sub{font-weight:400}
   td.num,th.num{text-align:right}
-  tr.nonsched-row td{background:#fffdf7}
 </style>`;
 
 function renderDailyPreview(){
@@ -232,7 +293,6 @@ function renderDailyPreview(){
           <button class="close-btn" onclick="cancelDailyPreview()">×</button>
         </div>
         <div class="modal-body" style="padding:20px 24px">
-          <div style="margin-bottom:12px">${schedBadge(p.isScheduledDay)}</div>
 
           ${p.existing?`<div class="dh-flag"><strong>${fmtDate(p.workDate)} already has ${p.existing.rowCount||0} imported rows</strong>
             (source ${esc(p.existing.source||'unknown')}, imported ${fmtStamp(p.existing.createdAt)}${(p.existing.batchCount||1)>1?', across '+p.existing.batchCount+' separate imports':''}).
@@ -324,33 +384,31 @@ function renderDailyHours(){
   const pendLog=pending?pending.filter(e=>!isActionable(e)):[];
   const li=state.dailyLastImport;
   const rr=state.restampResult;
-  const gaps=state.dailyLoaded?missingDays():[];
 
   const upload=`
-    <div class="section-head"><span>Import a day</span></div>
+    <div class="section-head"><span>Import hours file</span></div>
     <div class="dh-panel">
       <div class="dh-row">
         <div class="dh-field" style="flex:1;min-width:260px">
-          <label>Payroll file (.xlsx)</label>
+          <label>Hours file (.xlsx)</label>
           <input type="file" id="dhFile" accept=".xlsx">
         </div>
         <div class="dh-field">
-          <label>Work date (required)</label>
+          <label>Work date this file covers</label>
           <input type="date" id="dhDate" value="${state.dailyWorkDate||''}" oninput="state.dailyWorkDate=this.value">
         </div>
         <button class="btn btn-primary" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="previewDailyFile()">${state.dailyBusy?'Working…':'Preview import'}</button>
       </div>
-      <div class="dh-note">The payroll file contains no date — not in a column, not in the sheet name, nowhere — so the work date has to be chosen here. Nothing is hunting for one inside the file.
-        Mon–Thu is the scheduled block and Fri–Sun is non-scheduled; both are normal work days.</div>
       ${li?`<div class="${li.removed?'dh-flag':'dh-ok'}" style="margin-top:12px${li.removed?'':';padding:8px 12px'}">
         <strong>Last import — ${fmtDate(li.workDate)}:</strong> ${li.inserted} row${li.inserted===1?'':'s'} written${li.replaced?', '+li.replaced+' replaced':''}${li.removed
           ? `, and <strong>${li.removed} employee${li.removed===1?'':'s'} removed from the day</strong> — ${li.removed===1?'that person was':'those people were'} on the earlier file for ${fmtDate(li.workDate)} and ${li.removed===1?'is':'are'} not on this one, so ${li.removed===1?'their':'their'} hours and earnings are gone from ${fmtDate(li.workDate)} and from every report that covers it.`
           : '. Nobody was dropped from the day.'}</div>`:''}
     </div>`;
 
+  const st=countDayStates();
   const list=`
     <div class="section-head">
-      <span>Imported days</span>
+      <span>Every day</span>
       <span style="font-weight:400;text-transform:none;letter-spacing:0;display:flex;gap:8px;align-items:center">
         <input type="date" value="${state.dailyFrom||''}" onchange="state.dailyFrom=this.value" style="font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:5px 8px">
         <span style="color:var(--muted)">to</span>
@@ -358,26 +416,46 @@ function renderDailyHours(){
         <button class="btn btn-outline btn-sm" onclick="loadDailyDays()">Load</button>
       </span>
     </div>
-    ${state.dailyLoading?'<div class="loading-state">Loading imported days…</div>':`
-    ${gaps.length?`<div class="dh-warn"><strong>${gaps.length} day${gaps.length===1?'':'s'} in this range have no data at all:</strong>
-      ${gaps.map(g=>'<span class="dh-chip">'+fmtDate(g)+' · '+dayNameOf(g)+'</span>').join('')}
-      <div style="font-size:11px;margin-top:4px">BBSI sends the report every day, so each of those is a probable missed delivery — weekends included. Import it by hand, or check the "payroll import" label in info@.</div></div>`:''}
+    ${state.dailyLoading?'<div class="loading-state">Loading days…</div>':`
+    ${state.dailyDeliveryUnavailable?`<div class="dh-warn"><strong>The delivery ledger could not be read.</strong>
+      A day with no hours cannot be told apart from a day whose file never arrived, so every empty day below reads as missing. Reload in a minute.</div>`:''}
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      ${st.data} day${st.data===1?'':'s'} with hours${st['no-hours']?` · <strong style="color:var(--text)">${st['no-hours']} with none reported</strong>`:''}${st['not-imported']?` · <strong style="color:#9a600a">${st['not-imported']} arrived but not imported</strong>`:''}${st['no-file']?` · <strong style="color:var(--brick)">${st['no-file']} with no file at all</strong>`:''}
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th style="width:120px">Date</th><th style="width:180px">Classification</th><th style="width:150px">Source</th>
+          <th style="width:120px">Date</th><th style="width:170px">Source</th>
           <th class="num">People</th><th class="num">Hours</th><th class="num">OT hrs</th>
-          <th style="width:150px">Data quality</th><th style="width:190px"></th>
+          <th style="width:230px">Data quality</th><th style="width:120px"></th>
         </tr></thead>
         <tbody>
-          ${days.length?days.map(d=>{ /* newest first, and days with no rows are not returned at all */
-            // dateSource is null on an empty day, one value when the rows agree
-            // and a comma-joined list when they disagree.
+          ${days.length?days.map(d=>{
+            // dateSource is one value when the rows agree and a comma-joined
+            // list when they disagree.
             const inferred=String(d.dateSource||'').includes('email_received');
             const src=String(d.source||'manual');
-            return `<tr class="${d.isScheduledDay?'':'nonsched-row'}">
-              <td style="font-weight:600">${fmtDate(d.workDate)}<div style="font-size:11px;color:var(--muted);font-weight:400">${esc(d.dayName||dayNameOf(d.workDate))}</div></td>
-              <td>${schedBadge(d.isScheduledDay)}</td>
+            const ds=dayStateOf(d);
+            const dateCell=`<td style="font-weight:600">${fmtDate(d.workDate)}<div style="font-size:11px;color:var(--muted);font-weight:400">${esc(d.dayName||dayNameOf(d.workDate))}</div></td>`;
+
+            // A day with no rows is a row like any other. It used to be a chip
+            // in a banner above the table, which read as a warning about
+            // something already dealt with and made a genuine gap easy to skim
+            // past. Four columns of counts would all be zero and say nothing, so
+            // the state says it once, in their place.
+            if(ds){
+              return `<tr class="dh-quiet">
+                ${dateCell}
+                <td colspan="4" style="color:${ds.color};font-weight:700">${esc(ds.label)}
+                  <div style="font-size:11px;font-weight:400;color:var(--muted)">${esc(ds.hint)}</div></td>
+                <td style="font-size:11px;color:var(--muted)">—</td>
+                <td></td>
+              </tr>`;
+            }
+
+            const menuOpen=state.dailyMenu===d.workDate;
+            return `<tr>
+              ${dateCell}
               <td>
                 <span class="badge ${src.includes('email')?'en':'inactive'}">${esc(src)}</span>
                 ${inferred?`<div style="font-size:10px;color:#9a600a;font-weight:700;margin-top:4px">inferred from email arrival</div>
@@ -386,17 +464,23 @@ function renderDailyHours(){
               <td class="num">${d.employees||0}</td>
               <td class="num">${fmtHrs(d.totalHours)}</td>
               <td class="num">${fmtHrs(d.otHours)}</td>
-              <td style="font-size:11px">
-                ${d.flagCount?`<div style="color:var(--brick);font-weight:700">${d.flagCount} flagged</div>`:''}
-                ${d.unassignedCount?`<div style="color:#9a600a;font-weight:700">${d.unassignedCount} unassigned <button class="btn btn-outline btn-sm" style="padding:1px 6px;font-size:10px" onclick="goToTab('employees')">fix on Employees</button></div>`:''}
+              <td style="font-size:11px;line-height:1.5">
+                ${d.flagCount?`<div style="color:var(--brick);font-weight:700">${d.flagCount} flagged — ${namedList(d.flagged,d.flaggedOmitted)}
+                  <div style="font-weight:400;color:var(--muted)">${esc([...new Set((d.flagged||[]).flatMap(f=>f.flags||[]))].join(', '))}</div></div>`:''}
+                ${d.unassignedCount?`<div style="color:#9a600a;font-weight:700;margin-top:${d.flagCount?'4px':'0'}">${d.unassignedCount} unassigned — ${namedList(d.unassigned,d.unassignedOmitted)}
+                  <div style="font-weight:400;color:var(--muted)">no payroll department on the roster</div></div>`:''}
                 ${!d.flagCount&&!d.unassignedCount?'<span style="color:#2a7a47">clean</span>':''}
               </td>
-              <td>
-                <button class="btn btn-outline btn-sm" onclick="correctDailyDate('${esc(d.uploadBatchId)}','${d.workDate}')">Correct date</button>
+              <td style="position:relative">
                 <button class="btn btn-outline btn-sm" onclick="deleteDailyDay('${d.workDate}',${d.rowCount||0})">Delete day</button>
+                <button class="btn btn-outline btn-sm" style="padding:2px 7px" title="More actions" onclick="toggleDayMenu('${d.workDate}')">⋯</button>
+                ${menuOpen?`<div style="position:absolute;right:0;top:100%;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px;box-shadow:0 4px 14px rgba(0,0,0,.15);min-width:210px">
+                  <button class="btn btn-outline btn-sm" style="width:100%" onclick="toggleDayMenu('${d.workDate}');correctDailyDate('${esc(d.uploadBatchId)}','${d.workDate}')">Correct date</button>
+                  <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.4">The work date comes from when the email arrived. Use this only if a day landed on the wrong one.</div>
+                </div>`:''}
               </td>
             </tr>`;
-          }).join(''):'<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No days imported in this range.</td></tr>'}
+          }).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:32px">Pick a date range and press Load.</td></tr>'}
         </tbody>
       </table>
     </div>`}`;
