@@ -348,16 +348,45 @@ test('the OT report no longer calls Fri-Sun unscheduled', () => {
   assert.doesNotMatch(html, /Nobody is scheduled/,
     'a false claim about the operation, sitting above the numbers people act on');
 
-  assert.match(html, /Production days vs weekend days/);
+  assert.match(html, /Production days vs maintenance days/);
   assert.match(html, /Production · Mon–Thu/);
-  assert.match(html, /Weekend · Fri–Sun/);
+  assert.match(html, /Maintenance · Fri–Sun/);
 });
 
 test('the day badge names the kind of day, not who was rostered', () => {
   const ctx = sandbox();
   assert.match(ctx.schedBadge(true), /Production Mon–Thu/);
-  assert.match(ctx.schedBadge(false), /Weekend Fri–Sun/);
+  assert.match(ctx.schedBadge(false), /Maintenance Fri–Sun/);
   assert.doesNotMatch(ctx.schedBadge(false), /scheduled/i);
+});
+
+test('every Maintenance heading says it names the day, not the department', () => {
+  // The live trap. Production-department people work Fri–Sun and their rows keep
+  // department = Production, so the tables below a "Maintenance · Fri–Sun"
+  // heading DO show Production. Without a line saying the heading is about the
+  // day block, this report reads as though production ran a weekend.
+  const html = withOtReport(sandbox());
+
+  // Both sections that carry the label carry the disclaimer — the split block,
+  // and the Fri–Sun block that actually prints a Department column.
+  const notes = html.match(/that names the <strong>days<\/strong>, not the departments/g) || [];
+  assert.strictEqual(notes.length, 2,
+    'the split block and the Fri–Sun labour block each need it — a reader who ' +
+    'scrolls straight to the second one never saw the first');
+
+  assert.match(html, /Production runs Mon–Thu/);
+  assert.match(html, /still shows as Production, because that is where they work/);
+  assert.match(html, /production days are Mon–Thu regardless of what it says/,
+    'the table with the Department column has to say it at the column');
+});
+
+test('the maintenance figures are labelled as the day block, not the department', () => {
+  const html = withOtReport(sandbox());
+  // "Maintenance OT $" would read as the department's overtime. It is not — it
+  // is every department's overtime on Fri–Sun.
+  assert.match(html, /Maintenance-day OT \$/);
+  assert.match(html, /Total maintenance-day labor \$/);
+  assert.doesNotMatch(html, /<span>Maintenance OT \$<\/span>/);
 });
 
 test('renaming the blocks moved none of the figures', () => {
@@ -366,18 +395,20 @@ test('renaming the blocks moved none of the figures', () => {
   const html = withOtReport(sandbox());
 
   // Mon-Thu: 88 hours, 9 people. Fri-Sun: 12 hours, 2 OT hours, $60 OT, $400 total, 3 people.
-  assert.match(html, /Production · Mon–Thu[\s\S]*?88\.00[\s\S]*?Weekend · Fri–Sun/);
-  assert.match(html, /Weekend · Fri–Sun[\s\S]*?12\.00/);
-  assert.match(html, /Total weekend labor \$<\/span><span>\$400/);
-  assert.match(html, /Weekend OT \$<\/span><span>\$60/);
+  assert.match(html, /Production · Mon–Thu[\s\S]*?88\.00[\s\S]*?Maintenance · Fri–Sun/);
+  assert.match(html, /Maintenance · Fri–Sun[\s\S]*?12\.00/);
+  assert.match(html, /Total maintenance-day labor \$<\/span><span>\$400/);
+  assert.match(html, /Maintenance-day OT \$<\/span><span>\$60/);
 });
 
 test('the per-employee columns still split the two blocks apart', () => {
   const html = withOtReport(sandbox());
   assert.match(html, /Prod hrs/);
   assert.match(html, /Prod \$/);
-  assert.match(html, /Wknd hrs/);
-  assert.match(html, /Wknd \$/);
+  // Hours worked in the Fri–Sun block, by anyone — not hours worked by the
+  // Maintenance department.
+  assert.match(html, /Maint hrs/);
+  assert.match(html, /Maint \$/);
 });
 
 // ---------------------------------------------------------------------------

@@ -568,10 +568,11 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','
 
 // Fri/Sat/Sun work is normal here — maintenance crews run weekends — so this
 // labels the day, it never warns about it.
-// Mon–Thu is the production block; Fri–Sun is not. It is NOT unscheduled —
-// maintenance crews are scheduled those days — so the badge says which kind of
-// day it is rather than making a claim about who was rostered.
-function schedBadge(isSched){return isSched?'<span class="badge active">Production Mon–Thu</span>':'<span class="badge en">Weekend Fri–Sun</span>';}
+// Which BLOCK a day belongs to. Production runs Mon–Thu; Fri–Sun is the
+// maintenance block. Neither badge says anything about a department — a
+// Production-department person working a Saturday gets the Maintenance badge,
+// because the badge is about the day.
+function schedBadge(isSched){return isSched?'<span class="badge active">Production Mon–Thu</span>':'<span class="badge en">Maintenance Fri–Sun</span>';}
 
 // Every /api/payroll-import call goes through here so a failed request raises
 // instead of leaving a panel spinning on nothing.
