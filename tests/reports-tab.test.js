@@ -290,6 +290,97 @@ test('an automatic sender still exists, and it is the schedule rather than the i
 });
 
 // ---------------------------------------------------------------------------
+// The day blocks are named for what they are
+//
+// "Scheduled Mon–Thu / Non-scheduled Fri–Sun" was a wrong LABEL, not a wrong
+// split. Maintenance crews are scheduled Fri–Sun; what they are not is
+// production. The report also carried a sentence asserting the opposite outright
+// — "Nobody is scheduled on a non-scheduled day" — which was a false claim about
+// the operation sitting directly above the numbers people act on.
+//
+// The split itself is untouched and load-bearing: it is what keeps weekend
+// labour visible as its own line instead of dissolving into a weekly total. So
+// these tests pin the names and, just as much, that the figures behind them did
+// not move.
+// ---------------------------------------------------------------------------
+
+function otBlock(over = {}) {
+  return Object.assign({ hours: 0, otHours: 0, otDollars: 0, earnings: 0, headcount: 0 }, over);
+}
+
+function withOtReport(ctx) {
+  ctx.state.otReport = {
+    weekStart: '2026-08-24', weekEnd: '2026-08-30',
+    summary: {
+      totalHours: 100, allOtHours: 5, preApprovedHours: 2, netOtHours: 3,
+      totalHourlyPayroll: 1000, allOtDollars: 100, preApprovedDollars: 40,
+      netOtDollars: 60, headcount: 10,
+      weekendHours: 12, weekendDollars: 400, weekendOtHours: 2,
+      weekendOtDollars: 60, weekendHeadcount: 3
+    },
+    split: {
+      scheduled: otBlock({ hours: 88, earnings: 600, headcount: 9 }),
+      nonScheduled: otBlock({ hours: 12, otHours: 2, otDollars: 60, earnings: 400, headcount: 3 })
+    },
+    departments: [], days: [], employees: [],
+    preApproved: {
+      byType: [], rows: [], unmatchedNames: [], withoutHoursThisWeek: [], rateMissing: [],
+      inactiveSkipped: [], byDepartment: [], standing: { hours: 0, dollars: 0 },
+      grace: { hoursPerEmployee: 0.5, headcount: 10, hours: 5, dollars: 0, rateMissing: 0, byRateSource: {} }
+    },
+    completeness: { days: [], missingDays: [], daysWithData: 0, daysExpected: 0 },
+    issues: {
+      unknownEmployeeNumbers: [], unassignedEmployees: [], flagged: [],
+      unassignedRows: 0, workedRateMissing: [], nonProductionWithHours: []
+    }
+  };
+  ctx.state.otReportWeeks = [{ weekStart: '2026-08-24', weekEnd: '2026-08-30', days: 7, totalHours: 100 }];
+  ctx.state.otReportWeek = '2026-08-24';
+  return ctx.renderOTReport();
+}
+
+test('the OT report no longer calls Fri-Sun unscheduled', () => {
+  const html = withOtReport(sandbox());
+
+  assert.doesNotMatch(html, /Non-scheduled/);
+  assert.doesNotMatch(html, /non-scheduled/);
+  assert.doesNotMatch(html, /Non-sched/);
+  assert.doesNotMatch(html, /Nobody is scheduled/,
+    'a false claim about the operation, sitting above the numbers people act on');
+
+  assert.match(html, /Production days vs weekend days/);
+  assert.match(html, /Production · Mon–Thu/);
+  assert.match(html, /Weekend · Fri–Sun/);
+});
+
+test('the day badge names the kind of day, not who was rostered', () => {
+  const ctx = sandbox();
+  assert.match(ctx.schedBadge(true), /Production Mon–Thu/);
+  assert.match(ctx.schedBadge(false), /Weekend Fri–Sun/);
+  assert.doesNotMatch(ctx.schedBadge(false), /scheduled/i);
+});
+
+test('renaming the blocks moved none of the figures', () => {
+  // The split is the point of the section. A rename that quietly swapped which
+  // side a number lands on would read as a tidy-up and be a reporting error.
+  const html = withOtReport(sandbox());
+
+  // Mon-Thu: 88 hours, 9 people. Fri-Sun: 12 hours, 2 OT hours, $60 OT, $400 total, 3 people.
+  assert.match(html, /Production · Mon–Thu[\s\S]*?88\.00[\s\S]*?Weekend · Fri–Sun/);
+  assert.match(html, /Weekend · Fri–Sun[\s\S]*?12\.00/);
+  assert.match(html, /Total weekend labor \$<\/span><span>\$400/);
+  assert.match(html, /Weekend OT \$<\/span><span>\$60/);
+});
+
+test('the per-employee columns still split the two blocks apart', () => {
+  const html = withOtReport(sandbox());
+  assert.match(html, /Prod hrs/);
+  assert.match(html, /Prod \$/);
+  assert.match(html, /Wknd hrs/);
+  assert.match(html, /Wknd \$/);
+});
+
+// ---------------------------------------------------------------------------
 // Nothing that pointed at the old tabs is left dangling
 // ---------------------------------------------------------------------------
 
