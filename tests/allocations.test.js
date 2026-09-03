@@ -429,7 +429,16 @@ test('the rounding remainder lands on the primary department', async () => {
 // ---------------------------------------------------------------------------
 
 const SRC = path.join(__dirname, '..', 'src', 'js');
-const MODULES = ['core.js', 'employees.js', 'preapproved.js', 'allocations.js'];
+// The REAL manifest, not a hand-picked subset.
+//
+// This used to be a four-file list, and it went stale the moment the profile
+// card started asking canSeeSalaries() — a function that lives in
+// permissions.js, which the list did not include. Every test in this file threw
+// ReferenceError at once, which was the lucky outcome: a subset that happens to
+// omit a module the code only touches on one branch fails nothing and proves
+// the wrong thing. session.js's SCRIPT_MODULES is what the browser actually
+// loads, so the sandbox loads that.
+const { __SCRIPT_MODULES: MODULES } = require('../netlify/functions/session.js');
 
 function fakeEl() {
   return {

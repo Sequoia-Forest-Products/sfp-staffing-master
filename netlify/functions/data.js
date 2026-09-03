@@ -2,6 +2,7 @@ const db = require('./db');
 const { verifySession, getCookies } = require('./session-lib');
 const perms = require('./permissions-lib');
 const { planWageEdit } = require('./wage-edit-lib');
+const { planPositionHistory, touchesTrackedField } = require('./position-history-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -204,6 +205,13 @@ const wageRefusal = (headers, plan) => ({
   body: JSON.stringify({ error: plan.error, detail: plan.detail })
 });
 
+// Same shape as recordWageHistory, and separate for the same reason: a failure
+// writing classification history must be distinguishable in the log from a
+// failure writing the employee.
+async function recordPositionHistory(rows) {
+  for (const row of rows) await db.insert('position_history', row);
+}
+
 async function recordWageHistory(row) {
   // POST directly rather than through db.insert so a failure here is
   // distinguishable in the log from a failure writing the employee.
@@ -301,15 +309,37 @@ exports.handler = async (event) => {
       const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
       if (gated.error) return gated.error;
 
+      // ONE read of the current row, serving both histories.
+      //
+      // The row as the DATABASE has it, not as the browser remembers it. A page
+      // open since this morning holds values somebody else may have changed
+      // since, and a history row whose previous value was never the current
+      // value is worse than no history at all. That argument is identical for a
+      // rate and for a department, so they share the read rather than each
+      // making their own and potentially seeing different versions of the row.
+      const needsCurrent = table === 'employees'
+        && (hasWage(gated.body) || touchesTrackedField(gated.body));
+      const found = needsCurrent
+        ? await db.query('employees',
+            `?id=eq.${encodeURIComponent(params.id)}&select=` +
+            `id,name,employee_number,wage,pay_type,department,position,position_group,cost_class`)
+        : null;
+      const current = (found || [])[0] || null;
+
+      // Classification history FIRST, and before the wage plan, for the reason
+      // in position-history-lib.js: a record with no change is repairable, a
+      // change with no record is not. A throw here becomes a 500 below and the
+      // employee row is never touched.
+      if (table === 'employees' && current && touchesTrackedField(gated.body)) {
+        const moves = planPositionHistory({
+          before: current, body: gated.body, editorEmail: session.email
+        });
+        if (moves.length) await recordPositionHistory(moves);
+      }
+
       if (table === 'employees' && hasWage(gated.body)) {
-        // The row as the DATABASE has it, not as the browser remembers it. A
-        // page open since this morning holds a rate somebody else may have
-        // changed since, and a history row whose previous_rate was never the
-        // current rate is worse than no history at all.
-        const found = await db.query('employees',
-          `?id=eq.${encodeURIComponent(params.id)}&select=id,name,employee_number,wage,pay_type`);
         const plan = planWageEdit({
-          employee: (found || [])[0] || null,
+          employee: current,
           value: gated.body.wage,
           editorEmail: session.email
         });
@@ -332,7 +362,7 @@ exports.handler = async (event) => {
         // write. db.update with an empty body is a request that changes nothing
         // and returns nothing useful, so answer from the row already read.
         if (!Object.keys(gated.body).length) {
-          return { statusCode: 200, headers, body: JSON.stringify({ data: (found || [])[0] || null }) };
+          return { statusCode: 200, headers, body: JSON.stringify({ data: current }) };
         }
       }
 

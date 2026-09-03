@@ -27,7 +27,16 @@ const SRC = path.join(__dirname, '..', 'src', 'js');
 // preApprovedFor, PREAPPROVED_TYPES, savePreApproved, profileAllocation. They are
 // loaded AFTER employees.js, matching the manifest, so the TDZ ordering the real
 // page has is the ordering these tests exercise.
-const MODULES = ['core.js', 'employees.js', 'preapproved.js', 'allocations.js'];
+// The REAL manifest, not a hand-picked subset.
+//
+// This used to be a four-file list, and it went stale the moment the profile
+// card started asking canSeeSalaries() — a function that lives in
+// permissions.js, which the list did not include. Every test in this file threw
+// ReferenceError at once, which was the lucky outcome: a subset that happens to
+// omit a module the code only touches on one branch fails nothing and proves
+// the wrong thing. session.js's SCRIPT_MODULES is what the browser actually
+// loads, so the sandbox loads that.
+const { __SCRIPT_MODULES: MODULES } = require('../netlify/functions/session.js');
 
 // Enough of an element for the top-level DOM writes in core.js and for the
 // handful of render paths that poke at one.
@@ -55,6 +64,17 @@ function sandbox() {
       querySelectorAll: () => []
     },
     setTimeout: () => 0,
+    // bootstrap.js runs at load and reads stored settings. It is in the manifest,
+    // so loading the real module list brings it — and without this the rejection
+    // surfaces as "asynchronous activity after the test ended" in whichever test
+    // happens to be last, which is a confusing way to find out a browser global
+    // is missing.
+    localStorage: {
+      _v: {},
+      getItem(k) { return Object.prototype.hasOwnProperty.call(this._v, k) ? this._v[k] : null; },
+      setItem(k, v) { this._v[k] = String(v); },
+      removeItem(k) { delete this._v[k]; }
+    },
     fetch: async () => ({ ok: true, json: async () => ({ data: [] }) })
   };
   ctx.globalThis = ctx;
@@ -109,35 +129,153 @@ function openCard(ctx, people, { editing = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Compensation stays off the card
+// Compensation ON the card, with the salary behind its tier
 // ---------------------------------------------------------------------------
+//
+// These three tests asserted the OPPOSITE until 2026-09-03: no wage, no salary,
+// no compensation input anywhere on the card. That was Phase B's decision and it
+// was right at the time — the card is opened by everybody and there were no
+// permission tiers yet. Phase D built the tiers and the Salaries & Wages page
+// proved them; compensation moves here and that page is retired.
+//
+// They are rewritten rather than deleted because the rule they guard has not
+// gone away, it has become conditional, and a conditional gate has TWO failure
+// directions. A gate that refuses everybody passes every "must not appear"
+// assertion ever written. So each of these has a partner below asserting the
+// figure IS there for somebody who may see it.
 
-test('the read-only card shows no wage and no salary', () => {
+// The salaries tier, as permissions.js resolves it. Set on state rather than
+// faked through a stubbed canSeeSalaries(), so the test exercises the real
+// predicate the card calls.
+function withSalariesTier(ctx) {
+  ctx.state.perms = { tiers: ['hourly_wages', 'salaries'], isAdmin: false,
+                      loading: false, error: '', email: 'peter.stroble@sequoiafp.com' };
+  return ctx;
+}
+
+test('the hourly rate is on the card for anybody with app access', () => {
+  // Base tier: no grants at all. Hourly rates are base-tier readable AND
+  // writable in permissions-lib.js, and have been since the daily feed stopped
+  // overwriting them.
   const ctx = sandbox();
-  const html = openCard(ctx, [person()]);
+  const html = openCard(ctx, [person({ payType: 'Hourly', wage: '31.50', annualSalary: null })]);
 
   assert.ok(html.includes('Rollin Tolle'), 'sanity: the card rendered');
-  assert.ok(!/31\.5|31,50|\$31/.test(html), 'the hourly wage must not appear');
-  assert.ok(!/145000|145,000/.test(html), 'the salary must not appear');
-  assert.ok(!/Wage|Salary/i.test(html.replace(/Salaries &amp; Wages/g, '')),
-    'no compensation label either');
+  assert.match(html, /Compensation/);
+  assert.match(html, /31\.50/, 'the hourly rate is not a secret from anybody');
 });
 
-test('the editable card has no compensation input', () => {
+test('a person with no rate is flagged, not shown as a dash', () => {
+  // Every hour they work is costed at $0 in every report until somebody sets
+  // one, silently. A blank cell does not say that.
   const ctx = sandbox();
-  const html = openCard(ctx, [person()], { editing: true });
+  const html = openCard(ctx, [person({ payType: 'Hourly', wage: '', annualSalary: null })]);
 
-  assert.ok(!/31\.5|145000/.test(html), 'no compensation value in any input');
-  assert.ok(!/state\.editing\.wage/.test(html), 'and nothing bound to the wage field');
-  assert.ok(!/wageInput/.test(html), 'not even the roster modal wage input id');
+  assert.match(html, /No rate on file/);
+  assert.match(html, /cost \$0 in every report/);
 });
 
-test('a salaried person still shows no figure', () => {
+test('the hourly rate is editable, with the change shown before saving', () => {
   const ctx = sandbox();
-  const html = openCard(ctx, [person({ payType: 'Salaried', wage: '', annualSalary: 210000 })]);
+  const html = openCard(ctx, [person({ payType: 'Hourly', wage: '31.50' })], { editing: true });
 
-  assert.ok(!/210000|210,000/.test(html));
-  assert.ok(html.includes('Salaried'), 'the pay TYPE is a classification and does show');
+  assert.match(html, /id="profileRateInput"/);
+  assert.match(html, /setProfileRate\(this\.value\)/);
+  assert.match(html, /id="profileRateNote"/, 'the live percentage needs a node to write into');
+});
+
+test('the rate note never re-renders the page, so typing cannot lose a keystroke', () => {
+  // render() does `el.innerHTML = renderEmployees()`, which destroys the input
+  // the cursor is in and takes the caret and any half-typed value with it.
+  // Nothing in src/js preserves focus, so the live percentage has to write
+  // straight into its own node — the same thing salaries.js did.
+  //
+  // ASSERTED BEHAVIOURALLY, not by slicing the source. Two earlier attempts to
+  // read the function text failed on correct code: the first ran past
+  // setProfileSalary into loadEmployeeHistory, and the second still did because
+  // that one is an `async function` and the delimiter was `\nfunction `. A test
+  // that depends on file order and declaration style breaks when somebody
+  // reorders a file. Calling the thing and watching what it does cannot.
+  const ctx = sandbox();
+  openCard(ctx, [person({ payType: 'Hourly', wage: '31.50' })], { editing: true });
+
+  const notes = {};
+  ctx.document.getElementById = (id) => {
+    notes[id] = notes[id] || { innerHTML: '' };
+    return notes[id];
+  };
+  let renders = 0;
+  ctx.render = () => { renders += 1; };
+
+  ctx.setProfileRate('40.00');
+  assert.strictEqual(renders, 0, 'setProfileRate re-rendered the page mid-type');
+  assert.strictEqual(ctx.state.editing.wage, '40.00', 'and it must still record the keystroke');
+  assert.match(notes.profileRateNote.innerHTML, /%/, 'and update the live note in place');
+
+  ctx.setProfileSalary('150000');
+  assert.strictEqual(renders, 0, 'setProfileSalary re-rendered the page mid-type');
+  assert.strictEqual(ctx.state.editing.annualSalary, '150000');
+  assert.match(notes.profileSalaryNote.innerHTML, /Hourly equivalent/);
+});
+
+test('a rate cannot be set for somebody with no employee number', () => {
+  // wage_history.employee_number is NOT NULL, so the server refuses it. Saying
+  // so beats offering a box that fails on Save.
+  const ctx = sandbox();
+  const html = openCard(ctx, [person({ payType: 'Hourly', wage: '31.50', empNum: '' })], { editing: true });
+
+  assert.ok(!/id="profileRateInput"/.test(html));
+  assert.match(html, /employee number before setting a rate/);
+});
+
+// ---- the salary, and both directions of its gate ----------------------
+
+test('WITHOUT the salaries tier the card shows no figure, only the word Salaried', () => {
+  const ctx = sandbox();
+  // annualSalary null is what the API actually delivers to this user: the
+  // projection in data.js is built from their tiers and never NAMES the column,
+  // so nothing is being hidden here — there is nothing to hide.
+  const html = openCard(ctx, [person({ payType: 'Salaried', wage: 'Salary', annualSalary: null })]);
+
+  assert.match(html, /Salaried/);
+  assert.match(html, /not visible to this account/);
+  assert.ok(!/145000|145,000|210000/.test(html));
+});
+
+test('WITH the salaries tier the figure is there — the half a broken gate would pass', () => {
+  // THE POINT OF THIS TEST. A gate that refuses everybody satisfies every "must
+  // not appear" assertion in this file. Without this one, inverting the
+  // condition in profileCompensation would be invisible.
+  const ctx = withSalariesTier(sandbox());
+  const html = openCard(ctx, [person({ payType: 'Salaried', wage: 'Salary', annualSalary: 145000 })]);
+
+  assert.match(html, /Annual salary/);
+  assert.match(html, /145,000/);
+  assert.match(html, /Hourly equivalent/, 'and what the costing reports will divide it into');
+  assert.ok(!/not visible to this account/.test(html));
+});
+
+test('the salary input exists only for the tier that may write it', () => {
+  const withTier = openCard(withSalariesTier(sandbox()),
+    [person({ payType: 'Salaried', wage: 'Salary', annualSalary: 145000 })], { editing: true });
+  assert.match(withTier, /id="profileSalaryInput"/);
+
+  const without = openCard(sandbox(),
+    [person({ payType: 'Salaried', wage: 'Salary', annualSalary: null })], { editing: true });
+  assert.ok(!/id="profileSalaryInput"/.test(without),
+    'and hiding the input is the cosmetic half — data.js returns 403 regardless');
+});
+
+test('a salaried person shows no HOURLY rate, tier or not', () => {
+  // Their cost is annual_salary / 2080. An hourly rate alongside it would be a
+  // second, disagreeing figure — which is why wage-edit-lib refuses to record
+  // one for a salaried person at all.
+  for (const ctx of [sandbox(), withSalariesTier(sandbox())]) {
+    const html = openCard(ctx, [person({ payType: 'Salaried', wage: '', annualSalary: 210000 })]);
+    assert.ok(!/id="profileRateInput"/.test(html));
+    assert.ok(!/Hourly rate/.test(html));
+    assert.ok(html.includes('Salaried'), 'the pay TYPE is a classification and does show');
+  }
 });
 
 // ---------------------------------------------------------------------------

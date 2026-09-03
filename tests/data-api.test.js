@@ -110,6 +110,106 @@ test('annual_salary never reaches the response body, even if the database return
   assert.ok(!/104000/.test(body), 'the salary VALUE is in the response');
 });
 
+// ---------------------------------------------------------------------------
+// BOTH DIRECTIONS OF THE GATE
+// ---------------------------------------------------------------------------
+//
+// Every assertion above is of the form "annual_salary must not appear". A gate
+// that refuses EVERYBODY satisfies all of them — the projection could be
+// hardcoded to drop the column for every tier, or resolveTiers could return the
+// base set unconditionally, and this file would stay green while the salaries
+// grant silently did nothing.
+//
+// That is not hypothetical here. There is a comment at data.js:81 recording
+// that the first version of projectionsFor INTERSECTED a hardcoded list with the
+// permitted set, which can only ever REMOVE columns — so annual_salary, never in
+// that list, could not appear for anybody who held the tier. The bug shipped and
+// was found by hand.
+//
+// So: the same two assertions, inverted, for a caller who holds the grant.
+
+const SALARIES_GRANT = [{ email: 'someone@sequoiafp.com', tier: 'salaries' }];
+
+test('WITH the salaries tier the projection DOES name annual_salary', async () => {
+  const urls = stubFetch([], { permissionGrants: SALARIES_GRANT });
+  const res = await get('employees');
+
+  assert.strictEqual(res.statusCode, 200);
+  const url = urls[0];
+  assert.match(url, /annual_salary/,
+    'the grant does nothing if the column is never requested: ' + url);
+  // and the rest of the projection is still there, so this is not a
+  // salary-only select that broke everything else.
+  for (const col of ['id', 'name', 'wage', 'department', 'cost_class']) {
+    assert.ok(new RegExp(`\\b${col}\\b`).test(url), `projection lost ${col}`);
+  }
+});
+
+test('WITH the salaries tier the value reaches the response body', async () => {
+  // The partner to "never reaches the response body" above. pickColumns filters
+  // the response against the same permitted list the query was built from, so
+  // this proves the second layer lets it through rather than only that the
+  // first one asked for it.
+  stubFetch([{ id: '1', name: 'A B', wage: '24.50', annual_salary: 104000 }],
+            { permissionGrants: SALARIES_GRANT });
+  const res = await get('employees');
+
+  assert.match(res.body, /annual_salary/);
+  assert.match(res.body, /104000/);
+});
+
+test('a write of annual_salary without the tier is refused, and writes nothing', async () => {
+  // Hiding the input on the card is the cosmetic half. This is the half that
+  // holds: the refusal is a 403 naming the column, and no request reaches the
+  // employees table at all — not a silent strip that would let the rest of the
+  // body through while the caller believes the salary landed.
+  for (const method of ['POST', 'PATCH']) {
+    const urls = stubFetch([]);
+    const res = await data.handler({
+      httpMethod: method,
+      headers: { cookie: cookie() },
+      queryStringParameters: { table: 'employees', id: '00000000-0000-0000-0000-000000000000' },
+      body: JSON.stringify({ name: 'A B', annual_salary: 250000 })
+    });
+
+    assert.strictEqual(res.statusCode, 403, `${method} was not refused`);
+    assert.match(res.body, /annual_salary/, 'the refusal names the column');
+    assert.deepStrictEqual(urls, [],
+      `${method} still reached the database — the name would have been written`);
+  }
+});
+
+test('WITH the tier that same write goes through', async () => {
+  // The inverted half again. Without this, gateWrite could refuse everybody and
+  // the test above would still pass.
+  const urls = stubFetch([{ id: '1' }], { permissionGrants: SALARIES_GRANT });
+  const res = await data.handler({
+    httpMethod: 'PATCH',
+    headers: { cookie: cookie() },
+    queryStringParameters: { table: 'employees', id: '00000000-0000-0000-0000-000000000000' },
+    body: JSON.stringify({ annual_salary: 250000 })
+  });
+
+  assert.strictEqual(res.statusCode, 200);
+  assert.ok(urls.length > 0, 'the write never reached the database');
+});
+
+test('the two directions disagree, which is what makes either meaningful', async () => {
+  // One test, both callers, same stubbed row. If this ever passes with the two
+  // bodies identical, the tier is not being read at all.
+  const row = [{ id: '1', name: 'A B', wage: '24.50', annual_salary: 104000 }];
+
+  stubFetch(row);
+  const base = (await get('employees')).body;
+
+  stubFetch(row, { permissionGrants: SALARIES_GRANT });
+  const withTier = (await get('employees')).body;
+
+  assert.notStrictEqual(base, withTier, 'the salaries grant changed nothing');
+  assert.ok(!/104000/.test(base));
+  assert.ok(/104000/.test(withTier));
+});
+
 // The roster still renders an hourly rate per person, on the Employees tab. That
 // predates this phase and is unchanged; what Manufacturing Costs stopped doing is
 // rendering rates on a COSTING page, where the whole point is the aggregate.

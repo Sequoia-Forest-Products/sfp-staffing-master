@@ -320,7 +320,13 @@ function openProfile(idx){
   state.profile={idx:idx};
   state.editing=null;
   render();
-  if(needsDriveLookup(state.employees[idx])) setTimeout(()=>loadDriveLink(state.employees[idx].name),50);
+  const person=state.employees[idx];
+  // Fetched on open rather than with the roster: two extra tables per person
+  // across 71 people, on every page load, to fill a panel most opens never
+  // scroll to. Guarded inside loadEmployeeHistory so re-opening the same card
+  // does not re-fetch.
+  if(person&&person.id) setTimeout(()=>loadEmployeeHistory(person.id),0);
+  if(needsDriveLookup(person)) setTimeout(()=>loadDriveLink(person.name),50);
 }
 
 function closeProfile(){
@@ -443,7 +449,9 @@ function renderProfile(){
   // edit mode made them vanish entirely. Appending once is what stops the two
   // bodies from disagreeing about which sections exist.
   const body=(editing?profileEditBody(e):profileReadBody(e))
-    + profilePreApproved(e) + profileAllocation(e);
+    + profileCompensation(e) + profilePreApproved(e) + profileAllocation(e)
+    // History is read-only in both modes: it is a record, not a field.
+    + profileHistory(e);
   // The database would refuse a partial allocation anyway; letting somebody
   // press Save to discover that is worse than not offering it. Gated here rather
   // than inside the allocation block so the one Save button owns the decision.
@@ -588,6 +596,241 @@ function profileReadBody(e){
 // So each category has its own Save. `unique(employee_id, ot_type)` in the
 // database means saving twice updates rather than duplicating, whatever this
 // code does.
+// ============================================================
+// COMPENSATION ON THE PROFILE CARD
+// ============================================================
+//
+// Phase B kept pay off this card deliberately, because there were no
+// permissions yet and the card is opened by everybody. Phase D built the tiers
+// and the Salaries & Wages page proved them; this finishes that job rather than
+// undoing it, and the page is retired.
+//
+// THE SALARY RULE IS ABSENT, NOT MASKED. A caller without the salaries tier
+// gets no `annual_salary` in the payload at all — the projection in
+// netlify/functions/data.js is built from their tiers and never NAMES the
+// column, and pickColumns re-filters the response against the same list. So
+// this renders the word "Salaried" because it HAS no number, not because it was
+// told to hide one. Printing a number and covering it with CSS would be
+// readable in devtools, which is exactly what Phase B closed.
+//
+// Which means the check below is a rendering decision, never a security one.
+// Deleting canSeeSalaries() from this file would change what the card says and
+// would not expose a single dollar.
+
+// The rate live-note is written STRAIGHT INTO ITS NODE and never through
+// render(). render() does `el.innerHTML = renderEmployees()`, which destroys the
+// input the cursor is in, taking the focus, the caret and anything half-typed
+// with it. salaries.js solved this the same way (paySet -> #payFoot) and it is
+// the reason typing a rate there never lost a keystroke.
+function profileRateNote(){
+  const e=state.editing;
+  if(!e) return '';
+  const parsed=parseRate(e.wage);
+  if(parsed===undefined) return '<span style="color:#b8860b">Not a number</span>';
+  if(parsed===null) return '<span style="color:#b8860b">A rate cannot be cleared, only corrected</span>';
+  const pct=wageMovePct(e,parsed);
+  if(pct==null) return '<span style="color:var(--muted)">First rate on file</span>';
+  const flag=Math.abs(pct)>WAGE_FLAG_PCT;
+  return `<span style="color:${flag?'#b8860b':'var(--muted)'}">${pct>0?'+':''}${pct}%`
+    +`${flag?' — this will be flagged for review':''}</span>`;
+}
+
+function profileSalaryNote(){
+  const e=state.editing;
+  if(!e) return '';
+  const parsed=parseSalary(e.annualSalary);
+  if(parsed===undefined) return '<span style="color:#b8860b">Not a number</span>';
+  if(parsed==null) return '<span style="color:var(--muted)">No salary on file — their cost cannot be computed</span>';
+  return `<span style="color:var(--muted)">Hourly equivalent `
+    +`${fmt$(Math.round(parsed/SALARY_HOURS_PER_YEAR*100)/100)}</span>`;
+}
+
+function setProfileRate(v){
+  if(!state.editing) return;
+  state.editing.wage=v;
+  const el=document.getElementById('profileRateNote');
+  if(el) el.innerHTML=profileRateNote();
+}
+
+function setProfileSalary(v){
+  if(!state.editing) return;
+  state.editing.annualSalary=v;
+  const el=document.getElementById('profileSalaryNote');
+  if(el) el.innerHTML=profileSalaryNote();
+}
+
+// ============================================================
+// HISTORY ON THE PROFILE CARD
+// ============================================================
+//
+// Two records, deliberately shown together and deliberately labelled
+// differently.
+//
+// wage_history has been recording every rate change since the v2 model and
+// nothing has ever displayed it. It covers the whole period it existed for.
+//
+// position_history was created on the day it shipped and covers NOTHING before
+// that. Whatever anybody's department was beforehand is unrecoverable: the
+// employees row was overwritten in place each time. The only surviving trace is
+// daily_hours.department, a per-import snapshot that covers only days a person
+// worked. So the list says where it starts, every time, rather than letting a
+// short list read as a complete one — "he was always in Production" from a
+// record that only proves "since September" is the failure this label prevents.
+async function loadEmployeeHistory(employeeId){
+  if(!employeeId) return;
+  const key=String(employeeId);
+  if(!state.history) state.history={};
+  if(state.history[key]&&state.history[key].loading) return;
+  state.history[key]={loading:true,wage:[],position:[],error:''};
+  render();
+  try{
+    const res=await fetch('/api/employee-history?employeeId='+encodeURIComponent(key));
+    if(res.status===401){location.href='/';return;}
+    let json=null; try{json=await res.json();}catch(e){json=null;}
+    if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
+    state.history[key]={
+      loading:false, wage:json.wage||[], position:json.position||[],
+      wageUnavailable:!!json.wageUnavailable,
+      positionUnavailable:!!json.positionUnavailable,
+      error:''
+    };
+  }catch(err){
+    state.history[key]={loading:false,wage:[],position:[],error:err.message};
+  }
+  render();
+}
+
+function historyFieldLabel(f){
+  return ({department:'Department',position:'Position',
+           position_group:'Position group',cost_class:'Cost class'})[f]||f;
+}
+
+function profileHistory(e){
+  if(!e||!e.id) return '';
+  const h=(state.history||{})[String(e.id)];
+  if(!h) return `<div class="pf-group"><div class="pf-group-title">History</div>
+    <div style="font-size:12px;color:var(--muted)">Loading…</div></div>`;
+  if(h.loading) return `<div class="pf-group"><div class="pf-group-title">History</div>
+    <div style="font-size:12px;color:var(--muted)">Loading…</div></div>`;
+  if(h.error) return `<div class="pf-group"><div class="pf-group-title">History</div>
+    <div style="font-size:12px;color:var(--brick)">Could not load history: ${esc(h.error)}</div></div>`;
+
+  const rate=(h.wage||[]).map(r=>`<tr>
+      <td>${fmtDate(r.effective_date)}</td>
+      <td>${r.previous_rate==null?'<span style="color:var(--muted)">first on file</span>':fmt$(r.previous_rate)}</td>
+      <td style="font-weight:700">${fmt$(r.rate)}</td>
+      <td>${r.change_pct==null?'—':((Number(r.change_pct)>0?'+':'')+Number(r.change_pct).toFixed(1)+'%')}${r.flagged?' <span style="color:#b8860b;font-weight:700">flagged</span>':''}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(r.note||r.source||'')}</td>
+    </tr>`).join('');
+
+  const pos=(h.position||[]).map(r=>`<tr>
+      <td>${fmtDate(String(r.changed_at||'').slice(0,10))}</td>
+      <td>${esc(historyFieldLabel(r.field))}</td>
+      <td>${r.previous_value?esc(r.previous_value):'<span style="color:var(--muted)">not set</span>'}</td>
+      <td style="font-weight:700">${r.new_value?esc(r.new_value):'<span style="color:var(--muted)">cleared</span>'}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(r.changed_by||'')}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="pf-group"><div class="pf-group-title">Rate history</div>
+      ${h.wageUnavailable
+        ? '<div style="font-size:12px;color:var(--brick)">Could not be read — this is not the same as "no changes".</div>'
+        : rate
+          ? `<div class="table-wrap" style="margin-bottom:0"><table>
+              <thead><tr><th>Date</th><th>From</th><th>To</th><th>Change</th><th>Source</th></tr></thead>
+              <tbody>${rate}</tbody></table></div>`
+          : '<div style="font-size:12px;color:var(--muted)">No rate changes recorded.</div>'}
+    </div>
+    <div class="pf-group"><div class="pf-group-title">Classification history</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        <strong>Recorded from ${fmtDate(POSITION_HISTORY_FROM)} onwards only.</strong>
+        Nothing tracked department, position, position group or cost class before then — the
+        employee record was overwritten in place — so this list is not a full tenure and an absence
+        here is not evidence that nothing changed.</div>
+      ${h.positionUnavailable
+        ? '<div style="font-size:12px;color:var(--brick)">Could not be read — run SCHEMA_POSITION_HISTORY.sql if it has not been applied.</div>'
+        : pos
+          ? `<div class="table-wrap" style="margin-bottom:0"><table>
+              <thead><tr><th>Date</th><th>Field</th><th>From</th><th>To</th><th>Changed by</th></tr></thead>
+              <tbody>${pos}</tbody></table></div>`
+          : '<div style="font-size:12px;color:var(--muted)">No changes recorded since then.</div>'}
+    </div>`;
+}
+
+function profileCompensation(e){
+  const editing=profileEditing(e);
+  const salaried=isSalaried(e);
+  const tier=canSeeSalaries();
+
+  // Salaried
+  if(salaried){
+    if(!tier){
+      // No figure exists on this client to show. See the header above.
+      return profileGroup('Compensation',[
+        pf('Pay','Salaried'),
+        pf('Amount','',{empty:'not visible to this account'})
+      ]);
+    }
+    if(!editing){
+      return profileGroup('Compensation',[
+        pf('Pay','Salaried'),
+        pf('Annual salary',e.annualSalary==null?'':fmtSalary(e.annualSalary),{empty:'none on file'}),
+        pf('Hourly equivalent',e.annualSalary==null?'':fmt$(Math.round(Number(e.annualSalary)/SALARY_HOURS_PER_YEAR*100)/100),{empty:'—'})
+      ]);
+    }
+    return `
+      <div class="pf-group"><div class="pf-group-title">Compensation</div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Annual salary</label>
+            <input type="text" id="profileSalaryInput" value="${esc(e.annualSalary==null?'':String(e.annualSalary))}"
+              placeholder="105000" oninput="setProfileSalary(this.value)"></div>
+          <div class="form-group" style="display:flex;align-items:flex-end">
+            <div id="profileSalaryNote" style="font-size:12px;padding-bottom:9px">${profileSalaryNote()}</div></div>
+        </div>
+      </div>`;
+  }
+
+  // Hourly. Editable by anybody with app access — hourly rates are base tier in
+  // permissions-lib.js, in both directions, and have been since the feed stopped
+  // overwriting them.
+  const rate=currentRate(e);
+  if(!editing){
+    return profileGroup('Compensation',[
+      pf('Pay','Hourly'),
+      // Passed as the VALUE, not as `empty`: pf() escapes `empty`, so markup
+      // there renders as literal text. The flag has to be loud — a person with
+      // no rate has every hour they work costed at zero, silently, in every
+      // report.
+      pf('Hourly rate',
+         rate==null
+           ? '<span style="color:var(--brick);font-weight:700">No rate on file — their hours cost $0 in every report until one is set</span>'
+           : fmt$(rate),
+         {html:true})
+    ]);
+  }
+  // wage_history.employee_number is NOT NULL, so a person with no employee
+  // number cannot have a rate recorded. The server refuses it; saying so here
+  // beats a box that fails on Save.
+  if(!canEditRate(e)){
+    return profileGroup('Compensation',[
+      pf('Pay','Hourly'),
+      pf('Hourly rate',rate==null?'—':fmt$(rate)),
+      pf('','<span style="color:#b8860b">Give this person an employee number before setting a rate — every rate change is recorded against it.</span>',{html:true})
+    ]);
+  }
+  return `
+    <div class="pf-group"><div class="pf-group-title">Compensation</div>
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label">Hourly rate</label>
+          <input type="text" id="profileRateInput" value="${esc(e.wage==null?'':String(e.wage))}"
+            placeholder="24.50" oninput="setProfileRate(this.value)"></div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <div id="profileRateNote" style="font-size:12px;padding-bottom:9px">${profileRateNote()}</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Every change is recorded in the rate history below, with who made it.</div>
+    </div>`;
+}
+
 function profilePreApproved(e){
   const id=String(e&&e.id||'');
   if(!id){
@@ -912,17 +1155,16 @@ async function saveEdit(){
 
   setSyncStatus('saving');
   try{
-    // WAGE IS NOT WRITTEN FROM HERE, in either direction. The column is
-    // writable again — permissions-lib allows it at the base tier — but it is
-    // set on Salaries & Wages, which is the one surface that records the change
-    // in wage history. Sending it from this form would append a history row for
-    // a save nobody thought of as a rate change. So this save neither sends it
-    // nor edits the local copy — e.wage stays whatever the roster read, and the
-    // row behind the modal keeps showing the real rate.
+    // WAGE IS WRITTEN FROM HERE NOW, and that is a reversal of the note this
+    // comment replaced. It said the rate belonged on Salaries & Wages because
+    // that was the one surface recording the change in wage_history. That page
+    // is retired and this card is that surface — /api/data writes the history
+    // row before it touches employees.wage, so the guarantee moved with the
+    // input rather than being dropped with the page.
     //
-    // Pay type IS written, and is the only fact about compensation this form
-    // still asserts. Flipping to Salaried no longer nulls the rate: isSalaried()
-    // reads pay_type first, so a leftover value cannot be mistaken for theirs.
+    // Pay type still decides which figure is sent. Flipping to Salaried does not
+    // null the rate: isSalaried() reads pay_type first, so a leftover value
+    // cannot be mistaken for theirs.
     const payType = isSalaried(e) ? 'Salaried' : 'Hourly';
     e.payType = payType;
 
@@ -948,6 +1190,33 @@ async function saveEdit(){
       address_street:e.addressStreet||null, address_city:e.addressCity||null,
       address_state:e.addressState||null, address_postal_code:e.addressPostalCode||null
     };
+
+    // ---- compensation, added to the row only when this save may set it ----
+    //
+    // An hourly rate goes only for an hourly person, and only when it parses to
+    // a real number. An unparseable or cleared box is left OUT of the request
+    // rather than sent: the server refuses both (409, see wage-edit-lib) and
+    // sending them would fail the whole save — including the name change the
+    // person actually came here to make. The live note beside the input already
+    // says why nothing will be written.
+    //
+    // Sending an UNCHANGED rate is harmless and deliberate: planWageEdit
+    // compares against the database row and drops it, so no history row is
+    // written for a rate that did not move.
+    if(payType==='Hourly'&&canEditRate(e)){
+      const rate=parseRate(e.wage);
+      if(typeof rate==='number') row.wage=String(rate);
+    }
+
+    // The salary goes only for an account holding the tier. This is the
+    // COSMETIC half of that gate and is documented as such: data.js returns 403
+    // naming the column for anybody else, whatever the browser sends. It is here
+    // so a non-tier user's save of a salaried person's phone number does not
+    // fail on a column they were never shown.
+    if(payType==='Salaried'&&canSeeSalaries()){
+      const salary=parseSalary(e.annualSalary);
+      if(salary!==undefined) row.annual_salary=salary;
+    }
 
     if(e.id){
       const res=await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',row);

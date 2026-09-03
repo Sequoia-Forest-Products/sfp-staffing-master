@@ -111,7 +111,17 @@ const BASE_WRITABLE = perms.employeeWriteColumns(new Set([perms.TIER_HOURLY_WAGE
 // the roster modal / profile card save
 // ---------------------------------------------------------------------------
 
-test('saveEdit sends no wage, and every column it does send is writable at the base tier', async () => {
+test('saveEdit sends the wage now, and every column it sends is writable at the base tier', async () => {
+  // THIS TEST ASSERTED THE OPPOSITE until 2026-09-03: `wage` must not be in the
+  // body at all. That was correct while the rate was set on Salaries & Wages,
+  // which was the one surface writing wage_history. That page is retired and the
+  // profile card is that surface now — /api/data still writes the history row
+  // before it touches employees.wage, so what moved is the input, not the
+  // guarantee.
+  //
+  // The column-allowlist half of this test is unchanged and is the part that
+  // matters most: every key in the body must be writable at the BASE tier, or a
+  // save by an ordinary user 403s on a column they were never shown.
   const ctx = sandbox();
   ctx.state.employees = [{ ...PERSON }];
   ctx.state.profile = null;
@@ -122,7 +132,12 @@ test('saveEdit sends no wage, and every column it does send is writable at the b
   const [write] = writesTo(ctx, 'employees');
   assert.ok(write, 'the employee row was written');
   assert.strictEqual(write.method, 'PATCH');
-  assert.ok(!('wage' in write.body), 'wage must not be in the request body at all');
+  // parseRate normalises: '22.00' in, 22 out, sent as '22'. That is not a
+  // change — planWageEdit compares PARSED values against the database row and
+  // drops an unchanged rate before any history is written — and on a real change
+  // data.js replaces the body value with plan.wage anyway. The client's job is
+  // only to send something the server can parse.
+  assert.strictEqual(write.body.wage, '22', 'the rate the card was showing');
 
   const refused = Object.keys(write.body).filter(k => !BASE_WRITABLE.includes(k));
   assert.deepStrictEqual(refused, [],
@@ -132,6 +147,51 @@ test('saveEdit sends no wage, and every column it does send is writable at the b
   assert.strictEqual(write.body.pay_type, 'Hourly');
   assert.strictEqual(write.body.name, 'Ana Reyes');
   assert.strictEqual(write.body.position, 'Puller');
+});
+
+test('an unparseable or cleared rate is left OUT of the request, not sent', async () => {
+  // wage-edit-lib refuses both with a 409, and a refused wage fails the WHOLE
+  // save — including the name change the person actually came here to make. The
+  // live note beside the input already says nothing will be written.
+  for (const bad of ['', '   ', 'abc', '0', '-5']) {
+    const ctx = sandbox();
+    ctx.state.employees = [{ ...PERSON }];
+    ctx.state.profile = null;
+    ctx.state.editing = { ...PERSON, wage: bad, _idx: 0, _isNew: false };
+
+    await ctx.saveEdit();
+    const [write] = writesTo(ctx, 'employees');
+    assert.ok(!('wage' in write.body), `wage ${JSON.stringify(bad)} must not be sent`);
+    assert.strictEqual(write.body.name, 'Ana Reyes', 'and the rest of the save still goes');
+  }
+});
+
+test('a salaried person sends no wage, and no salary without the tier', async () => {
+  const ctx = sandbox();
+  const salaried = { ...PERSON, payType: 'Salaried', wage: 'Salary', annualSalary: 145000 };
+  ctx.state.employees = [{ ...salaried }];
+  ctx.state.profile = null;
+  ctx.state.editing = { ...salaried, _idx: 0, _isNew: false };
+
+  await ctx.saveEdit();
+  const [write] = writesTo(ctx, 'employees');
+  assert.ok(!('wage' in write.body), 'an hourly rate would be a second, disagreeing figure');
+  assert.ok(!('annual_salary' in write.body),
+    'no tier on this sandbox — and data.js 403s it regardless, this only avoids failing the save');
+  assert.strictEqual(write.body.pay_type, 'Salaried');
+});
+
+test('WITH the salaries tier the salary is sent — the half a broken gate would pass', async () => {
+  const ctx = sandbox();
+  ctx.state.perms = { tiers: ['hourly_wages', 'salaries'], isAdmin: false, loading: false, error: '' };
+  const salaried = { ...PERSON, payType: 'Salaried', wage: 'Salary', annualSalary: 145000 };
+  ctx.state.employees = [{ ...salaried }];
+  ctx.state.profile = null;
+  ctx.state.editing = { ...salaried, _idx: 0, _isNew: false };
+
+  await ctx.saveEdit();
+  const [write] = writesTo(ctx, 'employees');
+  assert.strictEqual(write.body.annual_salary, 145000);
 });
 
 test('saveEdit does not blank the local rate it no longer writes', async () => {

@@ -65,6 +65,9 @@ let state = {
   dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
   // dailyMenu holds the work date whose ... menu is open, or null.
   dailyMenu:null, dailyDeliveryUnavailable:false, dailyRosterUnavailable:false,
+  // Rate and classification history, keyed by employee id, fetched when a
+  // profile card opens.
+  history:{},
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,
@@ -154,8 +157,122 @@ function isSalaried(emp){
   if(pt==='hourly')return false;
   return String((emp&&emp.wage)||'').trim().toLowerCase()==='salary';
 }
+// The day SCHEMA_POSITION_HISTORY.sql was applied, and therefore the earliest
+// date classification history can possibly cover. The card prints it so a short
+// list reads as "recorded from here" rather than as a complete tenure.
+const POSITION_HISTORY_FROM='2026-09-03';
+
 const PAY_TYPES=['Hourly','Salaried'];
 function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
+
+// ---- COMPENSATION: parsing, formatting and the change warning ----------
+//
+// These lived in salaries.js, which existed to be the one screen where pay was
+// typed. That screen is gone: compensation is on the employee profile card and
+// the roster's Wage/Hr column now, which is two callers rather than one, and a
+// third (the roster) that has to agree with the second (the card) about what
+// "$24.50" means. One copy, here, in the file everything already loads.
+//
+// 40 hours x 52 weeks, mirroring SALARY_HOURS_PER_YEAR in
+// netlify/functions/wage-sync.js. The mill's own week is 4x10, which is the
+// same 40, so this is the conventional annualisation and not a schedule
+// assumption. It is the divisor the costing reports already use, so showing it
+// here is showing what those reports will do with the number — not a second
+// opinion about it.
+const SALARY_HOURS_PER_YEAR = 2080;
+
+// Mirrors WAGE_CHANGE_ALERT_PCT's default. The server decides what is actually
+// flagged — this only warns before the click, so a mistyped 2450 for 24.50 is
+// visible while it can still be fixed.
+const WAGE_FLAG_PCT = 20;
+
+function fmtSalary(n){
+  if(n==null||n==='') return '—';
+  const v=Number(n);
+  return isFinite(v) ? '$'+v.toLocaleString('en-US',{maximumFractionDigits:0}) : '—';
+}
+
+// ------------------------------------------------------------------------
+// who is on the page
+// ------------------------------------------------------------------------
+
+// Active only. A blank status reads as active, matching isActive() in
+// ot-report-lib.js and wage-sync.js: the roster is the thing being listed here,
+// and guessing "inactive" would hide a real person.
+function payActive(e){
+  const raw=String((e&&e.status)==null?'':e.status).trim();
+  return raw==='' || raw.toLowerCase()==='active';
+}
+
+const byName=(a,b)=>String(a.name||'').localeCompare(String(b.name||''));
+
+function salariedPeople(){
+  return (state.employees||[]).filter(e=>isSalaried(e)&&payActive(e)).sort(byName);
+}
+
+function hourlyPeople(){
+  return (state.employees||[]).filter(e=>!isSalaried(e)&&payActive(e)).sort(byName);
+}
+
+// How many are being left out, so "where is everybody" has an answer on the
+// page rather than in somebody's head.
+function inactiveCount(){
+  return (state.employees||[]).filter(e=>!payActive(e)).length;
+}
+
+// ------------------------------------------------------------------------
+// parsing — the client mirror of the server's rules
+// ------------------------------------------------------------------------
+//
+// A MIRROR, NOT A SECOND SET OF THEM. wage-edit-lib.js decides what an edit
+// means and refuses what cannot be recorded; everything below exists so the
+// page does not OFFER a control the server would refuse, and so the refusal
+// reads as a sentence rather than a status code when it happens anyway. If the
+// two ever disagree, the server wins and the user is told what it said.
+
+// Accepts what somebody actually types: 105000, 105,000, $105,000, 105000.00.
+// Returns a number, null for an empty field, or undefined for something that is
+// neither — the three cases have to stay distinct, because null is a real
+// instruction ("this person has no salary on file") and undefined is a refusal.
+function parseSalary(raw){
+  const s=String(raw==null?'':raw).trim();
+  if(s==='') return null;
+  const n=Number(s.replace(/[$,\s]/g,''));
+  if(!isFinite(n)||n<0) return undefined;
+  return Math.round(n*100)/100;
+}
+
+// The same three-way answer, for the same reason — except that here null is NOT
+// a real instruction. A cleared salary means "this person has no salary on
+// file"; a cleared rate cannot mean anything, because wage_history.rate is NOT
+// NULL and a rate that disappeared without a record is exactly what that
+// history exists to prevent. So null is refused too, with its own sentence.
+function parseRate(raw){
+  const s=String(raw==null?'':raw).trim();
+  if(s==='') return null;
+  const n=Number(s.replace(/[$,\s]/g,''));
+  if(!isFinite(n)||n<=0) return undefined;
+  return Math.round(n*100)/100;
+}
+
+// The rate the roster currently holds, as a number, or null. Shares parseRate's
+// view of zero: a stored '0.00' is not a rate, so typing a real one over it is
+// a first observation rather than a change.
+function currentRate(e){
+  const n=parseRate(e&&e.wage);
+  return (n===undefined||n===null)?null:n;
+}
+
+// wage_history is keyed by employee number and the column is NOT NULL, so a
+// person without one cannot have a rate recorded. The server refuses it; this
+// is why their row does not open.
+function canEditRate(e){ return !!String((e&&e.empNum)||'').trim(); }
+
+function wageMovePct(e,parsed){
+  const current=currentRate(e);
+  if(current==null||current===0||parsed==null||parsed===undefined) return null;
+  return Math.round(((parsed-current)/current)*10000)/100;
+}
 
 // ============================================================
 // PAYROLL SHARED HELPERS
