@@ -711,6 +711,38 @@ GET navigation does — so before this, a plain link or an `<img src>` on any pa
 a signed-in browser import live payroll. Keeping the dry run on GET preserves the useful "just open
 it in a browser" affordance without that exposure.
 
+### A day nobody worked is not a missing day
+
+A payroll file that reports no hours builds **no `daily_hours` rows**. That is correct — there are
+no hours to record — but for months it meant an empty day and a missing day were the same absence,
+and everything downstream guessed the same way:
+
+- The Daily Hours tab derived gaps by subtracting the dates that came back from the date range, and
+  put every one in a red banner as a "probable missed delivery".
+- `payroll-missed-check` did the same arithmetic against `daily_hours` and emailed about it.
+
+Both were wrong in the same direction, on every quiet day, so the alert had been crying wolf.
+
+`processed_emails` already knew. It records `work_date`, `status` and `rows_imported` for every
+message the ingest handles, so "a file arrived for this date" was on disk the whole time and nothing
+read it. `fetchDeliveriesForDates` reads it now, and both callers use it:
+
+| State | Meaning | Alerts? |
+|---|---|---|
+| `data` | rows exist | no |
+| `no-hours` | a file arrived and imported, reporting no hours — nobody worked | **no** |
+| `not-imported` | a file arrived and did not import (error, pending review) | yes |
+| `no-file` | nothing arrived — the only real missed delivery | yes |
+| `future` | the day has not happened yet | no |
+
+If the ledger read **fails**, both callers fall back to the old behaviour and treat every empty day
+as missing. That is the safe direction for a watchdog — with no evidence, an empty day is genuinely
+unexplained — and both say so rather than letting a quiet day look like a failure for an unstated
+reason (`deliveryUnavailable` on the day list, `deliveryError` in the alert).
+
+Nothing needs back-filling: the evidence is already in `processed_emails`, so days that were
+mis-reported flip to their correct state the first time the tab is loaded after this deploys.
+
 ### The Monday manager email
 
 `ot-weekly-email` (schedule in `netlify.toml`, logic in `ot-weekly-email-lib.js`) emails the

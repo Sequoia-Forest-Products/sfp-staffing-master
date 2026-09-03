@@ -653,6 +653,23 @@ async function upsertProcessedEmail(record) {
 
 // opts: { status, notStatus, from, to, limit }. `notStatus` is what the pending
 // queue asks for — everything that did not end up imported.
+// Which dates a payroll email actually arrived for.
+//
+// This is the evidence that separates "nobody worked" from "no file came". A
+// day whose file reported no hours writes NO daily_hours rows — correctly, since
+// there are no hours to record — so daily_hours alone cannot tell the two apart,
+// and for months it called both of them a missed delivery.
+//
+// Keyed on work_date rather than received_at (which is what listProcessedEmails
+// filters on): the question here is "was this DAY delivered", and a late or
+// back-filled message answers it for a date other than its own arrival day.
+function fetchDeliveriesForDates(fromDate, toDate) {
+  return requestRows('GET',
+    `processed_emails?work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}` +
+    `&select=message_id,work_date,status,rows_imported,received_at,subject,upload_batch_id` +
+    `&order=work_date.asc`);
+}
+
 function listProcessedEmails(opts = {}) {
   const filters = [`select=*`];
   if (opts.status) filters.push(`status=eq.${encode(opts.status)}`);
@@ -696,5 +713,6 @@ module.exports = {
   applyWageSync,
   getProcessedEmail,
   upsertProcessedEmail,
-  listProcessedEmails
+  listProcessedEmails,
+  fetchDeliveriesForDates
 };

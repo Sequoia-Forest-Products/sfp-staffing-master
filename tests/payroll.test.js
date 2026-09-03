@@ -860,7 +860,7 @@ const storedRow = (empNumber, workDate, batch) => ({
 
 // Installs stub db functions for one test and restores the real module after.
 function stubDb(t, overrides = {}) {
-  const calls = { order: [], upserts: [], deletedDates: [], pruned: [], ledger: [] };
+  const calls = { order: [], upserts: [], deletedDates: [], pruned: [], ledger: [], deliveryRanges: [] };
   Object.assign(payrollDb, {
     fetchEmployees: async () => ROSTER,
     fetchDailyHours: async () => [],
@@ -883,7 +883,11 @@ function stubDb(t, overrides = {}) {
     },
     getProcessedEmail: async () => null,
     upsertProcessedEmail: async record => { calls.ledger.push(record); return record; },
-    listProcessedEmails: async () => []
+    listProcessedEmails: async () => [],
+    // Delivery evidence, keyed on work_date. Empty by default: no file arrived
+    // for any date, which is what makes an empty day a genuine gap.
+    fetchDeliveriesForDates: async (from, to) => { calls.deliveryRanges.push([from, to]); return []; },
+    fetchDaySummaries: async (from, to) => payrollDb.fetchDailyHours(from, to)
   }, overrides);
   t.after(() => { Object.assign(payrollDb, REAL_DB); });
   return calls;
