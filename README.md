@@ -754,6 +754,32 @@ GET navigation does — so before this, a plain link or an `<img src>` on any pa
 a signed-in browser import live payroll. Keeping the dry run on GET preserves the useful "just open
 it in a browser" affordance without that exposure.
 
+### The import never adds a person to the roster
+
+**As of 2026-09-08 the payroll import is read-only against `employees`.** It matches the file's
+`Emp #` against `employees.employee_number` and **nothing else** — never by name, because the roster
+has two people called Smith and several compound surnames the two systems spell differently, and
+name matching would move one person's hours onto another.
+
+Until then, an unrecognised number produced a new `employees` row. It was well intentioned: a new
+hire's hours were landing nowhere and somebody had to notice. But number-only matching cannot tell
+*a new hire* from *somebody already on the roster under a different number*, and it created a row
+either way — which it did, producing a **second Cyle Coburn** beside the real one. From then on his
+hours attached to the empty duplicate and were costed at **$0** in every report, while the row
+holding his rate saw no hours at all. Nothing about that reads as wrong on a screen.
+
+A vendor file does not get to decide who works here. `payroll-db.createEmployee` is **deleted**, not
+deprecated — an employee-creating writer sitting in the module the hourly ingest already imports is
+one plan change away from firing again — and the applier reports an `Unknown op kind` error if a
+`create` op ever reaches it.
+
+**The hours still import.** `buildImport` writes the `daily_hours` row and flags it
+`unknown_employee`; that is unchanged and deliberate, because dropping the hours would make the
+day's totals quietly understate the week. They cost $0 until the number is reconciled, and an
+`employee_setup_tasks` row plus a line in the ingest digest says so — naming both remedies: add the
+person with that number, **or** correct the number on their existing record rather than adding a
+second one.
+
 ### A day nobody worked is not a missing day
 
 A payroll file that reports no hours builds **no `daily_hours` rows**. That is correct — there are

@@ -1,14 +1,16 @@
 // Run with: npm test   (node --test, no extra dependencies)
 //
-// The daily BBSI file is the source of truth for hourly wages, which means this
-// module overwrites real payroll every morning. Every test here injects its own
-// file rows, roster and work date; nothing touches Supabase, and the applier is
-// exercised with fake writers so the ORDER of the writes is asserted rather than
-// assumed.
+// THE HEADER IS HISTORICAL AND SO IS THE FILE NAME. This said the daily BBSI
+// file was the source of truth for hourly wages and that this module overwrote
+// real payroll every morning. Neither is true: the feed stopped carrying money
+// on 2026-08-22, and on 2026-09-08 the import stopped writing to `employees` in
+// any way at all.
 //
-// The cases that matter most are the ones about NOT writing: an employee absent
-// from the file, and a row whose rate is missing or zero. Either mistake zeroes
-// the rate of a real person, so each is tested from several directions.
+// What is left is arrival DETECTION — noticing an employee number the roster
+// does not have — and the cases that matter most are still the ones about NOT
+// writing. Every test here injects its own file rows, roster and work date;
+// nothing touches Supabase, and the applier is exercised with fake writers so
+// that a write which should not happen is visible when it does.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -77,9 +79,11 @@ const plan = (fileRows, opts = {}) => planWageSync({
 // `thresholdPct`: it plans no rate change, so an empty array in the shape read
 // as "no changes today" when the truth is "this cannot happen".
 //
-// What replaced them as the assertion of record is that the plan carries
-// creates and setup tasks and NOTHING about money — see the arrival tests
-// below, which check the create has no `rate` key at all.
+// `creates` went the same way on 2026-09-08, and for a sharper reason: the
+// import may no longer add anybody to the roster at all. What replaced it as
+// the assertion of record is that an unrecognised employee number produces a
+// SETUP TASK and nothing else — see the arrival tests below, and the applier
+// tests that hand it a create op anyway and check it refuses.
 
 // ============================================================
 // normalizeRate — "a missing or zero rate is not a rate"
@@ -126,14 +130,14 @@ test('an active employee absent from the file is not touched at all', () => {
 
   // Nothing in the plan mentions anybody at all: no creates either, because
   // every number in the file is already known.
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
   assert.deepStrictEqual(result.ops, []);
 });
 
 test('an empty file moves nothing and blanks nobody', () => {
   const result = plan([]);
   assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
   assert.deepStrictEqual(result.ops, []);
   assert.strictEqual(result.skipped.absentFromFile, 5);   // every active hourly person
 });
@@ -147,7 +151,7 @@ test('an empty file moves nothing and blanks nobody', () => {
 test('a row with no employee number cannot be matched and is counted separately', () => {
   const result = plan([fileRow('', 25.00), fileRow(null, 25.00)]);
   assert.strictEqual(result.skipped.noEmployeeNumber, 2);
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
 });
 
 // ============================================================
@@ -174,21 +178,28 @@ test('a row with no employee number cannot be matched and is counted separately'
 // Auto-create unknown people
 // ============================================================
 
-test('an unknown employee number creates a person and a setup task — and NO rate', () => {
-  // Arrival detection is all that is left of this plan, and it was never about
-  // money. The create carries identity only: the file's rate is not read, so
-  // somebody has to type one on Salaries & Wages before this person's cost can
-  // be computed. The task says exactly that.
+test('an unknown employee number creates NOBODY, and raises a task instead', () => {
+  // THIS TEST ASSERTED THE OPPOSITE until 2026-09-08: an unrecognised number
+  // produced a new `employees` row. It was well intentioned — a new hire's
+  // hours were landing nowhere and somebody had to notice — but the match is on
+  // employee_number and NOTHING else, deliberately, because name matching would
+  // move one person's hours onto another. So the import could not tell "a new
+  // hire" from "somebody already on the roster under a different number", and
+  // it created a row either way.
+  //
+  // It did exactly that: a second Cyle Coburn appeared beside the real one, his
+  // hours attached to the empty duplicate, and every report costed them at $0
+  // while the row holding his rate saw no hours. Nothing about that reads as
+  // wrong on a screen.
+  //
+  // A vendor file does not get to decide who works here.
   const result = plan([
     fileRow('0999', 23.75, { first_name: 'Nueva', last_name: 'Persona' })
   ]);
 
-  assert.deepStrictEqual(result.creates, [{
-    employeeNumber: '0999',
-    name: 'Nueva Persona',
-    firstName: 'Nueva',
-    lastName: 'Persona'
-  }], 'no rate key at all — not a null one');
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
+  assert.deepStrictEqual(result.ops.map(o => o.kind), ['setupTask'],
+    'the ONLY thing an unknown number may produce is a task');
 
   const [task] = result.setupTasks;
   assert.deepStrictEqual({
@@ -198,36 +209,51 @@ test('an unknown employee number creates a person and a setup task — and NO ra
     first_seen_date: task.first_seen_date,
     source: task.source
   }, {
-    employee_id: null,          // filled in by the applier from the new row
+    // Stays null now. There is no id to fill in — the person is not on the
+    // roster, which is the entire point of the task.
+    employee_id: null,
     employee_number: '0999',
     employee_name: 'Nueva Persona',
     first_seen_date: WORK_DATE,
     source: 'bbsi'
   });
-  assert.match(task.note, /Needs a pay rate/);
-  assert.match(task.note, /cost cannot be computed/);
 
-  // No history row: there is no rate to record. The create must come first so
-  // the task can reference the new id.
-  assert.deepStrictEqual(result.ops.map(o => o.kind), ['create', 'setupTask']);
+  // The note has to carry three facts, because a task that only says "unknown
+  // number" leaves somebody to guess at all three.
+  assert.match(task.note, /NOT on the roster/, 'what happened');
+  assert.match(task.note, /Nothing was created/, 'and what did NOT happen');
+  assert.match(task.note, /hours ARE imported and are costed at \$0/,
+    'the consequence — silent until somebody acts');
+  assert.match(task.note, /different number/,
+    'and the Cyle case: correct the existing record rather than adding a second');
+
   assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
 });
 
-test('two rows for the same unknown number produce one create and one setup task', () => {
+test('the hours still import for an unknown number — only the person is refused', () => {
+  // Dropping the hours would make the day's totals quietly understate the week,
+  // which is worse than an unmatched row. payroll-lib.buildImport writes the
+  // daily_hours row and flags it `unknown_employee`; that is unchanged, and
+  // this pins that the two decisions stay separate.
+  const lib = require('../netlify/functions/payroll-lib');
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'netlify', 'functions', 'payroll-lib.js'), 'utf8');
+  assert.match(src, /flags\.push\('unknown_employee'\)/,
+    'an unmatched row is flagged, not dropped');
+  assert.ok(!/continue;\s*\/\/ unknown/.test(src), 'and never skipped');
+  void lib;
+});
+
+test('two rows for the same unknown number produce one setup task, not two', () => {
   const result = plan([
     fileRow('0999', 23.75, { first_name: 'Nueva', last_name: 'Persona' }),
     fileRow('0999', 25.00, { first_name: 'Nueva', last_name: 'Persona' })
   ]);
 
-  assert.strictEqual(result.creates.length, 1);
   assert.strictEqual(result.setupTasks.length, 1);
   assert.strictEqual(result.skipped.duplicateInFile, 1);
-  // The two rows differ only in a rate nobody reads, so which one wins cannot
-  // matter any more — but the dedupe still has to happen, or the create would
-  // be attempted twice against a unique employee_number.
-  assert.ok(!('rate' in result.creates[0]));
+  assert.strictEqual(result.creates, undefined);
 });
-
 
 // ============================================================
 // Salaried staff are outside this flow
@@ -394,7 +420,7 @@ test('a file rate can no longer outrank the stored wage', () => {
 test('an unpadded number in the file matches a padded roster record', () => {
   // 0319 on the roster, '319' in the file.
   const result = plan([fileRow('319', 26.00)]);
-  assert.deepStrictEqual(result.creates, [], 'must not auto-create a duplicate');
+  assert.strictEqual(result.creates, undefined, 'the plan cannot create anybody');
   assert.strictEqual(result.skipped.unchanged, 1);
 });
 
@@ -403,7 +429,7 @@ test('a padded number in the file matches an unpadded roster record', () => {
   // what keeps this from auto-creating a duplicate of somebody already there,
   // and that is the whole job of the plan now.
   const result = plan([fileRow('0905', 27.00)]);
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
   assert.strictEqual(result.skipped.unchanged, 1);
 });
 
@@ -412,7 +438,7 @@ test('a terminated employee still in the file is not re-created', () => {
   // on the roster, so the one thing this plan does — create people it has never
   // heard of — must not fire for them.
   const result = plan([fileRow('0400', 22.00)]);
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
   assert.strictEqual(result.skipped.unchanged, 1);
 });
 
@@ -470,6 +496,11 @@ function fakeWriters(overrides = {}) {
     // history op that fired. Remove the stub and that test stops being able to
     // see the thing it checks for.
     insertWageHistory: async rows => { calls.push(['history', rows[0]]); return rows; },
+    // BOTH of these are stubs for writers payroll-db no longer has, and both are
+    // kept deliberately as traps rather than tidied away. If the applier ever
+    // regains a branch that calls one, these record the call and the tests below
+    // see it. Delete them and the tests stop being able to detect the thing they
+    // exist to detect.
     createEmployee: async row => {
       calls.push(['create', row]);
       return { id: `new-${row.employee_number}`, ...row };
@@ -482,65 +513,65 @@ function fakeWriters(overrides = {}) {
 
 
 
-test('one bad create does not stop the rest of the day', async () => {
-  // The applier's isolation still matters: two new arrivals in one file, and
-  // the first failing must not cost the second its row. There is no wage update
-  // to fail any more, so the failure under test is the create.
+test('the applier cannot create an employee, whatever the plan says', async () => {
+  // The safety property, asserted against the APPLIER rather than the planner.
+  // planWageSync no longer emits a create op — but a planner and an applier can
+  // drift, and the applier is the last thing between a vendor file and the
+  // roster. Hand it the exact op shape the deleted branch used to handle.
+  const { calls, writers } = fakeWriters();
+  const applied = await applyWageSync({
+    workDate: '2026-08-25',
+    ops: [{ kind: 'create', employeeNumber: '0999',
+            create: { employeeNumber: '0999', name: 'Nueva Persona' } }],
+    skipped: {}
+  }, writers);
+
+  assert.deepStrictEqual(calls, [], 'the applier created an employee');
+  assert.strictEqual(applied.created, undefined,
+    '`created` is gone from the shape — an always-empty array reads as "nobody new today"');
+  assert.strictEqual(applied.errors.length, 1, 'and an op it does not know is reported, not swallowed');
+  assert.match(applied.errors[0], /Unknown op kind "create"/);
+});
+
+test('payroll-db has no employee-creating writer left', async () => {
+  // Deleted, not deprecated. An employee-creating writer sitting in the module
+  // the hourly ingest already imports is one plan change away from firing, and
+  // the bug it caused is invisible on every screen.
+  const payrollDb = require('../netlify/functions/payroll-db');
+  assert.strictEqual(payrollDb.createEmployee, undefined,
+    'the service-key employee writer is back');
+});
+
+test('a failed setup task for one person does not cost another theirs', async () => {
+  // The applier's per-person isolation still matters — two unknown numbers in
+  // one file, and the first failing must not lose the second its task.
   let call = 0;
   const { calls, writers } = fakeWriters({
-    createEmployee: async (row) => {
+    upsertSetupTask: async (row) => {
       if (++call === 1) throw new Error('supabase exploded');
-      calls.push(['create', row]);
-      return { id: 'new-' + row.employee_number, ...row };
+      calls.push(['setupTask', row]);
+      return row;
     }
   });
   const applied = await applyWageSync(
     plan([fileRow('0998', 26.00, { last_name: 'One' }),
           fileRow('0999', 32.00, { last_name: 'Two' })]), writers);
 
-  assert.strictEqual(applied.created.length, 1);
+  assert.strictEqual(applied.setupTasks, 1);
   assert.strictEqual(applied.errors.length, 1);
-  assert.deepStrictEqual(calls.filter(c => c[0] === 'create').map(c => c[1].employee_number),
-    ['0999']);
+  assert.deepStrictEqual(calls.map(c => c[1].employee_number), ['0999']);
 });
 
-test('the applier fills in the new employee id the plan could not know', async () => {
+test('the setup task keeps a null employee_id, because there is no row to point at', async () => {
+  // The applier used to fill this in from the row it had just inserted. It
+  // inserts nothing now, and null is the honest answer: the person is not on
+  // the roster, which is what the task is for.
   const { calls, writers } = fakeWriters();
-  const applied = await applyWageSync(
-    plan([fileRow('0999', 23.75, { first_name: 'Nueva', last_name: 'Persona' })]), writers);
+  await applyWageSync(plan([fileRow('0999', 26.00, { last_name: 'Persona' })]), writers);
 
-  // Two ops, not three: no history row, because no rate was read.
-  assert.deepStrictEqual(calls.map(c => c[0]), ['create', 'setupTask']);
-
-  const created = calls[0][1];
-  assert.strictEqual(created.employee_number, '0999');
-  assert.strictEqual(created.status, 'Active');
-  assert.strictEqual(created.department, null);
-  assert.strictEqual(created.cost_class, null);
-  assert.strictEqual(created.position_group, null);
-  // NO WAGE. The person arrives with no rate and cannot be costed until
-  // somebody types one; the setup task is what says so.
-  assert.ok(created.wage === null || created.wage === undefined,
-    'the create must not invent a rate: ' + JSON.stringify(created.wage));
-
-  assert.strictEqual(calls[1][1].employee_id, 'new-0999');
-  assert.deepStrictEqual(applied.created, [{
-    employeeNumber: '0999', name: 'Nueva Persona', firstName: 'Nueva',
-    lastName: 'Persona', employeeId: 'new-0999'
-  }]);
-});
-
-test('a failed create blocks the setup task that references it', async () => {
-  const { calls, writers } = fakeWriters({
-    createEmployee: async () => { throw new Error('cost_class does not exist'); }
-  });
-  const applied = await applyWageSync(plan([fileRow('0999', 23.75)]), writers);
-
-  assert.deepStrictEqual(calls, []);
-  assert.strictEqual(applied.setupTasks, 0);
-  assert.strictEqual(applied.errors.length, 1);
-  // One dependent op now, not two — the history row went with the rate.
-  assert.strictEqual(applied.blocked.length, 1);
+  const [[, task]] = calls.filter(c => c[0] === 'setupTask');
+  assert.strictEqual(task.employee_id, null);
+  assert.strictEqual(task.employee_number, '0999');
 });
 
 test('the import has no way to write a rate at all', async () => {
@@ -564,7 +595,11 @@ test('the import has no way to write a rate at all', async () => {
   }, writers);
 
   assert.deepStrictEqual(calls, [], 'an update op wrote something');
-  assert.deepStrictEqual(applied.errors, []);
+  // Reported now rather than silently ignored. An op the applier does not know
+  // means the plan and the applier have drifted apart, and writing nothing
+  // while saying nothing is how that goes unnoticed for a month.
+  assert.strictEqual(applied.errors.length, 1);
+  assert.match(applied.errors[0], /Unknown op kind "update"/);
   // `flagged` and `historyWritten` are gone from the applied shape, along with
   // the 'history' op branch and insertWageHistory. Absent, not empty: there is
   // nothing for a caller to read as "none flagged today".
@@ -579,7 +614,8 @@ test('the import has no way to write a rate at all', async () => {
     skipped: {}
   }, writers);
   assert.deepStrictEqual(calls, [], 'a history op wrote something');
-  assert.deepStrictEqual(second.errors, []);
+  assert.strictEqual(second.errors.length, 1);
+  assert.match(second.errors[0], /Unknown op kind "history"/);
 });
 
 test('a plan with nothing in it makes no requests at all', async () => {
@@ -705,7 +741,7 @@ test('planWageSync still skips a post-migration salaried person, and counts them
                       { employees: roster });
 
   assert.strictEqual(result.updates, undefined, 'the plan must not carry a rate-update array at all');
-  assert.deepStrictEqual(result.creates, []);
+  assert.strictEqual(result.creates, undefined, 'the plan has no creates key at all');
   assert.deepStrictEqual(result.ops, []);
   assert.strictEqual(result.skipped.salaried, 2);
 });

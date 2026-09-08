@@ -640,16 +640,21 @@ function describeWageSync(sync) {
     for (const err of sync.errors || [sync.error]) lines.push(`    ${err}`);
   }
 
-  for (const create of sync.created || []) {
-    // NO RATE IN THIS SENTENCE. It used to read `at ${rate}/hr` from
-    // create.rate, which the plan no longer carries — Number(undefined) is NaN,
-    // so the alert would have told somebody a new hire was hired at NaN/hr.
-    // What they need to know is the opposite: that there is no rate yet.
+  // `sync.created` is gone: the import no longer adds anybody to the roster.
+  // What it reports instead is the number it did not recognise — which is a
+  // question for a person, not a row this job may create on its own.
+  //
+  // NO RATE IN THIS SENTENCE, still. It once read `at ${rate}/hr` from a field
+  // the plan stopped carrying, so the alert told somebody a new hire was hired
+  // at NaN/hr. What matters is the opposite: nothing about this person is known.
+  for (const task of sync.unknownNumbers || []) {
     lines.push(
-      `  NEW EMPLOYEE — Emp # ${create.employeeNumber} ${create.name || '(no name)'}, ` +
-      `created from the file with NO PAY RATE and no department, cost class or ` +
-      `position group. Set their rate on Salaries & Wages — until somebody does, ` +
-      `their cost cannot be computed at all.`
+      `  NOT ON THE ROSTER — Emp # ${task.employeeNumber} ${task.name || '(no name)'} is in the ` +
+      `file and is not in the app. NOTHING WAS CREATED: the import does not add people. ` +
+      `Their hours ARE imported and are costed at $0 everywhere until this is resolved. ` +
+      `Add them on the Employees tab with this employee number — or, if they are already ` +
+      `on the roster under a DIFFERENT number, correct the number on their existing record ` +
+      `rather than adding a second one.`
     );
   }
 
@@ -723,19 +728,33 @@ function mergeRowFlags(rows, extraFlags) {
 // `flagged` is still read below so a plan that ever populates it again is not
 // silently dropped, but nothing populates it now.
 //
-// `employees` is the roster snapshot the whole run shares, and it is MUTATED
-// here on purpose — see the create loop at the bottom.
+// `employees` IS NO LONGER MUTATED. It used to be: a person created from
+// Monday's file had to be folded into the shared roster snapshot so Tuesday's
+// file, processed in the same back-fill run, did not create them a second time.
+// Nothing is created any more, so there is nothing to fold in — and the same
+// unknown number simply raises the same setup task each day, which
+// upsertSetupTask de-duplicates on unique(employee_number).
 async function syncWages(item, rows, employees, d, log) {
   try {
     const plan = d.planWageSync({ fileRows: rows, employees, workDate: item.workDate });
     const applied = await d.applyWageSync(plan);
     item.wageSync = applied;
 
-    const created = applied.created || [];
+    // The plan's setup tasks ARE the unknown numbers — one per person the
+    // roster does not have. Read from the plan rather than from `applied`,
+    // because the applier reports how many it wrote and this needs to say who.
+    const unknown = (plan.setupTasks || []).map(t => ({
+      employeeNumber: t.employee_number, name: t.employee_name
+    }));
+    applied.unknownNumbers = unknown;
+
     const flagged = applied.flagged || [];
     const errors = applied.errors || [];
 
-    if (created.length) {
+    if (unknown.length) {
+      // The flag name is unchanged so the ledger stays queryable across the
+      // change, but it no longer means "a row was created" — it means "a number
+      // in the file is not on the roster", which is the thing worth a look.
       addFlag(item, 'new_employee');
       item.alert = true;
     }
@@ -748,29 +767,8 @@ async function syncWages(item, rows, employees, d, log) {
       item.alert = true;
     }
 
-    log(`Arrival check ${item.workDate}: ${created.length} employee(s) created, ` +
-        `${applied.setupTasks || 0} setup task(s), ${errors.length} error(s).`);
-
-    // A back-fill run imports several days from one roster read. Without this,
-    // a person created from Monday's file is still unknown when Tuesday's file
-    // is processed in the same run, and would be created a second time — two
-    // employees rows for one employee number. Fold them into the shared
-    // snapshot so the rest of the run knows they exist.
-    for (const person of created) {
-      employees.push({
-        id: person.employeeId,
-        name: person.name,
-        employee_number: person.employeeNumber,
-        department: null,
-        // NULL, matching what was actually written. This carried the rate the
-        // plan had just applied; there is no rate now, and
-        // Number(undefined).toFixed(2) is the string "NaN" — which would go
-        // into the in-memory roster and be read as a rate by anything in the
-        // rest of the run.
-        wage: null,
-        status: 'Active'
-      });
-    }
+    log(`Arrival check ${item.workDate}: ${unknown.length} number(s) not on the roster ` +
+        `(nothing created), ${applied.setupTasks || 0} setup task(s), ${errors.length} error(s).`);
   } catch (err) {
     // The import itself stands — the hours are written and the status stays
     // 'imported'. This says, loudly, that the wages behind them did not move.

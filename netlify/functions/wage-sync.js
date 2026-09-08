@@ -343,7 +343,8 @@ function planWageSync({ fileRows = [], employees = [], workDate = null } = {}) {
     if (key && !byNumber.has(key)) byNumber.set(key, emp);
   }
 
-  const creates = [];
+  // NO `creates`. The import never writes to `employees` — see the block below
+  // the roster miss for why that changed on 2026-09-08.
   const setupTasks = [];
   const ops = [];
 
@@ -399,7 +400,7 @@ function planWageSync({ fileRows = [], employees = [], workDate = null } = {}) {
       continue;
     }
 
-    // ---- somebody the app has never heard of ----
+    // ---- an employee number the roster does not have ----
     //
     // THIS IS ALL THAT IS LEFT OF THE WAGE SYNC, and it is not about wages.
     //
@@ -410,25 +411,43 @@ function planWageSync({ fileRows = [], employees = [], workDate = null } = {}) {
     // this feed could exist, and nobody maintains it there any more.
     // employees.wage is the record of truth and is edited in the app.
     //
-    // What survives is arrival detection, which was never about money. A person
-    // in the file that the roster does not have is a new hire whose hours are
-    // landing nowhere, and the setup task is how anybody finds out. They are
-    // created with NO rate — somebody has to type one before their cost can be
-    // computed, and the task says so.
+    // THE IMPORT NO LONGER CREATES ANYBODY. Until 2026-09-08 an unrecognised
+    // number produced a new `employees` row. It was well intentioned — a new
+    // hire's hours were landing nowhere and somebody had to notice — but the
+    // match is on employee_number and NOTHING else, deliberately, because name
+    // matching would move one person's hours onto another. So the roster could
+    // not tell "a new hire" from "somebody already on the roster under a
+    // different number", and it created a row either way.
+    //
+    // It did exactly that: a second Cyle Coburn appeared beside the real one,
+    // because the file's number for him did not match the number on his row.
+    // From then on his hours attached to an empty duplicate with no rate and
+    // were costed at $0 in every report, while the row carrying his rate saw no
+    // hours at all. Nothing about that reads as wrong on a screen.
+    //
+    // A vendor file is not allowed to decide who works here. The roster is
+    // maintained in the app, by a person, and this import is now read-only
+    // against it.
+    //
+    // THE HOURS STILL IMPORT. payroll-lib.buildImport writes the daily_hours row
+    // regardless and flags it `unknown_employee`; that is unchanged and
+    // deliberate. Dropping the hours would make the day's totals quietly
+    // understate the week, which is the one thing worse than an unmatched row.
+    // They cost $0 until the number is reconciled, and the task below is what
+    // says so.
     if (!employee) {
-      const create = { employeeNumber, name, firstName: first, lastName: last };
-      creates.push(create);
-      ops.push({ kind: 'create', employeeNumber, create });
-
       const task = {
         employee_id: null,
         employee_number: employeeNumber,
         employee_name: name,
         first_seen_date: effectiveDate,
         source: SOURCE,
-        note: `Auto-created from the BBSI daily file for ${effectiveDate}. Needs a pay rate, ` +
-              `department, cost class and position group. Until the rate is set on ` +
-              `Salaries & Wages this person's cost cannot be computed at all.`
+        note: `Emp # ${employeeNumber} (${name}) is in the BBSI daily file for ${effectiveDate} ` +
+              `and is NOT on the roster. Nothing was created — the import does not add people. ` +
+              `Their hours ARE imported and are costed at $0 in every report until this is ` +
+              `resolved. Either add them on the Employees tab with this employee number, or — if ` +
+              `they are already on the roster under a different number — correct the number on ` +
+              `their existing record rather than adding a second one.`
       };
       setupTasks.push(task);
       ops.push({ kind: 'setupTask', employeeNumber, row: task });
@@ -454,7 +473,7 @@ function planWageSync({ fileRows = [], employees = [], workDate = null } = {}) {
 
   return {
     workDate: effectiveDate,
-    creates,
+
     setupTasks,
     skipped,
     ops

@@ -513,19 +513,18 @@ async function restampDepartments(fromDate, toDate) {
 // against whatever is actually being recorded, not resurrected against a shape
 // built for a vendor column that no longer exists.
 
-async function createEmployee(row) {
-  const rows = await requestRows('POST', 'employees', { body: row });
-  const created = Array.isArray(rows) ? rows[0] || null : rows;
-  if (!created || !created.id) {
-    // return=representation always echoes what it wrote, so no id back means no
-    // row was written — and the wage_history row that follows would then be
-    // attached to nobody.
-    throw new Error(
-      `Creating employee ${row && row.employee_number} returned no row — the insert did not take effect.`
-    );
-  }
-  return created;
-}
+// createEmployee is DELETED, not deprecated. 2026-09-08.
+//
+// It was the only path by which the payroll import could add a person to the
+// roster, and it is gone rather than left unreferenced: an employee-creating
+// writer sitting in the module that the ingest already imports is one plan
+// change away from firing again, and the bug it caused (a duplicate Cyle
+// Coburn, whose hours then costed at $0) is invisible on every screen.
+//
+// The roster is maintained in the app by a person. A vendor file does not get
+// to decide who works here. If a genuine bulk-add is ever needed it belongs
+// behind the session-authed /api/data write path, with the column gate and the
+// history writes that path already has — not here, under the service key.
 
 // unique(employee_number) means one open arrival per person. ignore-duplicates
 // (ON CONFLICT DO NOTHING) rather than merge-duplicates on purpose: a re-import
@@ -562,14 +561,18 @@ async function upsertSetupTask(row) {
 // writers is injectable so this can be tested without a network.
 async function applyWageSync(plan, writers = {}) {
   const w = {
-    createEmployee:     writers.createEmployee     || createEmployee,
     upsertSetupTask:    writers.upsertSetupTask    || upsertSetupTask
   };
 
   const applied = {
     workDate: (plan && plan.workDate) || null,
     thresholdPct: plan && plan.thresholdPct !== undefined ? plan.thresholdPct : null,
-    created: [],
+    // `created` is gone with the create op. It was always a list of people this
+    // import had added to the roster, and the import no longer adds anybody.
+    // Keeping an always-empty array would read as "nobody new today" rather
+    // than "this cannot happen", which is the more dangerous of the two — the
+    // same argument that removed `updates`, `history` and `flagged` from the
+    // plan when the file's rate went.
     setupTasks: 0,
     skipped: (plan && plan.skipped) || null,
     errors: [],
@@ -579,16 +582,13 @@ async function applyWageSync(plan, writers = {}) {
   const ops = (plan && plan.ops) || [];
   if (!ops.length) return applied;
 
-  const createdIds = new Map();
   const blocked = new Set();
 
-  // A setup task for a brand-new person is planned with a null employee_id,
-  // because the id does not exist until the insert returns. This used to serve
-  // the planned wage_history row too, which is gone with the file's rate.
-  const withId = row => ({
-    ...row,
-    employee_id: row.employee_id || createdIds.get(row.employee_number) || null
-  });
+  // A setup task is planned with a null employee_id and now KEEPS it. There is
+  // no id to fill in: the person is not on the roster, which is the whole point
+  // of the task. createdIds — a map from employee number to the id of the row
+  // this import had just inserted — went with the create op.
+  const withId = row => ({ ...row, employee_id: row.employee_id || null });
 
   for (const op of ops) {
     const key = op.employeeNumber || null;
@@ -598,29 +598,18 @@ async function applyWageSync(plan, writers = {}) {
     }
 
     try {
-      if (op.kind === 'create') {
-        const created = await w.createEmployee({
-          name: op.create.name,
-          employee_number: op.create.employeeNumber,
-          // NULL. The plan carries no rate any more — the file's was a
-          // transcription nobody maintains — and the two-decimal helper this
-          // used to call returns the string "NaN" for undefined, which would go
-          // into employees.wage and read as a rate to anything that looked at
-          // it. Caught by the applier's own test.
-          wage: null,
-          status: 'Active',
-          // The bullpen, spelled out rather than left to the column defaults:
-          // these three being null is what employee_setup_tasks is queuing.
-          department: null,
-          cost_class: null,
-          position_group: null
-        });
-        createdIds.set(op.create.employeeNumber, created.id);
-        applied.created.push({ ...op.create, employeeId: created.id });
-
-      } else if (op.kind === 'setupTask') {
+      // 'create' is gone. The import is READ-ONLY against `employees` as of
+      // 2026-09-08 — it may not decide who works here. planWageSync no longer
+      // emits the op; this branch would be unreachable and is removed rather
+      // than left behind, because a dormant employee-creating writer one plan
+      // change away from firing is not a safety margin.
+      if (op.kind === 'setupTask') {
         await w.upsertSetupTask(withId(op.row));
         applied.setupTasks++;
+      } else {
+        // An op the applier does not know is a plan and an applier that have
+        // drifted apart. Recorded, never guessed at.
+        applied.errors.push(`Unknown op kind ${JSON.stringify(op.kind)} for Emp # ${key || '(unknown)'} — not applied.`);
       }
     } catch (err) {
       if (key) blocked.add(key);
@@ -708,7 +697,6 @@ module.exports = {
   fetchOvertime,
   // Wage sync writers, plus the applier that orders them. The decisions live in
   // wage-sync.js; nothing here decides anything.
-  createEmployee,
   upsertSetupTask,
   applyWageSync,
   getProcessedEmail,

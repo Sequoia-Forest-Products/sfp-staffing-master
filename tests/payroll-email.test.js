@@ -985,14 +985,16 @@ test('an unauthorised call is still 401 before anything else', async () => {
 });
 
 
-test('an employee number the roster does not have is an arrival, and alerts', async () => {
-  // The one thing planWageSync still does. It is not about money — the file's
-  // rate is not read — it is that somebody is working whose hours are landing
-  // nowhere, and nothing else in the system would say so.
+test('an employee number the roster does not have raises a task and creates NOBODY', async () => {
+  // THIS TEST ASSERTED A CREATION until 2026-09-08. The import used to add the
+  // person to `employees`, and it could not tell a new hire from somebody
+  // already on the roster under a different number — the match is on
+  // employee_number and nothing else, deliberately, because name matching would
+  // move one person's hours onto another. A second Cyle Coburn is what that
+  // produced, with his hours costing $0 against an empty duplicate.
   //
-  // applyWageSync is stubbed here and nowhere else in this file: every other
-  // run leaves the roster knowing everybody, so the plan carries no ops and the
-  // real applyWageSync returns without making a request. This one has an op.
+  // The roster is maintained by a person now. This is what is left: notice, and
+  // say so loudly enough to act on.
   const plans = [];
   const { result, calls } = await harness([message()], {
     fetchEmployees: async () => [{ id: 'e1', employee_number: '0101', department: 'Production' }],
@@ -1000,9 +1002,8 @@ test('an employee number the roster does not have is an arrival, and alerts', as
       plans.push(plan);
       return {
         workDate: plan.workDate,
-        created: plan.creates.map((c, i) => ({ ...c, employeeId: `new-${i}` })),
-        ratesUpdated: 0, historyWritten: 0, setupTasks: plan.setupTasks.length,
-        flagged: [], skipped: plan.skipped, errors: [], blocked: []
+        setupTasks: plan.setupTasks.length,
+        skipped: plan.skipped, errors: [], blocked: []
       };
     }
   });
@@ -1012,13 +1013,13 @@ test('an employee number the roster does not have is an arrival, and alerts', as
   assert.strictEqual(result.alertRequired, true);
   assert.strictEqual(calls.alerts.length, 1);
 
-  // The arrival is 0202, and they arrive with NO rate — the file's Pay Rate
-  // column is not consulted, and a create that carried one would be the old
-  // behaviour coming back.
   const plan = plans[0];
-  assert.strictEqual(plan.creates.length, 1);
-  assert.strictEqual(plan.creates[0].employeeNumber, '0202');
-  assert.ok(!('rate' in plan.creates[0]), 'a create must not carry a rate');
+  assert.strictEqual(plan.creates, undefined, 'the plan cannot create anybody');
+  assert.deepStrictEqual(plan.ops.map(o => o.kind), ['setupTask'],
+    'a task is the only thing an unknown number may produce');
+  assert.strictEqual(plan.setupTasks.length, 1);
+  assert.strictEqual(plan.setupTasks[0].employee_number, '0202');
+
   // Not "an empty array" — ABSENT. The plan carries no rate-update or
   // wage_history field at all, so there is nothing for a future caller to read
   // as "no changes today" when the truth is that this cannot happen.
@@ -1030,13 +1031,13 @@ test('an employee number the roster does not have is an arrival, and alerts', as
   // 0101 is on the roster: known, and there is nothing left to do with them.
   assert.strictEqual(plan.skipped.unchanged, 1);
 
-  // The alert a human actually reads. It used to say "at ${rate}/hr" from a
-  // field the plan no longer carries, which formats as NaN — an email telling
-  // somebody a new hire was taken on at NaN an hour.
+  // The alert a human actually reads. It has to carry three facts, or somebody
+  // is left guessing at all three.
   const body = calls.alerts[0].body;
-  assert.match(body, /NEW EMPLOYEE — Emp # 0202/);
-  assert.match(body, /NO PAY RATE/);
-  assert.match(body, /Salaries & Wages/);
+  assert.match(body, /NOT ON THE ROSTER — Emp # 0202/);
+  assert.match(body, /NOTHING WAS CREATED/);
+  assert.match(body, /costed at \$0/, 'the consequence of leaving it');
+  assert.match(body, /DIFFERENT number/, 'and the Cyle case, named');
   assert.ok(!/NaN/.test(body), 'the alert must not contain NaN anywhere');
   assert.ok(!/\/hr/.test(body), 'and must not quote a rate it does not have');
 });
