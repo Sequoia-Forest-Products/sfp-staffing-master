@@ -117,7 +117,11 @@ const STALE_DATE_WARNING_DAYS = 7;
 // match is on the number, because BBSI could rename the account tomorrow.
 const NON_EMPLOYEE_NUMBERS = new Map([
   ['amatthews', 'April Matthews — the BBSI staff account that generates the daily export. ' +
-                'Confirmed by Peter Stroble on 2026-09-08 as not an SFP employee.']
+                'Confirmed by Peter Stroble on 2026-09-08 as not an SFP employee.'],
+  ['admin',     'zSFP-admin zSFP-user — the Timenet administrative account for this site, not a ' +
+                'person. Confirmed by Peter Stroble on 2026-09-08. The leading z is a sort trick ' +
+                'pushing system accounts to the bottom of a name-ordered list; Peter checked the ' +
+                'same day and confirmed these two are the only ones.']
 ]);
 
 // Case-insensitive, and that is not defensive habit — it is specific to this

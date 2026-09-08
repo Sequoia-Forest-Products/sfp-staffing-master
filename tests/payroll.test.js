@@ -929,6 +929,40 @@ test('April Matthews is on the list, and the file cannot re-case her out of it',
   assert.strictEqual(isNonEmployeeNumber(null), false);
 });
 
+test('the Timenet admin account is on the list too', () => {
+  // zSFP-admin zSFP-user, employee # 'admin'. The leading z is a sort trick that
+  // pushes system accounts to the bottom of a name-ordered list. Peter checked
+  // on 2026-09-08 and confirmed these two are the only ones — so this is a
+  // closed set today, and a list rather than a special case for April because
+  // BBSI adding a third is a thing that can happen without asking us.
+  for (const spelling of ['admin', 'ADMIN', 'Admin']) {
+    assert.strictEqual(isNonEmployeeNumber(spelling), true);
+  }
+  // Not a prefix or substring match: a real employee whose number merely
+  // contained these letters must not be silently dropped.
+  assert.strictEqual(isNonEmployeeNumber('0admin'), false);
+  assert.strictEqual(isNonEmployeeNumber('administrator'), false);
+});
+
+test('two non-people in one file are both dropped and both counted', () => {
+  const built = buildImport({
+    fileBuffer: buildPayrollXlsx([
+      row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 245),
+      row('amatthews', 'Matthews', 'April', 'No', 0, 8, 2, 10, 0),
+      row('admin', 'zSFP-user', 'zSFP-admin', 'No', 0, 4, 0, 4, 0)
+    ]),
+    workDate: MONDAY,
+    employees: ROSTER, timeZone: TZ
+  });
+
+  assert.deepStrictEqual(built.rows.map(r => r.employee_number), ['0319']);
+  assert.strictEqual(built.counts.nonEmployeeSkipped, 2);
+  assert.strictEqual(built.rows.reduce((s, r) => s + Number(r.total_hours || 0), 0), 10,
+    'fourteen hours of nobody must not be in the day');
+  assert.strictEqual(built.anomalies.filter(x => x.type === 'non_employee_row').length, 2,
+    'each one is named separately — a combined count is not actionable');
+});
+
 test('her row is dropped from a real file, hours and all', () => {
   const built = buildImport({
     fileBuffer: buildPayrollXlsx([

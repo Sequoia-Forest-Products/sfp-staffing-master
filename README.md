@@ -802,12 +802,17 @@ Adding an entry silently removes somebody's hours from every report, so a test r
 carry **who confirmed it and when** in its own value, rather than in a commit message nobody will
 find later.
 
-One entry today: **`amatthews`** — April Matthews, the BBSI staff account that builds the export.
-Note the shape. Real employees have four-digit zero-padded ids; this is a login, and
+Two entries today, and Peter confirmed on 2026-09-08 that these are the only ones:
+**`amatthews`** (April Matthews, the BBSI staff account that builds the export) and **`admin`**
+(zSFP-admin zSFP-user, the Timenet administrative account for the site).
+Note the shape. Real employees have four-digit zero-padded ids; both of these are logins, and
 `normalizeEmpNumber` returns non-numeric values unchanged, so the key is the literal string. The
 lookup is therefore **case-insensitive**: `AMatthews` and `amatthews` are the same account, and an
-exact-match miss would be silent — the row would flow through as an unrecognised employee, her hours
-back in the totals and the daily "NOT ON THE ROSTER" alert back with them.
+exact-match miss would be silent — the row would flow through as an unrecognised employee, those
+hours back in the totals and the daily "NOT ON THE ROSTER" alert back with them.
+
+Matching is exact-after-lowercasing, not prefix or substring: `0admin` and `administrator` are not
+matched, so a real employee whose number merely contains those letters is never silently dropped.
 
 ### A day nobody worked is not a missing day
 
