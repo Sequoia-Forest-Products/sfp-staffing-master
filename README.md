@@ -797,9 +797,17 @@ a real person whose hours belong in the week's totals, so those rows import and 
 `unknown_employee`. A number on this list is known not to be a person, and its hours are noise.
 
 Dropped, never silent — each records a `non_employee_row` anomaly naming the row, the reason, and
-where to reverse it, and `counts.nonEmployeeSkipped` is reported apart from every other skip. A test
-asserts the list is **empty in the repository**, so a number can only arrive with a human
-confirmation attached: adding one silently removes somebody's hours from every report.
+where to reverse it, and `counts.nonEmployeeSkipped` is reported apart from every other skip.
+Adding an entry silently removes somebody's hours from every report, so a test requires each one to
+carry **who confirmed it and when** in its own value, rather than in a commit message nobody will
+find later.
+
+One entry today: **`amatthews`** — April Matthews, the BBSI staff account that builds the export.
+Note the shape. Real employees have four-digit zero-padded ids; this is a login, and
+`normalizeEmpNumber` returns non-numeric values unchanged, so the key is the literal string. The
+lookup is therefore **case-insensitive**: `AMatthews` and `amatthews` are the same account, and an
+exact-match miss would be silent — the row would flow through as an unrecognised employee, her hours
+back in the totals and the daily "NOT ON THE ROSTER" alert back with them.
 
 ### A day nobody worked is not a missing day
 

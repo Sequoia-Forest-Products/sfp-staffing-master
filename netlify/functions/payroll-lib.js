@@ -112,13 +112,34 @@ const STALE_DATE_WARNING_DAYS = 7;
 // import screen and the alert both say the row was skipped and why. Adding a
 // number here is a decision somebody has to be able to find and reverse.
 //
-// Keyed on employee_number, normalised the same way every other lookup is. Names
-// are for the reader — the match is on the number, because BBSI could rename the
-// account tomorrow.
+// Keyed on employee_number, normalised the same way every other lookup is, and
+// then LOWERCASED — see isNonEmployeeNumber below. Names are for the reader; the
+// match is on the number, because BBSI could rename the account tomorrow.
 const NON_EMPLOYEE_NUMBERS = new Map([
-  // ['0000', 'April Matthews — BBSI staff account that generates the daily
-  //          export. Confirmed not an SFP employee, 2026-09-08.'],
+  ['amatthews', 'April Matthews — the BBSI staff account that generates the daily export. ' +
+                'Confirmed by Peter Stroble on 2026-09-08 as not an SFP employee.']
 ]);
+
+// Case-insensitive, and that is not defensive habit — it is specific to this
+// list.
+//
+// normalizeEmpNumber zero-pads a numeric id and returns anything else
+// unchanged, so a real employee's key is '0319' and case cannot arise. This
+// entry is 'amatthews', a login-shaped string, and those get re-cased by
+// whatever produced them: 'AMatthews' and 'AMATTHEWS' are the same account and
+// would both miss an exact-match lookup. A miss here is not a loud failure —
+// the row would simply flow through as an unrecognised employee again, her
+// hours back in the totals and the daily "NOT ON THE ROSTER" alert back with
+// them. Silent regressions are the ones worth spending a toLowerCase on.
+function isNonEmployeeNumber(employeeNumber) {
+  const key = String(employeeNumber == null ? '' : employeeNumber).trim().toLowerCase();
+  return key !== '' && NON_EMPLOYEE_NUMBERS.has(key);
+}
+
+function nonEmployeeReason(employeeNumber) {
+  return NON_EMPLOYEE_NUMBERS.get(
+    String(employeeNumber == null ? '' : employeeNumber).trim().toLowerCase()) || '';
+}
 
 // ============================================================
 // NUMBERS AND IDS
@@ -451,14 +472,14 @@ function buildImport({
     // A row that is not a person. See NON_EMPLOYEE_NUMBERS above: checked before
     // the duplicate and salaried tests so it cannot be counted under either, and
     // before the row is built so its hours never reach daily_hours.
-    if (NON_EMPLOYEE_NUMBERS.has(employeeNumber)) {
+    if (isNonEmployeeNumber(employeeNumber)) {
       nonEmployeeSkipped++;
       anomalies.push({
         employeeNumber,
         name: fileName,
         type: 'non_employee_row',
         detail: `Emp # ${employeeNumber} (${fileName || 'no name'}) is on the not-a-person list ` +
-                `and was skipped: ${NON_EMPLOYEE_NUMBERS.get(employeeNumber)} Their hours are ` +
+                `and was skipped: ${nonEmployeeReason(employeeNumber)} Their hours are ` +
                 `NOT imported and are in no total. Remove them from NON_EMPLOYEE_NUMBERS in ` +
                 `payroll-lib.js if this is wrong.`
       });
@@ -706,6 +727,7 @@ function buildImport({
 
 module.exports = {
   NON_EMPLOYEE_NUMBERS,
+  isNonEmployeeNumber,
   normalizeEmpNumber,
   round2,
   workDateInfo,

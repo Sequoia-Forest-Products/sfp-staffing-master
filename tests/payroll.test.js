@@ -808,7 +808,7 @@ test('buildImport refuses to run on nothing at all', () => {
 // fail the day a number is added or removed, which is a decision, not a
 // regression.
 
-const { NON_EMPLOYEE_NUMBERS } = require('../netlify/functions/payroll-lib');
+const { NON_EMPLOYEE_NUMBERS, isNonEmployeeNumber } = require('../netlify/functions/payroll-lib');
 
 function withNonEmployee(number, why, fn) {
   const had = NON_EMPLOYEE_NUMBERS.has(number);
@@ -897,12 +897,56 @@ test('an ordinary unknown number is still imported and flagged, not dropped', ()
   assert.strictEqual(built.counts.nonEmployeeSkipped, 0);
 });
 
-test('the list is empty in the repository until a number is confirmed', () => {
-  // Guards against a placeholder being committed live. A number here silently
-  // deletes somebody's hours from every report, so it may only arrive with a
-  // human confirmation attached.
-  assert.strictEqual(NON_EMPLOYEE_NUMBERS.size, 0,
-    'a number was added — if that is deliberate, update this test and say who confirmed it');
+test('every entry on the list carries who confirmed it and when', () => {
+  // This asserted the list was EMPTY until 2026-09-08, as a guard against a
+  // placeholder being committed. April Matthews is now on it, confirmed by
+  // Peter Stroble, so the guard becomes the thing it was standing in for: an
+  // entry here silently removes somebody's hours from every report, so each one
+  // has to carry its justification in the value rather than in a commit message
+  // nobody will find.
+  assert.ok(NON_EMPLOYEE_NUMBERS.size >= 1);
+  for (const [key, why] of NON_EMPLOYEE_NUMBERS) {
+    assert.strictEqual(key, key.toLowerCase(),
+      `${key} is not lowercased — isNonEmployeeNumber lowercases the lookup, so it would never match`);
+    assert.match(why, /\d{4}-\d{2}-\d{2}/, `${key} has no confirmation date`);
+    assert.ok(why.length > 40, `${key}'s reason is too thin to act on later`);
+  }
+});
+
+test('April Matthews is on the list, and the file cannot re-case her out of it', () => {
+  // She is the BBSI staff account that builds the export, not an employee. Her
+  // id is 'amatthews' — a login, not a padded number — and login-shaped strings
+  // get re-cased by whatever produced them. An exact-match lookup would miss
+  // 'AMatthews', and the miss would be SILENT: the row flows through as an
+  // unrecognised employee, her hours return to the totals, and the daily
+  // "NOT ON THE ROSTER" alert returns with them.
+  for (const spelling of ['amatthews', 'AMatthews', 'AMATTHEWS', '  amatthews  ']) {
+    assert.strictEqual(isNonEmployeeNumber(spelling), true, `${spelling} was not matched`);
+  }
+  // And a real employee number is untouched by any of it.
+  assert.strictEqual(isNonEmployeeNumber('0319'), false);
+  assert.strictEqual(isNonEmployeeNumber(''), false);
+  assert.strictEqual(isNonEmployeeNumber(null), false);
+});
+
+test('her row is dropped from a real file, hours and all', () => {
+  const built = buildImport({
+    fileBuffer: buildPayrollXlsx([
+      row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 245),
+      row('amatthews', 'Matthews', 'April', 'No', 0, 8, 2, 10, 0)
+    ]),
+    workDate: MONDAY,
+    employees: ROSTER, timeZone: TZ
+  });
+
+  assert.deepStrictEqual(built.rows.map(r => r.employee_number), ['0319']);
+  assert.strictEqual(built.counts.nonEmployeeSkipped, 1);
+  assert.strictEqual(built.rows.reduce((s, r) => s + Number(r.total_hours || 0), 0), 10,
+    'her 10 hours must not be in the day');
+
+  const [a] = built.anomalies.filter(x => x.type === 'non_employee_row');
+  assert.match(a.detail, /BBSI staff account/);
+  assert.match(a.detail, /Peter Stroble/);
 });
 
 // ============================================================
