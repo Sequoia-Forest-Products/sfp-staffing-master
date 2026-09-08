@@ -88,6 +88,39 @@ const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Satu
 const STALE_DATE_WARNING_DAYS = 7;
 
 // ============================================================
+// ROWS THAT ARE NOT PEOPLE
+// ============================================================
+//
+// The vendor's export carries at least one row that is not an employee of this
+// mill: the BBSI staff account used to build the file appears in it like anybody
+// else, with an employee number and hours.
+//
+// Left alone, such a row is counted three times over. Its hours land in
+// daily_hours and inflate the OT report's total hours and its headcount, which
+// is `people.size` over the imported rows. It never matches the roster, so from
+// 2026-09-08 it raises a "NOT ON THE ROSTER" line in the ingest alert — every
+// morning, for ever, about somebody who will never be added. And an alert that
+// is wrong every day is an alert nobody reads on the morning it is right.
+//
+// So these rows are dropped at parse time, before anything else sees them. This
+// is NOT the same decision as the unknown-employee one a few lines below: an
+// unrecognised number might be a real person whose hours belong in the totals,
+// so those rows import and are flagged. A number on this list is known not to be
+// a person, and its hours are noise.
+//
+// DROPPED, NEVER SILENT. Each one records a `non_employee_row` anomaly, so the
+// import screen and the alert both say the row was skipped and why. Adding a
+// number here is a decision somebody has to be able to find and reverse.
+//
+// Keyed on employee_number, normalised the same way every other lookup is. Names
+// are for the reader — the match is on the number, because BBSI could rename the
+// account tomorrow.
+const NON_EMPLOYEE_NUMBERS = new Map([
+  // ['0000', 'April Matthews — BBSI staff account that generates the daily
+  //          export. Confirmed not an SFP employee, 2026-09-08.'],
+]);
+
+// ============================================================
 // NUMBERS AND IDS
 // ============================================================
 
@@ -390,6 +423,7 @@ function buildImport({
   let totalRows = 0;
   let salariedSkipped = 0;
   let salariedWithHoursSkipped = 0;
+  let nonEmployeeSkipped = 0;
 
   const cell = (record, canonical) => {
     const header = mapping[canonical];
@@ -410,6 +444,23 @@ function buildImport({
         name: fileName,
         type: 'missing_employee_number',
         detail: `Row ${totalRows} has no Emp # and cannot be matched to anybody. Not imported.`
+      });
+      continue;
+    }
+
+    // A row that is not a person. See NON_EMPLOYEE_NUMBERS above: checked before
+    // the duplicate and salaried tests so it cannot be counted under either, and
+    // before the row is built so its hours never reach daily_hours.
+    if (NON_EMPLOYEE_NUMBERS.has(employeeNumber)) {
+      nonEmployeeSkipped++;
+      anomalies.push({
+        employeeNumber,
+        name: fileName,
+        type: 'non_employee_row',
+        detail: `Emp # ${employeeNumber} (${fileName || 'no name'}) is on the not-a-person list ` +
+                `and was skipped: ${NON_EMPLOYEE_NUMBERS.get(employeeNumber)} Their hours are ` +
+                `NOT imported and are in no total. Remove them from NON_EMPLOYEE_NUMBERS in ` +
+                `payroll-lib.js if this is wrong.`
       });
       continue;
     }
@@ -637,7 +688,12 @@ function buildImport({
       totalRows,
       imported: rows.length,
       salariedSkipped,
-      salariedWithHoursSkipped
+      salariedWithHoursSkipped,
+      // Counted apart from every other skip. A row that is not a person is not
+      // a salaried person, not a duplicate and not an unmatched employee, and
+      // folding it into any of those would hide the one number that says the
+      // not-a-person list is doing something.
+      nonEmployeeSkipped
     },
     totals,
     departments,
@@ -649,6 +705,7 @@ function buildImport({
 }
 
 module.exports = {
+  NON_EMPLOYEE_NUMBERS,
   normalizeEmpNumber,
   round2,
   workDateInfo,

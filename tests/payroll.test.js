@@ -792,6 +792,120 @@ test('buildImport refuses to run on nothing at all', () => {
 });
 
 // ============================================================
+// Rows that are not people
+// ============================================================
+//
+// The vendor's export carries the BBSI staff account that generates the file,
+// with an employee number and hours, exactly like an employee. Left alone it is
+// counted three times: its hours inflate the OT report's total hours and its
+// headcount, and — since the import stopped auto-creating people — it raises a
+// "NOT ON THE ROSTER" line in the alert every single morning about somebody who
+// will never be added.
+//
+// NON_EMPLOYEE_NUMBERS drops those rows at parse time. The list is empty in the
+// repository until somebody confirms a number, so these tests inject one rather
+// than depending on its contents — a test that asserted the live list would
+// fail the day a number is added or removed, which is a decision, not a
+// regression.
+
+const { NON_EMPLOYEE_NUMBERS } = require('../netlify/functions/payroll-lib');
+
+function withNonEmployee(number, why, fn) {
+  const had = NON_EMPLOYEE_NUMBERS.has(number);
+  const prior = NON_EMPLOYEE_NUMBERS.get(number);
+  NON_EMPLOYEE_NUMBERS.set(number, why);
+  try { return fn(); }
+  finally {
+    if (had) NON_EMPLOYEE_NUMBERS.set(number, prior);
+    else NON_EMPLOYEE_NUMBERS.delete(number);
+  }
+}
+
+test('a row on the not-a-person list is dropped, and its hours reach no total', () => {
+  withNonEmployee('0777', 'BBSI staff account that builds the file.', () => {
+    const built = buildImport({
+      fileBuffer: buildPayrollXlsx([
+        row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 0, 10, 245),
+        row('0777', 'Matthews', 'April', 'No', 0, 8, 2, 10, 0)
+      ]),
+      workDate: MONDAY,
+      employees: ROSTER, timeZone: TZ
+    });
+
+    assert.strictEqual(built.rows.length, 1, 'only the real employee is imported');
+    assert.strictEqual(built.rows[0].employee_number, '0319');
+    assert.strictEqual(built.counts.nonEmployeeSkipped, 1);
+
+    // The whole point: their hours are in NO total. 10 of them, not 20.
+    const hours = built.rows.reduce((s, r) => s + Number(r.total_hours || 0), 0);
+    assert.strictEqual(hours, 10);
+  });
+});
+
+test('dropping it is never silent — the row is named and the reason given', () => {
+  withNonEmployee('0777', 'BBSI staff account that builds the file.', () => {
+    const built = buildImport({
+      fileBuffer: buildPayrollXlsx([row('0777', 'Matthews', 'April', 'No', 0, 8, 0, 8, 0)]),
+      workDate: MONDAY,
+      employees: ROSTER, timeZone: TZ
+    });
+
+    const [a] = built.anomalies.filter(x => x.type === 'non_employee_row');
+    assert.ok(a, 'no anomaly was recorded — the skip would be invisible');
+    assert.strictEqual(a.employeeNumber, '0777');
+    assert.match(a.detail, /April/);
+    assert.match(a.detail, /BBSI staff account/, 'the reason travels with the skip');
+    assert.match(a.detail, /NOT imported/);
+    assert.match(a.detail, /payroll-lib\.js/, 'and says where to reverse it');
+  });
+});
+
+test('the skip is counted apart from every other kind of skip', () => {
+  // A row that is not a person is not a salaried person, not a duplicate and
+  // not an unmatched employee. Folding it into any of those would hide the one
+  // number that says the list is doing something.
+  withNonEmployee('0777', 'BBSI staff account.', () => {
+    const built = buildImport({
+      fileBuffer: buildPayrollXlsx([
+        row('0777', 'Matthews', 'April', 'No', 0, 8, 0, 8, 0),
+        row('0007', 'Rivera', 'Eduardo', 'Yes', 0, 0, 0, 0, 0)
+      ]),
+      workDate: MONDAY,
+      employees: ROSTER, timeZone: TZ
+    });
+
+    assert.strictEqual(built.counts.nonEmployeeSkipped, 1);
+    assert.strictEqual(built.counts.salariedSkipped, 1);
+    assert.strictEqual(built.counts.imported, 0);
+    assert.strictEqual(built.counts.totalRows, 2);
+  });
+});
+
+test('an ordinary unknown number is still imported and flagged, not dropped', () => {
+  // The two decisions are different and must stay different. An unrecognised
+  // number might be a real person whose hours belong in the week's totals, so
+  // that row imports with an unknown_employee flag. Only a number KNOWN not to
+  // be a person is dropped.
+  const built = buildImport({
+    fileBuffer: buildPayrollXlsx([row('0998', 'Nueva', 'Persona', 'No', 0, 10, 0, 10, 0)]),
+    workDate: MONDAY,
+    employees: ROSTER, timeZone: TZ
+  });
+
+  assert.strictEqual(built.rows.length, 1, 'the hours still import');
+  assert.ok(built.rows[0].flags.includes('unknown_employee'));
+  assert.strictEqual(built.counts.nonEmployeeSkipped, 0);
+});
+
+test('the list is empty in the repository until a number is confirmed', () => {
+  // Guards against a placeholder being committed live. A number here silently
+  // deletes somebody's hours from every report, so it may only arrive with a
+  // human confirmation attached.
+  assert.strictEqual(NON_EMPLOYEE_NUMBERS.size, 0,
+    'a number was added — if that is deliberate, update this test and say who confirmed it');
+});
+
+// ============================================================
 // The /api/payroll-import handler
 // ============================================================
 //

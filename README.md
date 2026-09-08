@@ -780,6 +780,27 @@ day's totals quietly understate the week. They cost $0 until the number is recon
 person with that number, **or** correct the number on their existing record rather than adding a
 second one.
 
+### Rows in the file that are not people
+
+The vendor's export carries at least one row that is not an employee of this mill: the BBSI staff
+account that generates the file appears in it like anybody else, with an employee number and hours.
+
+Left alone, such a row is counted three times over. Its hours land in `daily_hours` and inflate the
+OT report's total hours **and** its headcount (which is `people.size` over the imported rows). It
+never matches the roster, so since the import stopped auto-creating people it raises a
+**"NOT ON THE ROSTER"** line in the ingest alert — every morning, for ever, about somebody who will
+never be added. An alert that is wrong every day is one nobody reads on the morning it is right.
+
+`NON_EMPLOYEE_NUMBERS` in `payroll-lib.js` drops those rows at parse time, before anything else sees
+them. **This is not the same decision as the unknown-employee one:** an unrecognised number might be
+a real person whose hours belong in the week's totals, so those rows import and are flagged
+`unknown_employee`. A number on this list is known not to be a person, and its hours are noise.
+
+Dropped, never silent — each records a `non_employee_row` anomaly naming the row, the reason, and
+where to reverse it, and `counts.nonEmployeeSkipped` is reported apart from every other skip. A test
+asserts the list is **empty in the repository**, so a number can only arrive with a human
+confirmation attached: adding one silently removes somebody's hours from every report.
+
 ### A day nobody worked is not a missing day
 
 A payroll file that reports no hours builds **no `daily_hours` rows**. That is correct — there are
