@@ -115,14 +115,41 @@ const STALE_DATE_WARNING_DAYS = 7;
 // Keyed on employee_number, normalised the same way every other lookup is, and
 // then LOWERCASED — see isNonEmployeeNumber below. Names are for the reader; the
 // match is on the number, because BBSI could rename the account tomorrow.
+// All four carry a `zSFP-` name prefix in the file — a sort trick pushing the
+// vendor's own system accounts to the bottom of a name-ordered list. The prefix
+// is what makes them findable; it is NOT what matches them. See
+// looksLikeSystemAccount below for why the two are kept apart.
 const NON_EMPLOYEE_NUMBERS = new Map([
-  ['amatthews', 'April Matthews — the BBSI staff account that generates the daily export. ' +
-                'Confirmed by Peter Stroble on 2026-09-08 as not an SFP employee.'],
-  ['admin',     'zSFP-admin zSFP-user — the Timenet administrative account for this site, not a ' +
-                'person. Confirmed by Peter Stroble on 2026-09-08. The leading z is a sort trick ' +
-                'pushing system accounts to the bottom of a name-ordered list; Peter checked the ' +
-                'same day and confirmed these two are the only ones.']
+  ['amatthews',    'zSFP - Matthews, April — BBSI staff account that generates the daily export. ' +
+                   'Confirmed by Peter Stroble on 2026-09-08 as not an SFP employee.'],
+  ['knance',       'zSFP- Nance, Korrina — BBSI staff account. Confirmed by Peter Stroble on ' +
+                   '2026-09-08 as not an SFP employee.'],
+  ['rweatherford', 'zSFP- Weatherford, Rachel — BBSI staff account. Confirmed by Peter Stroble ' +
+                   'on 2026-09-08 as not an SFP employee.'],
+  ['admin',        'zSFP-user zSFP-admin — the Timenet administrative account for this site, not ' +
+                   'a person. Confirmed by Peter Stroble on 2026-09-08.']
 ]);
+
+// The prefix DETECTS, it never MATCHES. That distinction is the whole design.
+//
+// Every one of the four is named `zSFP-something` in the file, so it is tempting
+// to drop any row whose name starts with it. Do not: this codebase's oldest rule
+// is that people are matched by employee_number and never by name, because the
+// roster has two people called Smith and several compound surnames the two
+// systems spell differently. A name rule that fires wrongly here does not
+// mis-attribute hours, it DELETES them — silently, from every report — which is
+// strictly worse.
+//
+// So a zSFP-named row whose number is not on the list above is imported like any
+// other unrecognised person AND raises a loud anomaly. A fifth system account
+// appearing gets noticed on its first day instead of quietly inflating the
+// totals for a month, and a real employee whose surname happens to start with
+// those letters keeps their hours and merely gets a question asked about them.
+const SYSTEM_ACCOUNT_NAME_RE = /^\s*zsfp\b|^\s*zsfp-/i;
+
+function looksLikeSystemAccount(name) {
+  return SYSTEM_ACCOUNT_NAME_RE.test(String(name == null ? '' : name));
+}
 
 // Case-insensitive, and that is not defensive habit — it is specific to this
 // list.
@@ -473,6 +500,24 @@ function buildImport({
       continue;
     }
 
+    // A vendor system account the list does NOT know about. Reported, never
+    // dropped — see looksLikeSystemAccount. This runs before the skip below so
+    // it cannot fire for one that is already handled.
+    if (!isNonEmployeeNumber(employeeNumber) &&
+        (looksLikeSystemAccount(lastName) || looksLikeSystemAccount(firstName))) {
+      anomalies.push({
+        employeeNumber,
+        name: fileName,
+        type: 'possible_system_account',
+        detail: `Emp # ${employeeNumber} (${fileName || 'no name'}) is named like one of the ` +
+                `vendor's system accounts but is NOT on the not-a-person list, so their hours ` +
+                `WERE imported and are in this day's totals. If this is another BBSI account, ` +
+                `add ${JSON.stringify(employeeNumber)} to NON_EMPLOYEE_NUMBERS in payroll-lib.js. ` +
+                `If it is a real person whose name starts that way, nothing is wrong and this ` +
+                `anomaly is the cost of not matching people by name.`
+      });
+    }
+
     // A row that is not a person. See NON_EMPLOYEE_NUMBERS above: checked before
     // the duplicate and salaried tests so it cannot be counted under either, and
     // before the row is built so its hours never reach daily_hours.
@@ -732,6 +777,7 @@ function buildImport({
 module.exports = {
   NON_EMPLOYEE_NUMBERS,
   isNonEmployeeNumber,
+  looksLikeSystemAccount,
   normalizeEmpNumber,
   round2,
   workDateInfo,

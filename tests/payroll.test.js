@@ -808,7 +808,8 @@ test('buildImport refuses to run on nothing at all', () => {
 // fail the day a number is added or removed, which is a decision, not a
 // regression.
 
-const { NON_EMPLOYEE_NUMBERS, isNonEmployeeNumber } = require('../netlify/functions/payroll-lib');
+const { NON_EMPLOYEE_NUMBERS, isNonEmployeeNumber, looksLikeSystemAccount } =
+  require('../netlify/functions/payroll-lib');
 
 function withNonEmployee(number, why, fn) {
   const had = NON_EMPLOYEE_NUMBERS.has(number);
@@ -927,6 +928,62 @@ test('April Matthews is on the list, and the file cannot re-case her out of it',
   assert.strictEqual(isNonEmployeeNumber('0319'), false);
   assert.strictEqual(isNonEmployeeNumber(''), false);
   assert.strictEqual(isNonEmployeeNumber(null), false);
+});
+
+test('all four vendor accounts are on the list', () => {
+  for (const id of ['amatthews', 'knance', 'rweatherford', 'admin']) {
+    assert.strictEqual(isNonEmployeeNumber(id), true, `${id} is not on the list`);
+  }
+  assert.strictEqual(NON_EMPLOYEE_NUMBERS.size, 4);
+});
+
+test('a zSFP-named row NOT on the list keeps its hours and raises a question', () => {
+  // THE DESIGN DECISION IN THIS FILE. All four vendor accounts share a `zSFP-`
+  // name prefix, so dropping any row whose name starts with it is tempting and
+  // wrong: this codebase matches people by employee_number and never by name,
+  // because two Smiths and several compound surnames make name matching unsafe.
+  // A name rule that fires wrongly here does not mis-attribute hours, it DELETES
+  // them, silently, from every report.
+  //
+  // So the prefix detects and never matches. A fifth account is noticed on its
+  // first day; a real employee whose surname starts that way keeps their hours.
+  const built = buildImport({
+    fileBuffer: buildPayrollXlsx([
+      row('0555', 'zSFP- Somebody', 'New', 'No', 0, 8, 0, 8, 0)
+    ]),
+    workDate: MONDAY,
+    employees: ROSTER, timeZone: TZ
+  });
+
+  assert.strictEqual(built.rows.length, 1, 'the hours are NOT dropped on a name match');
+  assert.strictEqual(built.counts.nonEmployeeSkipped, 0);
+
+  const [a] = built.anomalies.filter(x => x.type === 'possible_system_account');
+  assert.ok(a, 'and it must not pass unremarked either');
+  assert.strictEqual(a.employeeNumber, '0555');
+  assert.match(a.detail, /WERE imported/);
+  assert.match(a.detail, /payroll-lib\.js/, 'says exactly how to fix it');
+  assert.match(a.detail, /real person whose name starts that way/, 'and admits the false positive');
+});
+
+test('a row already on the list raises no duplicate system-account question', () => {
+  const built = buildImport({
+    fileBuffer: buildPayrollXlsx([row('knance', 'zSFP- Nance', 'Korrina', 'No', 0, 8, 0, 8, 0)]),
+    workDate: MONDAY,
+    employees: ROSTER, timeZone: TZ
+  });
+  assert.strictEqual(built.counts.nonEmployeeSkipped, 1);
+  assert.strictEqual(built.anomalies.filter(x => x.type === 'possible_system_account').length, 0,
+    'it is handled — asking about it as well is noise');
+});
+
+test('an ordinary surname is not mistaken for a system account', () => {
+  for (const name of ['Zapata', 'Smith', 'Zamora', 'Z', '']) {
+    assert.strictEqual(looksLikeSystemAccount(name), false, `${name} tripped the prefix check`);
+  }
+  for (const name of ['zSFP - Matthews', 'zSFP- Nance', 'zsfp-user', 'ZSFP-admin']) {
+    assert.strictEqual(looksLikeSystemAccount(name), true, `${name} was not detected`);
+  }
 });
 
 test('the Timenet admin account is on the list too', () => {

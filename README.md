@@ -802,10 +802,24 @@ Adding an entry silently removes somebody's hours from every report, so a test r
 carry **who confirmed it and when** in its own value, rather than in a commit message nobody will
 find later.
 
-Two entries today, and Peter confirmed on 2026-09-08 that these are the only ones:
-**`amatthews`** (April Matthews, the BBSI staff account that builds the export) and **`admin`**
-(zSFP-admin zSFP-user, the Timenet administrative account for the site).
-Note the shape. Real employees have four-digit zero-padded ids; both of these are logins, and
+Four entries, all confirmed by Peter Stroble on 2026-09-08 — three BBSI staff accounts and the
+Timenet administrative account for the site:
+
+| Emp # | Name in the file |
+|---|---|
+| `amatthews` | zSFP - Matthews, April |
+| `knance` | zSFP- Nance, Korrina |
+| `rweatherford` | zSFP- Weatherford, Rachel |
+| `admin` | zSFP-user, zSFP-admin |
+
+**The shared `zSFP-` prefix detects; it never matches.** Dropping any row whose name starts with it
+would be the obvious shortcut and is the one thing this codebase must not do — people are matched by
+`employee_number` and never by name, because two Smiths and several compound surnames make name
+matching unsafe. A name rule firing wrongly here would not mis-attribute hours, it would **delete**
+them, silently, from every report. So a `zSFP`-named row whose number is *not* on the list imports
+normally and raises a `possible_system_account` anomaly: a fifth account is caught on its first day,
+and a real employee whose surname starts that way keeps their hours and merely prompts a question.
+Note the shape. Real employees have four-digit zero-padded ids; all four of these are logins, and
 `normalizeEmpNumber` returns non-numeric values unchanged, so the key is the literal string. The
 lookup is therefore **case-insensitive**: `AMatthews` and `amatthews` are the same account, and an
 exact-match miss would be silent — the row would flow through as an unrecognised employee, those
