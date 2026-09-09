@@ -212,10 +212,46 @@ test('the rate note never re-renders the page, so typing cannot lose a keystroke
   assert.strictEqual(ctx.state.editing.wage, '40.00', 'and it must still record the keystroke');
   assert.match(notes.profileRateNote.innerHTML, /%/, 'and update the live note in place');
 
+  // AND THE PERCENTAGE HAS TO BE THE REAL ONE. /%/ above is satisfied by
+  // '+0%', which is what a note that compares the typed value against itself
+  // prints for every keystroke — including the ones that should be flagged.
+  assert.match(notes.profileRateNote.innerHTML, /\+26\.98%/,
+    '40.00 over a stored 31.50 is a 26.98% rise, not 0%');
+  assert.match(notes.profileRateNote.innerHTML, /flagged for review/,
+    'and a move that large has to say so before it is saved');
+
   ctx.setProfileSalary('150000');
   assert.strictEqual(renders, 0, 'setProfileSalary re-rendered the page mid-type');
   assert.strictEqual(ctx.state.editing.annualSalary, '150000');
   assert.match(notes.profileSalaryNote.innerHTML, /Hourly equivalent/);
+});
+
+test('re-typing the rate that is already stored is a 0% move, not a flagged one', () => {
+  // The other direction of the same fix. A baseline that is always wrong in the
+  // OTHER direction — say, one hard-coded to make every keystroke look like a
+  // change — would satisfy the assertions above and be just as useless.
+  const ctx = sandbox();
+  openCard(ctx, [person({ payType: 'Hourly', wage: '31.50' })], { editing: true });
+
+  const notes = {};
+  ctx.document.getElementById = (id) => {
+    notes[id] = notes[id] || { innerHTML: '' };
+    return notes[id];
+  };
+
+  ctx.setProfileRate('31.50');
+  assert.match(notes.profileRateNote.innerHTML, /0%/);
+  assert.doesNotMatch(notes.profileRateNote.innerHTML, /flagged for review/,
+    'a rate that did not move must not be announced as a change');
+
+  // And a rate typed over a person who has none is a first observation, not a
+  // move from zero — dividing by a stored 0 is how that becomes Infinity%.
+  const fresh = sandbox();
+  openCard(fresh, [person({ payType: 'Hourly', wage: '' })], { editing: true });
+  const n2 = {};
+  fresh.document.getElementById = (id) => { n2[id] = n2[id] || { innerHTML: '' }; return n2[id]; };
+  fresh.setProfileRate('28.00');
+  assert.match(n2.profileRateNote.innerHTML, /First rate on file/);
 });
 
 test('a rate cannot be set for somebody with no employee number', () => {

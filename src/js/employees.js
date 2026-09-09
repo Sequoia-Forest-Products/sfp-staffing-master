@@ -622,13 +622,34 @@ function profileReadBody(e){
 // input the cursor is in, taking the focus, the caret and anything half-typed
 // with it. salaries.js solved this the same way (paySet -> #payFoot) and it is
 // the reason typing a rate there never lost a keystroke.
+// The rate the ROSTER holds — the value a typed rate is a move away FROM.
+//
+// This is separate from state.editing.wage on purpose. setProfileRate writes
+// every keystroke into state.editing.wage, so asking wageMovePct(state.editing,
+// ...) compares the typed value against ITSELF and answers +0% no matter what
+// was typed. That is what this used to do: the note was live, and it was live
+// with a number that could never be anything but zero, so a 26% rise showed no
+// percentage worth reading and never reached the "flagged for review" branch
+// before it was saved.
+//
+// Read from state.employees rather than from a snapshot taken when the card
+// opened, so a roster refreshed underneath the open card moves the baseline
+// with it instead of comparing against a value that is no longer stored.
+function editBaselineRate(){
+  const e=state.editing;
+  if(!e) return null;
+  const stored=(typeof e._idx==='number')?state.employees[e._idx]
+    :(e.id!=null?state.employees.find(p=>p&&p.id===e.id):null);
+  return stored?currentRate(stored):null;
+}
+
 function profileRateNote(){
   const e=state.editing;
   if(!e) return '';
   const parsed=parseRate(e.wage);
   if(parsed===undefined) return '<span style="color:#b8860b">Not a number</span>';
   if(parsed===null) return '<span style="color:#b8860b">A rate cannot be cleared, only corrected</span>';
-  const pct=wageMovePct(e,parsed);
+  const pct=wageMovePct({wage:editBaselineRate()},parsed);
   if(pct==null) return '<span style="color:var(--muted)">First rate on file</span>';
   const flag=Math.abs(pct)>WAGE_FLAG_PCT;
   return `<span style="color:${flag?'#b8860b':'var(--muted)'}">${pct>0?'+':''}${pct}%`
