@@ -1,5 +1,25 @@
 -- =====================================================================
--- NOT YET APPLIED. Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
+-- APPLIED 2026-09-09 against the STAFFING project (zwghbbyzrycpnesuuzgi).
+--
+-- WHAT §1 SAID. Two rows. The keeper, created 2026-07-08, is SALARIED —
+-- $128,000, Production Manager, Mill Overhead — and had no employee
+-- number at all. The import's row, created 2026-09-08, held number 1058
+-- and nothing else: no wage, no department, no allocations, no
+-- pre-approved OT, no wage history, no economics seat, one setup task.
+-- One day of hours under 1058: 10.00 on 2026-09-07, no OT.
+--
+-- WHICH MADE THE OUTCOME BETTER THAN THE HEADER ASSUMED. He is salaried,
+-- so isSalaried() is true and ot-report-lib.js:779 skips him. With 1058
+-- on his real record his hours match a person and are excluded from OT
+-- costing outright, rather than being costed at $0 by accident.
+--
+-- §4 verified: one Coburn, holding 1058, salary and classification
+-- intact, hours matched, no duplicate employee_number anywhere on the
+-- roster. The setup task went with the deleted row by cascade, so §3
+-- matched nothing.
+--
+-- Kept for the record. §2 will refuse to re-run: the ids no longer
+-- describe what its guards require.
 --
 -- Walk it one section at a time. §1 is READ-ONLY and decides what §2
 -- and §3 are given. Do not run §2 until you have looked at §1 and

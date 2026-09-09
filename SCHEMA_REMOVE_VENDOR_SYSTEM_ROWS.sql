@@ -1,5 +1,18 @@
 -- =====================================================================
--- NOT YET APPLIED. Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
+-- APPLIED 2026-09-09 against the STAFFING project (zwghbbyzrycpnesuuzgi).
+--
+-- WHAT §1 SAID, which is the only record of it. All four appeared on
+-- exactly one day, Monday 2026-09-07: 34.00 hours between them, no OT,
+-- no dollars (none had a rate). That week was still in progress, so no
+-- report and no manager email that had already gone out changed.
+--
+--   week of 2026-09-07   hours 542.00 -> 508.00   headcount 56 -> 52
+--
+-- §3 verified afterwards: zero rows in daily_hours, employees and
+-- employee_setup_tasks, and nothing named zSFP left in either table —
+-- so the four were the whole set, not four of five. Roster 77 -> 73.
+--
+-- Kept for the record. Re-running §2 is harmless (it matches nothing).
 --
 -- Walk it one section at a time. §0 and §1 are READ-ONLY and tell you
 -- exactly what §2 will change — including which weeks' reported figures
