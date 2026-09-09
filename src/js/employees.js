@@ -55,6 +55,170 @@ function retiredOption(v,list){
   return `<option value="${esc(s)}" selected>${esc(s)} — retired, please reassign</option>`;
 }
 
+// ============================================================
+// INLINE Wage/hr EDITING ON THE ROSTER
+// ============================================================
+//
+// This is what replaced the Salaries & Wages bulk grid. That page existed
+// because the profile card had no rate on it; the card has one now, and one
+// person at a time through a modal is the wrong shape for the job it was
+// actually used for — walking the roster after a rate review and correcting
+// several people.
+//
+// THE WRITE IS THE SAME WRITE. It PATCHes /api/data?table=employees&id=... with
+// nothing but `wage`, which is the path the profile card uses, so the history
+// guarantee comes along unchanged: data.js writes the wage_history row BEFORE
+// it touches employees.wage. A record with no change is repairable; a change
+// with no record is not. Nothing new is trusted to the client.
+//
+// WHY THE CELL IS NOT ALWAYS AN INPUT. A roster of 73 always-live inputs is 73
+// ways to change somebody's pay by tabbing through the page.
+
+// Who can be edited here at all, and why not when they cannot. Returned as a
+// reason string rather than a boolean so the cell can say which of the two it
+// is instead of just refusing.
+// esc() covers & < > and the double quote, which is enough for attribute VALUES
+// but not for a value that is then parsed as JavaScript: a single quote inside
+// openRateEdit('...') closes the argument. Employee ids are uuids today, so
+// this is belt and braces rather than a live hole — but the roster has been an
+// XSS surface once already, and the fix for that was to stop assuming which
+// fields are safe.
+function jsStr(v){
+  return String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+}
+
+function rateEditBlock(e){
+  if(isSalaried(e)) return 'Salaried — their salary is on the profile card';
+  if(!canEditRate(e)) return 'No employee number, so no rate can be recorded';
+  return '';
+}
+
+function openRateEdit(id){
+  const e=state.employees.find(p=>p&&String(p.id)===String(id));
+  if(!e||rateEditBlock(e)) return;
+  state.rateEdit={id:e.id, draft:(e.wage==null?'':String(e.wage)), saving:false, error:''};
+  renderEmployeeList();
+  const box=document.getElementById('rateInput');
+  if(box&&box.focus){ box.focus(); if(box.select) box.select(); }
+}
+
+function closeRateEdit(){
+  state.rateEdit=null;
+  renderEmployeeList();
+}
+
+// Every keystroke, and NEVER through render() or renderEmployeeList(). Both
+// replace the markup the input lives in, which takes the focus, the caret and
+// anything half-typed with it. The live note is written straight into its own
+// node — the same reason paySet wrote to #payFoot.
+function setRateDraft(v){
+  if(!state.rateEdit) return;
+  state.rateEdit.draft=v;
+  const el=document.getElementById('rateNote');
+  if(el) el.innerHTML=rateEditNote();
+}
+
+// Enter saves, Escape abandons. Nothing is saved on blur: a click that lands
+// anywhere else on the page is not somebody confirming a pay change.
+function rateKey(ev){
+  if(!ev) return;
+  if(ev.key==='Enter'){ if(ev.preventDefault) ev.preventDefault(); saveRateEdit(); }
+  else if(ev.key==='Escape'){ if(ev.preventDefault) ev.preventDefault(); closeRateEdit(); }
+}
+
+function rateEditNote(){
+  const r=state.rateEdit;
+  if(!r) return '';
+  if(r.error) return '<span style="color:var(--red,#c0392b)">'+esc(r.error)+'</span>';
+  if(r.saving) return '<span style="color:var(--muted)">Saving…</span>';
+  const parsed=parseRate(r.draft);
+  if(parsed===undefined) return '<span style="color:#b8860b">Not a number</span>';
+  if(parsed===null) return '<span style="color:#b8860b">A rate cannot be cleared, only corrected</span>';
+  // The baseline is the STORED row, never the draft. Comparing the typed value
+  // against itself answers +0% for everything — the bug this file already had
+  // once, on the profile card.
+  const stored=state.employees.find(p=>p&&String(p.id)===String(r.id));
+  const pct=wageMovePct({wage:stored?stored.wage:null},parsed);
+  if(pct==null) return '<span style="color:var(--muted)">First rate on file</span>';
+  const flag=Math.abs(pct)>WAGE_FLAG_PCT;
+  return '<span style="color:'+(flag?'#b8860b':'var(--muted)')+'">'+(pct>0?'+':'')+pct+'%'
+    +(flag?' — this will be flagged for review':'')+'</span>';
+}
+
+async function saveRateEdit(){
+  const r=state.rateEdit;
+  if(!r||r.saving) return;
+  const e=state.employees.find(p=>p&&String(p.id)===String(r.id));
+  if(!e) return closeRateEdit();
+
+  const parsed=parseRate(r.draft);
+  // Refused here for the same reasons the server refuses them, so the person
+  // gets the sentence beside the box rather than a failed request.
+  if(parsed===undefined||parsed===null){
+    r.error=parsed===null
+      ? 'A rate cannot be cleared, only corrected'
+      : 'That is not a rate';
+    const el=document.getElementById('rateNote');
+    if(el) el.innerHTML=rateEditNote();
+    return;
+  }
+  // An unchanged rate is not a save. planWageEdit would drop it server-side
+  // anyway, but a round trip that writes nothing still reads as "saved".
+  if(currentRate(e)===parsed) return closeRateEdit();
+
+  r.saving=true; r.error='';
+  const note=document.getElementById('rateNote');
+  if(note) note.innerHTML=rateEditNote();
+  setSyncStatus('saving');
+  try{
+    const res=await writeEmployeeRow('/api/data?table=employees&id='+e.id,'PATCH',{wage:String(parsed)});
+    if(!res.ok){
+      // 409 is the server refusing the rate itself — its sentence is the useful
+      // one, so it is shown rather than a status code.
+      let msg='Save failed ('+res.status+')';
+      try{ const body=await res.json(); if(body&&body.error) msg=String(body.error); }catch(_){}
+      throw new Error(msg);
+    }
+    e.wage=String(parsed);
+    state.rateEdit=null;
+    setSyncStatus('saved');
+    toast('Rate saved for '+e.name);
+    renderEmployeeList();
+  }catch(err){
+    r.saving=false;
+    r.error=err&&err.message?err.message:'Save failed';
+    setSyncStatus('error');
+    renderEmployeeList();
+  }
+}
+
+// The cell itself. Read-only text until somebody opens it, and text that says
+// why for the two kinds of person who cannot be edited here.
+function wageCell(e){
+  const open=state.rateEdit&&String(state.rateEdit.id)===String(e.id);
+  if(open){
+    const dis=state.rateEdit.saving?' disabled':'';
+    return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +'<span style="color:var(--muted)">$</span>'
+      +'<input id="rateInput" type="text" inputmode="decimal" value="'+esc(state.rateEdit.draft)+'"'
+      +' style="width:80px;padding:3px 6px;font-size:12px" oninput="setRateDraft(this.value)"'
+      +' onkeydown="rateKey(event)"'+dis+'>'
+      +'<button class="btn btn-primary btn-sm" onclick="saveRateEdit()"'+dis+'>Save</button>'
+      +'<button class="btn btn-outline btn-sm" onclick="closeRateEdit()"'+dis+'>Cancel</button>'
+      +'<div id="rateNote" style="font-size:11px;flex-basis:100%">'+rateEditNote()+'</div>'
+      +'</div>';
+  }
+  const why=rateEditBlock(e);
+  if(why) return '<span title="'+esc(why)+'" style="color:var(--muted)">'+esc(fmtWage(e))+'</span>';
+  // A person with no rate is not a blank cell. Every hour they work is costed
+  // at $0 in every report until somebody sets one.
+  const missing=currentRate(e)==null;
+  return '<button class="rate-btn" onclick="openRateEdit(\''+jsStr(e.id)+'\')"'
+    +' title="Edit hourly rate"'
+    +(missing?' style="color:#b8860b;font-weight:600"':'')
+    +'>'+esc(missing?'Set rate':fmtWage(e))+'</button>';
+}
+
 // ONE row template, used by the full render and by the search re-render.
 //
 // There were two copies, and they had already drifted twice: this one used
@@ -74,7 +238,7 @@ function employeeRow(e){
       <td style="font-weight:600">
         <button class="emp-name-btn" onclick="openProfile(${idx})" title="Open profile">${esc(e.name)}</button>
       </td>
-      <td>${fmtWage(e)}</td>
+      <td>${wageCell(e)}</td>
       <td${hasDepartment(e.department)?'':' style="color:var(--muted)"'}>${hasDepartment(e.department)?esc(e.department):'—'}</td>
       <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
       <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${esc(e.status||'—')}</span></td>
@@ -1133,6 +1297,12 @@ function profileEditBody(e){
 const profileStyle=`<style>
   .emp-name-btn{background:none;border:none;padding:0;font:inherit;font-weight:600;color:var(--rust);cursor:pointer;text-align:left}
   .emp-name-btn:hover{text-decoration:underline}
+  /* The Wage/hr cell. Styled to read as a value, not a button — it is the
+     number until somebody clicks it, and a roster of 73 obvious buttons in one
+     column invites clicking one by accident. The dotted underline on hover is
+     the whole affordance. */
+  .rate-btn{background:none;border:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+  .rate-btn:hover{text-decoration:underline dotted;text-underline-offset:3px}
   .pf-group{margin-bottom:18px}
   .pf-group-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--rust);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
   .pf-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 18px}

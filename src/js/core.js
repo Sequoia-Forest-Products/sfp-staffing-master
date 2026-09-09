@@ -68,6 +68,18 @@ let state = {
   // Rate and classification history, keyed by employee id, fetched when a
   // profile card opens.
   history:{},
+  // Inline Wage/hr editing on the roster. ONE row at a time, and keyed by the
+  // employee's id rather than by their index in state.employees: the list
+  // re-sorts and re-filters underneath an open editor — typing in the search
+  // box calls renderEmployeeList on every keystroke — and an index would then
+  // point at whoever happened to slide into that position. A rate written onto
+  // the wrong person is the one failure here that nobody would notice.
+  //
+  //   {id, draft, saving, error}
+  //
+  // `draft` carries every keystroke so a re-render of the tbody restores what
+  // was typed instead of throwing it away.
+  rateEdit:null,
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,

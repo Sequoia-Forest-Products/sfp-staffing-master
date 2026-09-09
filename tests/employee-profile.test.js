@@ -507,3 +507,185 @@ test('the four stat cards are computed in one place', () => {
   assert.strictEqual(st.spanish, 1);
   assert.strictEqual(st.inactive, 1, 'inactive is everyone who is not Active, whatever the label');
 });
+
+// ---------------------------------------------------------------------------
+// Inline Wage/hr editing on the roster
+// ---------------------------------------------------------------------------
+//
+// This is what replaced the Salaries & Wages bulk grid, so the properties that
+// page held have to hold here: the rate goes through the same PATCH, an
+// unchanged rate writes nothing, and typing never re-renders the input away.
+
+function seed(ctx, people) {
+  ctx.state.employees = people;
+  ctx.state.profile = null;
+  ctx.state.editing = null;
+  ctx.state.rateEdit = null;
+  return ctx;
+}
+
+function rosterCtx(people) {
+  return seed(sandbox(), people);
+}
+
+// The async version, and the reason it exists.
+//
+// bootstrap.js runs at load and kicks off loadData(), which awaits the sandbox
+// fetch and then REPLACES state.employees with whatever came back — [] here.
+// In a synchronous test that never lands. In an async one it lands at the first
+// await, in the middle of the code under test, and the roster the test set up
+// silently becomes empty. Two of these tests would have depended on which
+// microtask won, and one of them passed on that luck for a while.
+//
+// So: let the load settle FIRST, then seed. Anything the test asserts about
+// state.employees afterwards is the test's own doing.
+async function rosterCtxAsync(people) {
+  const ctx = sandbox();
+  await new Promise(r => setImmediate(r));
+  return seed(ctx, people);
+}
+
+test('the wage cell opens an editor, and only for people who can have a rate', () => {
+  const ctx = rosterCtx([
+    person({ id: 'a', payType: 'Hourly', wage: '31.50', empNum: '0319' }),
+    person({ id: 'b', payType: 'Salaried', wage: null, empNum: '0400' }),
+    person({ id: 'c', payType: 'Hourly', wage: '22.00', empNum: '' })
+  ]);
+
+  const hourly = ctx.employeeRow(ctx.state.employees[0]);
+  assert.match(hourly, /openRateEdit\('a'\)/, 'an hourly person with a number is editable');
+
+  // Both directions. A cell that offered the editor to everybody would pass the
+  // assertion above and quietly produce a request the server refuses.
+  const salaried = ctx.employeeRow(ctx.state.employees[1]);
+  assert.doesNotMatch(salaried, /openRateEdit/, 'a salaried person has no hourly rate to edit');
+  assert.match(salaried, /salary is on the profile card/i);
+
+  const noNumber = ctx.employeeRow(ctx.state.employees[2]);
+  assert.doesNotMatch(noNumber, /openRateEdit/,
+    'wage_history.employee_number is NOT NULL, so the server would refuse this');
+  assert.match(noNumber, /No employee number/i);
+});
+
+test('somebody with no rate is offered one rather than shown a dash', () => {
+  const ctx = rosterCtx([person({ id: 'a', payType: 'Hourly', wage: '', empNum: '0319' })]);
+  const row = ctx.employeeRow(ctx.state.employees[0]);
+  assert.match(row, /Set rate/, 'a blank cell does not say their hours cost $0');
+  assert.match(row, /openRateEdit/);
+});
+
+test('the open editor is keyed to the person, not to their position in the list', () => {
+  // The list re-sorts and re-filters underneath an open editor — typing in the
+  // search box re-renders the tbody on every keystroke. An index would follow
+  // the position and write the rate onto whoever slid into it.
+  const ctx = rosterCtx([
+    person({ id: 'a', name: 'Aaron', payType: 'Hourly', wage: '31.50', empNum: '0001' }),
+    person({ id: 'b', name: 'Bea', payType: 'Hourly', wage: '18.00', empNum: '0002' })
+  ]);
+  ctx.state.rateEdit = { id: 'b', draft: '19.00', saving: false, error: '' };
+
+  ctx.state.employees.reverse();                     // Bea is now index 0
+
+  assert.doesNotMatch(ctx.employeeRow(ctx.state.employees[1]), /id="rateInput"/,
+    'the editor followed the index onto the wrong person');
+  assert.match(ctx.employeeRow(ctx.state.employees[0]), /id="rateInput"/);
+});
+
+test('typing a rate on the roster never re-renders, and shows the real move', () => {
+  const ctx = rosterCtx([person({ id: 'a', payType: 'Hourly', wage: '31.50', empNum: '0319' })]);
+  ctx.state.rateEdit = { id: 'a', draft: '31.50', saving: false, error: '' };
+
+  const notes = {};
+  ctx.document.getElementById = (id) => {
+    notes[id] = notes[id] || { innerHTML: '' };
+    return notes[id];
+  };
+  let renders = 0;
+  ctx.render = () => { renders += 1; };
+  ctx.renderEmployeeList = () => { renders += 1; };
+
+  ctx.setRateDraft('40.00');
+  assert.strictEqual(renders, 0, 'setRateDraft re-rendered the input away mid-type');
+  assert.strictEqual(ctx.state.rateEdit.draft, '40.00', 'and it must record the keystroke');
+  assert.match(notes.rateNote.innerHTML, /\+26\.98%/, 'the baseline is the stored rate');
+  assert.match(notes.rateNote.innerHTML, /flagged for review/);
+
+  ctx.setRateDraft('31.50');
+  assert.match(notes.rateNote.innerHTML, /0%/);
+  assert.doesNotMatch(notes.rateNote.innerHTML, /flagged for review/);
+
+  ctx.setRateDraft('abc');
+  assert.match(notes.rateNote.innerHTML, /Not a number/);
+
+  ctx.setRateDraft('');
+  assert.match(notes.rateNote.innerHTML, /cannot be cleared/);
+});
+
+test('saving a rate PATCHes only the wage, and an unchanged rate writes nothing', async () => {
+  const ctx = await rosterCtxAsync([person({ id: 'a', payType: 'Hourly', wage: '31.50', empNum: '0319' })]);
+  const calls = [];
+  ctx.fetch = async (url, opts) => {
+    calls.push({ url, method: opts.method, body: JSON.parse(opts.body) });
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  };
+  ctx.renderEmployeeList = () => {};
+  ctx.toast = () => {};
+
+  ctx.state.rateEdit = { id: 'a', draft: '33.00', saving: false, error: '' };
+  await ctx.saveRateEdit();
+
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].method, 'PATCH');
+  assert.match(calls[0].url, /table=employees&id=a/);
+  assert.deepStrictEqual(calls[0].body, { wage: '33' },
+    'nothing but the rate — this must not become a whole-row write');
+  assert.strictEqual(ctx.state.employees[0].wage, '33', 'the roster shows the new rate at once');
+  assert.strictEqual(ctx.state.rateEdit, null, 'and the editor closes');
+
+  // The other direction: a rate that did not move must not reach the server.
+  // planWageEdit would drop it, but a round trip that writes nothing still
+  // reads as a save and would appear in the sync status.
+  ctx.state.rateEdit = { id: 'a', draft: '33.00', saving: false, error: '' };
+  await ctx.saveRateEdit();
+  assert.strictEqual(calls.length, 1, 'an unchanged rate was sent anyway');
+  assert.strictEqual(ctx.state.rateEdit, null);
+});
+
+test('a refused rate keeps the editor open with the server sentence', async () => {
+  const ctx = await rosterCtxAsync([person({ id: 'a', payType: 'Hourly', wage: '31.50', empNum: '0319' })]);
+  ctx.fetch = async () => ({
+    ok: false, status: 409,
+    json: async () => ({ error: 'A rate cannot be cleared, only corrected' }),
+    clone() { return { text: async () => '' }; }
+  });
+  ctx.renderEmployeeList = () => {};
+
+  ctx.state.rateEdit = { id: 'a', draft: '99.00', saving: false, error: '' };
+  await ctx.saveRateEdit();
+
+  assert.ok(ctx.state.rateEdit, 'a refusal must not close the editor and drop what was typed');
+  assert.strictEqual(ctx.state.rateEdit.saving, false);
+  assert.match(ctx.state.rateEdit.error, /cannot be cleared/,
+    'the server sentence is the useful one, not the status code');
+  assert.strictEqual(ctx.state.employees[0].wage, '31.50',
+    'and the roster must still show the rate that is actually stored');
+});
+
+test('the editor renders in normal flow, and the id is safe inside the handler', () => {
+  // A rendering test cannot see CSS, and .table-wrap has overflow:hidden
+  // (public/app.html). An absolutely-positioned editor inside that cell would
+  // be clipped out of sight while every assertion here passed — which is
+  // exactly how the daily ⋯ menu shipped doing nothing.
+  const ctx = rosterCtx([person({ id: 'a', payType: 'Hourly', wage: '31.50', empNum: '0319' })]);
+  ctx.state.rateEdit = { id: 'a', draft: '31.50', saving: false, error: '' };
+  const open = ctx.employeeRow(ctx.state.employees[0]);
+  assert.doesNotMatch(open, /position:\s*absolute/,
+    'the wage editor must sit in normal flow, not be clipped by the table wrapper');
+
+  // The handler takes the id as a quoted JS string. esc() does not escape a
+  // single quote, so the id goes through jsStr instead.
+  const ctx2 = rosterCtx([person({ id: "a'); alert(1);('", payType: 'Hourly', wage: '31.50', empNum: '0319' })]);
+  const row = ctx2.employeeRow(ctx2.state.employees[0]);
+  assert.doesNotMatch(row, /openRateEdit\('a'\)/, 'the id closed the argument');
+  assert.ok(row.includes("\\'"), 'the quote should be escaped for the JS context');
+});
