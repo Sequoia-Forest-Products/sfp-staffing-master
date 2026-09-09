@@ -1,7 +1,34 @@
 -- =====================================================================
--- NOT YET APPLIED. Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
+-- APPLIED 2026-09-09 against the STAFFING project (zwghbbyzrycpnesuuzgi),
+-- one section at a time. What each returned:
 --
--- Walk it one section at a time and verify each before the next.
+--   §1  Table created. Ten columns, both indexes, the FK to employees with
+--       ON DELETE CASCADE, and the four-value CHECK on `field` all present.
+--       Empty, as intended — the past is not recoverable and this starts now.
+--
+--   §2  Trigger created. Tested in BOTH directions, because a gate that
+--       refuses everybody satisfies every "must not" assertion:
+--
+--         before the trigger   insert, update and delete all SUCCEEDED,
+--                              proving the control statements are well
+--                              formed and would otherwise work
+--         after the trigger    insert SUCCEEDED (appends still work)
+--                              update REFUSED with the P0001 message
+--                              delete REFUSED with the P0001 message
+--                              the row survived, still reading 'After'
+--
+--   §3  Verified: 0 rows, exactly one non-internal trigger, tgenabled = 'O'.
+--
+-- ALSO CHECKED, because the table and the writer can agree on paper and
+-- disagree in the database. planPositionHistory's emitted keys were compared
+-- against information_schema: nothing it emits is missing from the table,
+-- the only column it omits is `id` (which defaults), and no NOT NULL column
+-- without a default goes unsupplied. Its real two-row output was then
+-- inserted against a live employee id — accepted, exercising the FK, the
+-- CHECK and the ISO timestamp — inside a block that aborted itself, so
+-- nothing was left behind and the trigger never had to be disabled.
+--
+-- Kept for the record. Every statement is guarded; re-running is a no-op.
 -- =====================================================================
 -- SFP Staffing — record what a person's classification WAS
 --
