@@ -63,13 +63,14 @@ function fakeEl(id) {
 }
 
 function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats: seatsIn = SEATS,
-                   assignable = true } = {}) {
+                   assignable = true, patchStatus = 200, patchSeat = null } = {}) {
   // DEEP-COPIED PER SANDBOX. The page assigns the returned row over the one in
   // state, so handing every test the same objects let one test's assignment
   // show up in the next. That is not a hypothetical: it made the duplicate-seat
   // test fail against a fixture two earlier tests had already rewritten.
   const seats = seatsIn.map(x => ({ ...x }));
   const calls = [];
+  const toasts = [];
   const els = new Map();
   const getEl = (id) => { if (!els.has(id)) els.set(id, fakeEl(id)); return els.get(id); };
   const ctx = {
@@ -92,6 +93,22 @@ function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats
         if ((opts.method || 'GET') === 'PATCH') {
           const body = JSON.parse(opts.body);
           const seat = seats.find(x => x.id === body.id);
+          if (patchStatus !== 200) {
+            return { ok: false, status: patchStatus, json: async () => ({
+              ok: false, error: 'boom' }) };
+          }
+          // The position rate is its own operation on the server — one column
+          // per request — so it is its own branch here too.
+          if (Object.prototype.hasOwnProperty.call(body, 'maxWage')) {
+            if (patchSeat) return { ok: true, status: 200, json: async () => patchSeat(body) };
+            const raw = String(body.maxWage === '' || body.maxWage == null ? '' : body.maxWage);
+            const next = raw === '' ? null : Math.round(Number(raw) * 100) / 100;
+            const previousMaxWage = seat.max_wage == null ? null : Number(seat.max_wage);
+            const updated = { ...seat, max_wage: next };
+            Object.assign(seat, updated);
+            return { ok: true, status: 200,
+                     json: async () => ({ ok: true, seat: updated, previousMaxWage }) };
+          }
           // The server resolves the id against the roster and returns the row it
           // STORED, which is the whole reason the page reads the response rather
           // than the picked value.
@@ -131,7 +148,9 @@ function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats
     vm.runInContext(fs.readFileSync(path.join(SRC, m), 'utf8'), ctx, { filename: m });
   }
   vm.runInContext('globalThis.state = state;', ctx, { filename: 'expose.js' });
-  vm.runInContext('toast = () => {};', ctx, { filename: 'stub-toast.js' });
+  vm.runInContext('toast = (msg, type) => { globalThis.__toasts.push({ msg, type }); };',
+    ctx, { filename: 'stub-toast.js' });
+  ctx.__toasts = toasts;
   ctx.__calls = calls;
   ctx.__el = getEl;
   ctx.state.employees = ROSTER.map(e => ({ ...e }));
@@ -184,7 +203,9 @@ test('max_wage and the variance column are back, signed and coloured', async () 
   const html = ctx.renderEconomics();
 
   assert.match(html, /Millwright 1/);
-  assert.match(html, /\$38\.50/, "the seat's budgeted ceiling");
+  // The ceiling is an editable field now, so it carries the bare figure — a
+  // '$' inside an input is something somebody would have to type around.
+  assert.match(html, /class="econ-max" value="38\.50"/, "the seat's position rate");
   // Ana is 36.00 against a 38.50 ceiling: 2.50 under.
   assert.match(html, /var-under[^>]*>-\$2\.50/);
   // Bo is 33.25 against 30.00: 3.25 over, and over is the one worth seeing.
@@ -256,17 +277,20 @@ test('active hourly people in no seat are listed; inactive and salaried are not'
 // read-only
 // ---------------------------------------------------------------------------
 
-test('the only editable thing is the assignment', async () => {
+test('two things are editable per seat: the assignment and the position rate', async () => {
   const ctx = await loaded();
   const html = ctx.renderEconomics();
-  // One control per seat, and it is the person.
+  // The occupant, and what the seat is budgeted at. The ceiling used to be
+  // read-only here; see 'the position rate' section below for why that changed.
   assert.match(html, /econAssign\('e1'/);
+  assert.match(html, /econSaveMax\('e1'/);
   assert.ok(!/saveEconomics/.test(html), 'no whole-table save');
-  // The plan itself is not editable here: no input bound to a seat's number,
-  // section, title or ceiling.
-  assert.ok(!/max_wage\s*=|\.seat\s*=|\.section\s*=|\.num\s*=/.test(html));
-  assert.match(html, /section, title and ceiling are set in the database/);
-  // The two number boxes that ARE here are display assumptions, and say so.
+  // The SHAPE of the plan is still not editable here: no input bound to a
+  // seat's number, section or title. Adding or retitling a seat changes what
+  // the plan is rather than what it budgets.
+  assert.ok(!/\.seat\s*=|\.section\s*=|\.num\s*=/.test(html));
+  assert.match(html, /number, section and title are set in the database/);
+  // The two number boxes at the top are display assumptions, and say so.
   assert.match(html, /not stored/);
 });
 
@@ -502,4 +526,166 @@ test('every seat has exactly one selected option, whatever its state', async () 
     assert.strictEqual(selected.length, 1,
       `seat ${i} has ${selected.length} selected options, must have exactly 1`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// the position rate
+// ---------------------------------------------------------------------------
+//
+// `max_wage` was read-only on this page for a phase, on the argument that
+// moving a ceiling is a budgeting decision rather than a staffing one. What it
+// produced was a figure nobody could move: the number the whole Variance column
+// is measured against was editable only by writing SQL against a live table.
+//
+// The gate did not change with it. The endpoint already needs the salaries tier
+// to READ a ceiling, so the people who can now set one are exactly the people
+// who could already see one.
+
+const maxInputs = (html) => html.match(/<input[^>]*class="econ-max"[^>]*>/g) || [];
+
+test('the columns are named Current Rate and Position Rate', async () => {
+  const ctx = await loaded();
+  const html = ctx.renderEconomics();
+  assert.match(html, /Current Rate/);
+  assert.match(html, /Position Rate/);
+  // The old headings are gone, not merely joined. 'Rate' on its own said
+  // nothing about whose, and 'Max' read as a cap on the person.
+  assert.ok(!/>Rate</.test(html), "the bare 'Rate' heading is gone");
+  assert.ok(!/>Max</.test(html), "the bare 'Max' heading is gone");
+});
+
+test('every seat has an editable position rate, pre-filled', async () => {
+  const ctx = await loaded();
+  const inputs = maxInputs(ctx.renderEconomics());
+  assert.strictEqual(inputs.length, 5, 'one per seat, including the vacant ones');
+  assert.match(ctx.renderEconomics(), /class="econ-max" value="38\.50"/);
+});
+
+test('a seat with no ceiling gets an empty field, not a zero', async () => {
+  // A null max_wage is a real state the read has always tolerated. Showing 0.00
+  // for it would assert a ceiling of nothing, which is a different claim.
+  const ctx = await loaded({ seats: SEATS.map(x =>
+    x.id === 'e3' ? { ...x, max_wage: null } : x) });
+  const html = ctx.renderEconomics();
+  assert.match(html, /class="econ-max" value=""\s+placeholder="none"/);
+  assert.ok(!/value="0\.00"/.test(html));
+});
+
+test('setting a rate sends one PATCH naming one seat and one column', async () => {
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '40.00');
+
+  const w = patches(ctx);
+  assert.strictEqual(w.length, 1);
+  assert.deepStrictEqual(w[0].body, { id: 'e1', maxWage: 40 });
+  // employeeId is NOT in the body: who is in the seat and what it is budgeted
+  // at are separate facts, and the endpoint refuses a body naming both.
+  assert.ok(!('employeeId' in w[0].body));
+});
+
+test('the local row advances from what the SERVER returned', async () => {
+  // Not from what was typed. The response is canonical, so a value the server
+  // rounded or rejected cannot linger on screen as though it had been stored.
+  const ctx = await loaded({ patchSeat: (body) => ({ ok: true,
+    seat: { id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1', employeeId: 'h1',
+            name: 'Ana Reyes', unlinked: false, occupantStatus: 'Active',
+            occupantSalaried: false, max_wage: 40 },
+    previousMaxWage: 38.5 }) });
+  await ctx.econSaveMax('e1', '40');
+  const seat = ctx.state.economics.find(s => s.id === 'e1');
+  assert.strictEqual(seat.max_wage, 40);
+  // And the move is reported with both figures — a ceiling has no history
+  // table, so this toast is the only place the previous value is stated.
+  const t = ctx.__toasts[ctx.__toasts.length - 1];
+  assert.match(t.msg, /\$38\.50/);
+  assert.match(t.msg, /\$40\.00/);
+  assert.strictEqual(t.type, 'success');
+});
+
+test('the variance recomputes against the new ceiling', async () => {
+  // Ana is 36.00. Against 38.50 she is 2.50 under; move the ceiling to 30 and
+  // she is 6.00 over. This is the assertion that the column follows the field.
+  const ctx = await loaded({ patchSeat: () => ({ ok: true,
+    seat: { id: 'e1', num: 1, section: 'Mill', seat: 'Millwright 1', employeeId: 'h1',
+            name: 'Ana Reyes', unlinked: false, occupantStatus: 'Active',
+            occupantSalaried: false, max_wage: 30 },
+    previousMaxWage: 38.5 }) });
+  assert.match(ctx.renderEconomics(), /var-under[^>]*>-\$2\.50/);
+  await ctx.econSaveMax('e1', '30');
+  assert.match(ctx.renderEconomics(), /var-over[^>]*>\+\$6\.00/);
+});
+
+test('clearing a position rate is allowed — a seat with no ceiling is a real state', async () => {
+  // Unlike an hourly rate, which wage_history cannot record as having gone
+  // away. The page has always tolerated a null max_wage and drawn a dash.
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '');
+  assert.deepStrictEqual(patches(ctx)[0].body, { id: 'e1', maxWage: '' });
+  assert.match(ctx.__toasts[ctx.__toasts.length - 1].msg, /no position rate/);
+});
+
+test('an unchanged rate writes nothing', async () => {
+  // Re-saving 38.50 over a stored 38.5 must not stamp updated_at or read as a
+  // change in any audit of the row. Blur fires on every tab-through, so this is
+  // the ordinary case, not the edge one.
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '38.50');
+  assert.deepStrictEqual(patches(ctx), []);
+  await ctx.econSaveMax('e1', '$38.50');
+  assert.deepStrictEqual(patches(ctx), [], 'nor in a different format');
+});
+
+test('a non-numeric rate is refused before the round trip, and the field reverts', async () => {
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', 'forty');
+  assert.deepStrictEqual(patches(ctx), []);
+  assert.match(ctx.__toasts[ctx.__toasts.length - 1].msg, /not a position rate/);
+  // Reverted to what the database still holds, so the screen never shows a
+  // ceiling that was not saved.
+  assert.match(ctx.renderEconomics(), /class="econ-max" value="38\.50"/);
+});
+
+test('an annual figure in the hourly field is refused, not stored', async () => {
+  // The realistic accident, and the one that would do real damage quietly: a
+  // ceiling of 95000 makes the variance column meaningless for that seat rather
+  // than look wrong.
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '95000');
+  assert.deepStrictEqual(patches(ctx), []);
+  assert.match(ctx.__toasts[ctx.__toasts.length - 1].msg, /too high/);
+});
+
+test('a negative rate is refused', async () => {
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '-5');
+  assert.deepStrictEqual(patches(ctx), []);
+  assert.match(ctx.__toasts[ctx.__toasts.length - 1].msg, /not a position rate/);
+});
+
+test('a failed save reverts the field and never reports success', async () => {
+  const ctx = await loaded({ patchStatus: 500 });
+  await ctx.econSaveMax('e1', '41.00');
+  assert.ok(!ctx.__toasts.some(t => t.type === 'success'));
+  const seat = ctx.state.economics.find(s => s.id === 'e1');
+  assert.strictEqual(seat.max_wage, 38.5, 'the stored ceiling is untouched');
+  assert.match(ctx.renderEconomics(), /class="econ-max" value="38\.50"/);
+});
+
+test('one save moves one seat, and cannot reach a second', async () => {
+  const ctx = await loaded();
+  await ctx.econSaveMax('e1', '41.00');
+  assert.strictEqual(patches(ctx).length, 1);
+  assert.match(patches(ctx)[0].url, /economics/);
+  assert.strictEqual(ctx.state.economics.find(s => s.id === 'e2').max_wage, 30,
+    'nobody else moved');
+});
+
+test('a draft survives a re-render mid-edit', async () => {
+  // Every row is editable at once here, so the drafts are keyed by seat. A
+  // render triggered by anything else must not swallow what was typed.
+  const ctx = await loaded();
+  ctx.econMaxSet('e1', '39.7');
+  assert.match(ctx.renderEconomics(), /class="econ-max" value="39\.7"/);
+  // And a different seat is undisturbed by it.
+  assert.match(ctx.renderEconomics(), /class="econ-max" value="30\.00"/);
 });

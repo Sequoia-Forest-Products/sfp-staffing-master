@@ -30,10 +30,23 @@
 // emptied. That is the failure this endpoint is shaped around: the unit of
 // change is one seat, and nothing here can touch a row the caller did not name.
 //
-// ONLY `name` IS WRITABLE. num, section, seat and max_wage are the PLAN. Moving
-// a ceiling or renaming a seat is a budgeting decision, not staffing, and it
-// does not belong on a screen whose job is "who is sitting here". A body naming
-// any other column is refused rather than filtered, so a caller is told.
+// TWO COLUMNS ARE WRITABLE: the occupant and `max_wage`, the position rate. num,
+// section and seat are the PLAN's shape — changing those resizes the plan — and
+// a body naming one is refused rather than filtered, so a caller is told.
+//
+// `max_wage` was in that refused list until this change, on the argument that
+// moving a ceiling is a budgeting decision and does not belong on a screen whose
+// job is "who is sitting here". What that produced in practice was a figure
+// nobody could move: the number the entire variance column is measured against
+// was editable only by writing SQL against a live table. That is a worse audit
+// trail than an app write and a standing reason for the plan to drift out of
+// date, so the ceiling is now typed here. The gate is unchanged — the endpoint
+// already requires the salaries tier to read a ceiling at all, so the people who
+// can set one are exactly the people who could already see one.
+//
+// ONE COLUMN PER REQUEST, still. A body naming both employeeId and maxWage is
+// refused: they are unrelated facts and one response cannot report both
+// honestly.
 //
 // NO CREATE, NO DELETE. Adding or removing a seat changes the size of the plan.
 //
@@ -72,10 +85,30 @@ const { verifySession, getCookies } = require('./session-lib');
 const TABLE = 'economics';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// The one column this endpoint may set. Kept as a list rather than a string so
-// the refusal below reads the same way permissions-lib's does, and so adding a
-// second editable column is one edit in one place.
-const WRITABLE = ['employeeId'];
+// The columns this endpoint may set, and there are two now.
+//
+// `maxWage` IS A REVERSAL. The ceiling was deliberately unwritable: this screen's
+// job was "who is sitting here", and moving a ceiling is a budgeting decision,
+// so it was made in the database on purpose. That turned out to mean nobody
+// moved one — the figure the whole variance column is measured against could
+// only be changed by somebody willing to write SQL against a live table, which
+// is both a worse audit trail than an app write and a reason for the plan to go
+// stale. It is the same tier either way: the endpoint already needs `salaries`
+// for the read, so anybody who can SEE a ceiling can now set one.
+//
+// STILL ONE COLUMN PER REQUEST. A body naming both is refused — see the check
+// below. The two are unrelated facts (who is in the seat, what the seat is
+// budgeted at) and reporting the outcome of a combined write honestly would
+// mean describing two changes in one sentence.
+const WRITABLE = ['employeeId', 'maxWage'];
+
+// A ceiling above this is refused as a typo rather than stored. The realistic
+// accident is an annual salary pasted into an hourly field — 95000 in a column
+// whose values are all between 20 and 55 — and it would silently make the
+// variance column meaningless for that seat rather than look wrong. Generous on
+// purpose: it is a guard against a misplaced decimal point, not a policy about
+// what anybody may be paid.
+const MAX_CEILING = 1000;
 
 const BASE_COLUMNS = 'id,num,section,seat,name,max_wage';
 const FULL_COLUMNS = BASE_COLUMNS + ',employee_id';
@@ -244,15 +277,67 @@ exports.handler = async (event) => {
         detail: refused.includes('name')
           ? 'A seat points at an employee id, not at a name — that is what stops a rename ' +
             'orphaning it. Send employeeId.'
-          : 'Only the assigned person can be changed here. The seat number, section, title and ' +
-            'rate ceiling are the plan itself — changing those is a budgeting decision and is ' +
-            'made in the database.'
+          : 'Only the assigned person and the position rate can be changed here. The seat ' +
+            'number, section and title are the plan itself — changing those resizes the plan ' +
+            'and is done in the database.'
       });
     }
 
+    // Exactly one column, named explicitly. Refusing both together keeps the
+    // one-fact-per-request shape the whole endpoint is built on, and keeps the
+    // response able to say what happened in one sentence.
+    const naming = WRITABLE.filter(k => Object.prototype.hasOwnProperty.call(body, k));
+    if (naming.length === 0) {
+      return fail(400, 'Nothing to change', {
+        detail: 'Send employeeId to assign the seat, or maxWage to set its position rate.'
+      });
+    }
+    if (naming.length > 1) {
+      return fail(400, 'One change at a time: ' + naming.join(' and '), {
+        detail: 'Who is in a seat and what the seat is budgeted at are separate facts. ' +
+                'Send them as separate requests.'
+      });
+    }
+    const op = naming[0];
+
     const wantedId = textOf(body.employeeId);
-    if (wantedId && !UUID_RE.test(wantedId)) {
+    if (op === 'employeeId' && wantedId && !UUID_RE.test(wantedId)) {
       return fail(400, 'employeeId must be an employee UUID, or empty to vacate the seat.');
+    }
+
+    // The position rate, parsed the way somebody types one: 45, 45.00, $45.00,
+    // '45.5'. Three outcomes and each gets its own sentence, because each has a
+    // different remedy — the same shape as parseRate in the browser and
+    // wage-edit-lib on the server.
+    let nextMax;
+    if (op === 'maxWage') {
+      const raw = String(body.maxWage == null ? '' : body.maxWage).replace(/[$,\s]/g, '');
+      if (raw === '') {
+        // A seat with no ceiling is a real state — the read has always tolerated
+        // a null max_wage and the page shows a dash for it and for the variance.
+        // So clearing is allowed, unlike clearing an hourly rate, which
+        // wage_history cannot record.
+        nextMax = null;
+      } else {
+        const n = Number(raw);
+        if (!isFinite(n)) {
+          return fail(400, `"${String(body.maxWage).trim()}" is not a position rate`, {
+            detail: 'Enter an hourly figure, e.g. 45.00, or clear it to leave the seat with no ceiling.'
+          });
+        }
+        if (n < 0) {
+          return fail(400, 'A position rate cannot be negative', {
+            detail: 'Clear the field to leave the seat with no ceiling.'
+          });
+        }
+        if (n > MAX_CEILING) {
+          return fail(400, `${n} is too high to be an hourly position rate`, {
+            detail: `Position rates are hourly, so anything above ${MAX_CEILING} is almost ` +
+                    'certainly an annual figure or a misplaced decimal point. Nothing was changed.'
+          });
+        }
+        nextMax = Math.round(n * 100) / 100;
+      }
     }
 
     try {
@@ -270,6 +355,37 @@ exports.handler = async (event) => {
       const existing = await db.query(TABLE, `?select=${FULL_COLUMNS}&id=eq.${encodeURIComponent(id)}`);
       if (!existing || !existing.length) return fail(404, 'No seat with that id');
       const seat = existing[0];
+
+      // ---- the position rate ----
+      //
+      // Handled first and returns on its own, so the assignment path below is
+      // untouched by it. `max_wage` needs none of what that path does: there is
+      // no roster to validate against, nobody to be seated twice, and no `name`
+      // to carry along.
+      if (op === 'maxWage') {
+        const currentMax = seat.max_wage == null ? null : Number(seat.max_wage);
+        // Compared as numbers, so re-saving 45 over a stored 45.00 is not a
+        // change and does not stamp updated_at.
+        const same = (currentMax == null && nextMax == null) ||
+                     (currentMax != null && nextMax != null && Math.abs(currentMax - nextMax) < 0.005);
+        const byIdNow = await employeesById();
+        if (same) {
+          return { statusCode: 200, headers,
+                   body: JSON.stringify({ ok: true, seat: shapeSeat(seat, byIdNow, true), unchanged: true }) };
+        }
+        const updatedMax = await db.update(TABLE, id, { max_wage: nextMax });
+        const maxRow = (Array.isArray(updatedMax) ? updatedMax[0] : updatedMax)
+          || { ...seat, max_wage: nextMax };
+        return { statusCode: 200, headers,
+                 body: JSON.stringify({
+                   ok: true,
+                   seat: shapeSeat(maxRow, byIdNow, true),
+                   // What it was, so the page can report the move rather than
+                   // just the new figure. A ceiling has no history table; this
+                   // response is the only place the previous value is stated.
+                   previousMaxWage: currentMax
+                 }) };
+      }
 
       let emp = null;
       if (wantedId) {

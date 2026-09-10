@@ -243,17 +243,39 @@ test('there is no method that replaces the table', async (t) => {
   assert.deepStrictEqual(writes, [], 'no DELETE, no bulk insert, nothing');
 });
 
-test('only the assigned person is writable — the plan itself is refused', async (t) => {
+test("the plan's SHAPE is refused — and so is the raw column name", async (t) => {
+  // `maxWage` is writable now; `max_wage` is not. That is not pedantry: the
+  // camelCase key is this endpoint's own vocabulary, and accepting the column
+  // name too would mean two spellings of one operation, one of which bypasses
+  // the parsing and the ceiling guard.
   const { writes } = stub(t);
   for (const body of [{ id: SEAT_1, max_wage: 999 },
                       { id: SEAT_1, seat: 'Millwright 9' },
                       { id: SEAT_1, section: 'Yard' },
-                      { id: SEAT_1, num: 42 },
-                      { id: SEAT_1, employeeId: ANA, max_wage: 999 }]) {
+                      { id: SEAT_1, num: 42 }]) {
     const res = await call('PATCH', body);
     assert.strictEqual(res.statusCode, 403, JSON.stringify(body));
     assert.match(json(res).error, /Not permitted to write/);
   }
+  assert.deepStrictEqual(writes, []);
+});
+
+test('a body naming BOTH the occupant and the position rate is refused', async (t) => {
+  // One fact per request. They are unrelated — who is in the seat, and what the
+  // seat is budgeted at — and one response cannot report both honestly.
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, employeeId: ANA, maxWage: 42 });
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(json(res).error, /One change at a time/);
+  assert.match(json(res).detail, /separate requests/);
+  assert.deepStrictEqual(writes, []);
+});
+
+test('a body naming neither is refused rather than treated as a no-op', async (t) => {
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1 });
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(json(res).error, /Nothing to change/);
   assert.deepStrictEqual(writes, []);
 });
 
@@ -399,5 +421,142 @@ test('malformed JSON is a 400, not a crash', async (t) => {
     queryStringParameters: {}, body: '{not json'
   });
   assert.strictEqual(res.statusCode, 400);
+  assert.deepStrictEqual(writes, []);
+});
+
+// ---------------------------------------------------------------------------
+// the position rate
+// ---------------------------------------------------------------------------
+//
+// `max_wage` was on the refused list, on the argument that moving a ceiling is
+// a budgeting decision and does not belong on a screen about who is sitting
+// where. What that produced was a figure nobody could move: the number the
+// whole variance column is measured against was editable only by writing SQL
+// against a live table, which is a worse audit trail than an app write.
+//
+// The GATE did not change. The endpoint already requires the salaries tier to
+// read a ceiling, so the people who can set one are exactly the people who
+// could already see one — which is what the first test here pins.
+
+test('setting a position rate needs the salaries tier, like everything else here', async (t) => {
+  const { writes } = stub(t, { tier: null });
+  const res = await call('PATCH', { id: SEAT_1, maxWage: 42 });
+  assert.strictEqual(res.statusCode, 403);
+  assert.match(json(res).detail, /salaries tier/);
+  assert.deepStrictEqual(writes, [], 'refused before any write');
+});
+
+test('a position rate writes one column on one row', async (t) => {
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: 42.5 });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(writes.length, 1);
+  assert.deepStrictEqual(writes[0].body, { max_wage: 42.5 });
+  assert.strictEqual(json(res).seat.max_wage, 42.5);
+  // The previous value comes back, because a ceiling has no history table and
+  // this response is the only place it is stated.
+  assert.strictEqual(json(res).previousMaxWage, 38.5);
+});
+
+test('it does not touch the occupant', async (t) => {
+  // The assignment path writes employee_id AND name. This one must write
+  // neither, or a ceiling change would restamp the seat's occupant.
+  const { writes } = stub(t);
+  await call('PATCH', { id: SEAT_2, maxWage: 31 });
+  assert.deepStrictEqual(Object.keys(writes[0].body), ['max_wage']);
+  const res = await call('PATCH', { id: SEAT_2, maxWage: 32 });
+  assert.strictEqual(json(res).seat.employeeId, ANA, 'still Ana');
+  assert.strictEqual(json(res).seat.name, 'Ana Reyes');
+});
+
+test('what somebody types is what is parsed', async (t) => {
+  for (const [typed, stored] of [['45', 45], ['45.00', 45], ['$45.00', 45],
+                                 ['45.567', 45.57], [45.5, 45.5], [' 45 ', 45]]) {
+    const { writes } = stub(t);
+    const res = await call('PATCH', { id: SEAT_1, maxWage: typed });
+    assert.strictEqual(res.statusCode, 200, String(typed));
+    assert.deepStrictEqual(writes[0].body, { max_wage: stored }, String(typed));
+  }
+});
+
+test('clearing a position rate writes null — a seat with no ceiling is real', async (t) => {
+  // Unlike clearing an hourly rate, which wage_history has no way to record.
+  // The read has always tolerated a null max_wage and drawn a dash for it.
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: '' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(writes[0].body, { max_wage: null });
+  assert.strictEqual(json(res).seat.max_wage, null);
+});
+
+test('re-sending the rate already stored writes nothing at all', async (t) => {
+  // Blur fires on every tab-through, so this is the ordinary case. A write here
+  // would stamp updated_at and read as a change in any audit of the row.
+  const { writes } = stub(t);
+  for (const same of [38.5, '38.50', '$38.50']) {
+    const res = await call('PATCH', { id: SEAT_1, maxWage: same });
+    assert.strictEqual(res.statusCode, 200, String(same));
+    assert.strictEqual(json(res).unchanged, true, String(same));
+  }
+  assert.deepStrictEqual(writes, []);
+});
+
+test('clearing an already-empty ceiling is also a no-op', async (t) => {
+  const { writes } = stub(t, {
+    seats: SEATS.map(x => (x.id === SEAT_1 ? { ...x, max_wage: null } : x)) });
+  const res = await call('PATCH', { id: SEAT_1, maxWage: '' });
+  assert.strictEqual(json(res).unchanged, true);
+  assert.deepStrictEqual(writes, []);
+});
+
+test('an unparseable rate is refused with its own sentence', async (t) => {
+  const { writes } = stub(t);
+  for (const bad of ['forty', 'abc', '45.5.5', '--3']) {
+    const res = await call('PATCH', { id: SEAT_1, maxWage: bad });
+    assert.strictEqual(res.statusCode, 400, bad);
+    assert.match(json(res).error, /is not a position rate/, bad);
+  }
+  assert.deepStrictEqual(writes, []);
+});
+
+test('a negative rate is refused, and the remedy named', async (t) => {
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: -5 });
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(json(res).error, /cannot be negative/);
+  assert.match(json(res).detail, /Clear the field/);
+  assert.deepStrictEqual(writes, []);
+});
+
+test('an annual figure in the hourly field is refused, not stored', async (t) => {
+  // THE ACCIDENT WORTH GUARDING. A ceiling of 95000 does not look wrong on the
+  // page — it makes the variance column meaningless for that seat, quietly.
+  const { writes } = stub(t);
+  for (const annual of [95000, '105,000', 1001]) {
+    const res = await call('PATCH', { id: SEAT_1, maxWage: annual });
+    assert.strictEqual(res.statusCode, 400, String(annual));
+    assert.match(json(res).error, /too high/, String(annual));
+    assert.match(json(res).detail, /annual figure or a misplaced decimal/, String(annual));
+  }
+  assert.deepStrictEqual(writes, []);
+  // The boundary itself is allowed: it is a typo guard, not a pay policy.
+  const ok = await call('PATCH', { id: SEAT_1, maxWage: 1000 });
+  assert.strictEqual(ok.statusCode, 200);
+});
+
+test('zero IS a real ceiling and is stored', async (t) => {
+  // Unlike an hourly wage, where zero prices a day's work at nothing. A seat
+  // budgeted at zero is a seat nobody may be paid for, which is a coherent — if
+  // unusual — plan, and refusing it would be inventing a policy.
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: 0 });
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(writes[0].body, { max_wage: 0 });
+});
+
+test('a rate for a seat that does not exist is a 404, and writes nothing', async (t) => {
+  const { writes } = stub(t);
+  const res = await call('PATCH', { id: '99999999-9999-9999-9999-999999999999', maxWage: 42 });
+  assert.strictEqual(res.statusCode, 404);
   assert.deepStrictEqual(writes, []);
 });

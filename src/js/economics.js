@@ -30,6 +30,10 @@
 
 function econRows(){ return state.economics || []; }
 
+// Mirrors MAX_CEILING in netlify/functions/economics.js. A guard against an
+// annual figure typed into an hourly field, not a policy about pay.
+const ECON_MAX_CEILING = 1000;
+
 // The hourly rate behind a seat's occupant, looked up BY ID. A salaried person
 // has no hourly rate at all — employees.wage is NULL for them since Phase D
 // retired the sentinel — so they contribute nothing here rather than a rate of
@@ -129,6 +133,102 @@ async function econAssign(seatId, employeeId){
   state.econBusy=null; render();
 }
 
+// ------------------------------------------------------------------------
+// THE POSITION RATE
+// ------------------------------------------------------------------------
+//
+// `max_wage` is the seat's budgeted hourly ceiling, and the whole Variance
+// column is measured against it. It was read-only here for a phase, on the
+// argument that moving a ceiling is a budgeting decision — see the header of
+// netlify/functions/economics.js for why that was reversed.
+//
+// SAVES ON BLUR, ONE SEAT AT A TIME, like the assignment dropdown beside it and
+// for the same reason: it is a single fact with nothing to reconcile against
+// anything else, so there is no Save button and no draft to lose. `onchange`
+// rather than `oninput` — a rate that saved per keystroke would write 4, then
+// 45, then 45.5 on the way to 45.50.
+//
+// The DRAFT is held per seat in state.econMaxDrafts so a re-render mid-edit
+// cannot swallow what was typed, and is cleared once the server answers.
+
+function econMaxDraft(p){
+  const d=state.econMaxDrafts||{};
+  if(Object.prototype.hasOwnProperty.call(d,String(p.id))) return d[String(p.id)];
+  return p.max_wage==null?'':Number(p.max_wage).toFixed(2);
+}
+
+function econMaxSet(seatId,v){
+  if(!state.econMaxDrafts) state.econMaxDrafts={};
+  state.econMaxDrafts[String(seatId)]=v;
+}
+
+// Commits the typed ceiling. Refuses before the round trip what the server
+// would refuse anyway, so the message arrives as a sentence rather than a
+// status code — a mirror of the endpoint's rules, not a second set of them.
+async function econSaveMax(seatId,raw){
+  if(state.econBusy) return;
+  const seat=(state.economics||[]).find(s=>String(s.id)===String(seatId));
+  if(!seat) return;
+
+  const current=seat.max_wage==null?null:Number(seat.max_wage);
+  const text=String(raw==null?'':raw).replace(/[$,\s]/g,'');
+
+  let next;
+  if(text===''){
+    next=null;                       // clearing is allowed: a seat with no ceiling is a real state
+  }else{
+    const n=Number(text);
+    if(!isFinite(n)||n<0){
+      toast(`"${String(raw).trim()}" is not a position rate — enter an hourly figure like 45.00`,'error');
+      econMaxSet(seatId,current==null?'':current.toFixed(2)); render(); return;
+    }
+    if(n>ECON_MAX_CEILING){
+      // The realistic accident: an annual figure in an hourly field.
+      toast(`${n} is too high for an hourly position rate — nothing was changed`,'error');
+      econMaxSet(seatId,current==null?'':current.toFixed(2)); render(); return;
+    }
+    next=Math.round(n*100)/100;
+  }
+
+  const same=(current==null&&next==null)||
+             (current!=null&&next!=null&&Math.abs(current-next)<0.005);
+  if(same){ econClearMaxDraft(seatId); render(); return; }
+
+  state.econBusy=seatId; render();
+  try{
+    const res=await fetch('/api/economics',{
+      method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:seatId,maxWage:next==null?'':next})
+    });
+    if(res.status===401){location.href='/';return;}
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok||d.ok===false) throw new Error(d.detail||d.error||('Request failed ('+res.status+')'));
+
+    if(d.seat) Object.assign(seat,d.seat);
+    econClearMaxDraft(seatId);
+
+    if(d.unchanged){
+      // Nothing to say — the server declined to write a value already there.
+    }else{
+      const was=d.previousMaxWage;
+      const label=seat.seat||'Seat';
+      if(next==null) toast(`${label} now has no position rate`,'success');
+      else if(was==null) toast(`${label} position rate set to ${fmt$(next)}`,'success');
+      else toast(`${label} position rate ${fmt$(was)} → ${fmt$(next)}`,'success');
+    }
+  }catch(err){
+    // The field goes back to what the database still holds, so the screen never
+    // shows a ceiling that was not saved.
+    econMaxSet(seatId,current==null?'':current.toFixed(2));
+    toast(err.message,'error');
+  }
+  state.econBusy=null; render();
+}
+
+function econClearMaxDraft(seatId){
+  if(state.econMaxDrafts) delete state.econMaxDrafts[String(seatId)];
+}
+
 function econSetBurden(v){ const n=Number(v); state.burden=isFinite(n)&&n>=0?n/100:0; render(); }
 function econSetMhr(v){ const n=Number(v); state.mhr=isFinite(n)&&n>0?n:state.mhr; render(); }
 
@@ -183,6 +283,14 @@ function renderEconomics(){
 
   const sections=[...new Set(rows.map(p=>p.section))];
 
+  // One editable ceiling. Disabled while any seat is in flight, matching the
+  // dropdowns: one write at a time is the whole concurrency model here.
+  const maxField=(p)=>`<input type="text" class="econ-max" value="${esc(econMaxDraft(p))}"
+      placeholder="none" inputmode="decimal"
+      ${state.econBusy?'disabled':''}
+      oninput="econMaxSet('${jsStr(p.id)}',this.value)"
+      onchange="econSaveMax('${jsStr(p.id)}',this.value)">`;
+
   const seatRow=(p)=>{
     const wage=econWageFor(p.employeeId);
     const max=p.max_wage==null?null:Number(p.max_wage);
@@ -223,18 +331,26 @@ function renderEconomics(){
         isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>
       <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}</div>
       <div class="econ-fig">${dpm==null?'—':esc(fmt$(dpm))}</div>
-      <div class="econ-fig">${max==null?'—':esc(fmt$(max))}</div>
+      <div class="econ-fig">${maxField(p)}</div>
       <div class="econ-fig ${cls}">${esc(varStr)}</div>
     </div>`;
   };
 
   return `<style>
-    .econ-row{display:grid;grid-template-columns:36px minmax(120px,1.2fr) minmax(150px,2fr) 80px 80px 80px 90px;gap:8px;align-items:center;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:3px}
+    .econ-row{display:grid;grid-template-columns:36px minmax(120px,1.2fr) minmax(150px,2fr) 92px 76px 92px 92px;gap:8px;align-items:center;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:3px}
     .econ-head{font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:none;border:none;padding-bottom:0}
     .econ-sec{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#fff;background:var(--rust);padding:5px 12px;border-radius:6px;margin-top:14px}
     .econ-num{color:var(--muted);font-size:10px;font-weight:700}
     .econ-seat{font-weight:600}
     .econ-name{overflow:hidden;display:flex;align-items:center;gap:6px}
+    /* Right-aligned and tabular, so a column of ceilings still reads as a
+       column of figures rather than as a row of form controls. */
+    .econ-max{width:100%;font-family:var(--font);font-size:12px;text-align:right;
+      font-variant-numeric:tabular-nums;border:1px solid transparent;border-radius:4px;
+      padding:3px 5px;background:transparent;color:var(--text)}
+    .econ-max:hover:not(:disabled){border-color:var(--border);background:var(--surface2)}
+    .econ-max:focus{border-color:var(--rust);background:#fff;outline:none}
+    .econ-max:disabled{color:var(--muted)}
     .econ-select{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;min-width:0;flex:1;background:var(--surface)}
     .econ-select-dupe{border-color:#e67e22}
     .econ-flag{color:#e67e22;font-size:10px;font-weight:700;margin-left:8px}
@@ -250,15 +366,17 @@ function renderEconomics(){
     <h2 style="font-size:24px;font-weight:700;margin-bottom:6px;color:var(--text)">Staff</h2>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
       The budgeted staffing plan: one row per <b>seat</b>, not per person. A seat can be vacant and
-      still be a real row — that is the point of the plan. <b>Max</b> is the rate ceiling budgeted
-      for that seat and <b>Variance</b> is the occupant's rate minus it, so a red figure is somebody
-      paid above the ceiling their seat was budgeted at.
+      still be a real row — that is the point of the plan. <b>Current Rate</b> is what the occupant
+      is actually paid, set on their profile card under Employees. <b>Position Rate</b> is what the
+      seat is budgeted at, and <b>Variance</b> is the current rate minus it — so a red figure is
+      somebody paid above the rate their seat was budgeted at.
     </div>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      <b>Assignment saves immediately</b>, one seat at a time — there is no Save button because
-      there is nothing to reconcile. Everything else about a seat is the plan itself: its number,
-      section, title and ceiling are set in the database, because moving a ceiling is a budgeting
-      decision rather than a staffing one.
+      <b>Both the assignment and the position rate save immediately</b>, one seat at a time — there
+      is no Save button because there is nothing to reconcile. A position rate saves when you leave
+      the field, and clearing it leaves the seat with no ceiling. What is NOT editable here is the
+      shape of the plan: a seat's number, section and title are set in the database, because adding
+      or retitling a seat changes what the plan is rather than what it budgets.
     </div>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
       Seats are hourly. A salaried person contributes no rate here, because there is no hourly rate
@@ -294,8 +412,8 @@ function renderEconomics(){
 
     <div class="econ-row econ-head" style="margin-top:16px">
       <div>#</div><div>Seat</div><div>Assigned</div>
-      <div class="econ-fig">Rate</div><div class="econ-fig">$/M</div>
-      <div class="econ-fig">Max</div><div class="econ-fig">Variance</div>
+      <div class="econ-fig">Current Rate</div><div class="econ-fig">$/M</div>
+      <div class="econ-fig">Position Rate</div><div class="econ-fig">Variance</div>
     </div>
     ${rows.length
       ? sections.map(sec=>`<div class="econ-sec">${esc(sec||'—')}</div>`
