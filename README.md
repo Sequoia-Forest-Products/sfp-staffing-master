@@ -373,7 +373,7 @@ who could already see one.
 unrelated facts and one response cannot report both honestly.
 
 **Every change to a seat is recorded in `economics_history`** — both the position rate and the
-occupant. `SCHEMA_ECONOMICS_HISTORY.sql` creates it. **History is written first**, and a failure to
+occupant. `SCHEMA_ECONOMICS_HISTORY.sql` creates it, applied 2026-09-10. **History is written first**, and a failure to
 record aborts the change: the same rule `wage_history` follows, because an overwrite with no history
 is what a history table exists to prevent, while a history row for a change that then failed to
 apply is recoverable. Before that migration has run, a *read* of the log is an empty list saying

@@ -1,7 +1,22 @@
 -- =====================================================================
--- NOT YET APPLIED. Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY.
--- §0 refuses to proceed anywhere else; the mill ERP project has been the wrong
--- target of a run in this repo more than once.
+-- APPLIED 2026-09-10 to zwghbbyzrycpnesuuzgi (sfp-staffing), in full, one
+-- section at a time. Every prediction in this file was checked against what
+-- the database actually returned; the per-section results are recorded inline.
+--
+-- §1 found 55 seats, ALL 55 carrying a ceiling — the fixture this was dry-run
+-- against assumed three without one, so §4 wrote 55 opening rows rather than
+-- the 52 the dry-run produced. The check that mattered still held: §4's count
+-- equalled §1's with_ceiling, which is the assertion, not the number.
+--
+-- The three CHECK/NOT NULL guards were then fired against the LIVE table
+-- inside a rolled-back DO block: field_check rejected 'seat_title',
+-- actually_changed rejected previous = new, and changed_by NOT NULL rejected a
+-- missing actor. The table was left holding exactly its 55 opening rows and
+-- one distinct actor ('migration'), with no test residue.
+--
+-- Run in the STAFFING project (zwghbbyzrycpnesuuzgi) ONLY. §0 refuses to
+-- proceed anywhere else; the mill ERP project has been the wrong target of a
+-- run in this repo more than once.
 --
 -- Run one section at a time, in order, reading the result of each before the
 -- next. Nothing before §2 writes or creates anything.
@@ -110,6 +125,8 @@ select
 -- ceilings predates the audit trail and no row below will explain where it came
 -- from — which is the point of §4's note.
 -- Expect: 55 rows, most with a ceiling.
+-- GOT: seats 55, with_ceiling 55, without_ceiling 0, filled 55. Every seat on
+-- the live plan carries a ceiling and has somebody in it.
 select
   count(*)                                             as seats,
   count(max_wage)                                      as with_ceiling,
@@ -251,6 +268,8 @@ where e.max_wage is not null
 
 -- Verify §4. Expect: rows = the with_ceiling count from §1, every one with a
 -- null previous_value, and changed_by = 'migration'.
+-- GOT: opening_rows 55, should_be_zero 0, ceilings 22.00 to 50.00, across 55
+-- distinct seats — one per seat, exactly §1's with_ceiling.
 select count(*)                          as opening_rows,
        count(previous_value)             as should_be_zero,
        min(new_display)                  as lowest_ceiling,
