@@ -103,7 +103,12 @@ let state = {
   // Whether the server will accept an assignment. False until
   // SCHEMA_ECONOMICS_EMPLOYEE_ID.sql has run — the page still reads, and says so,
   // rather than offering a dropdown that would be refused.
-  econAssignable:true
+  econAssignable:true,
+  // Position-rate drafts, keyed by seat id. Held so a re-render mid-edit cannot
+  // swallow what was typed into a ceiling, and cleared once the server answers.
+  // Keyed by seat rather than a single draft because every row is editable at
+  // once here — unlike Overhead → Salaries, where one screen edits one person.
+  econMaxDrafts:{}
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}

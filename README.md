@@ -332,10 +332,12 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
 The staffing plan behind **Manufacturing Costs → Staff**: 55 numbered seats, each with the employee
-assigned to it and a maximum hourly rate to compare against. `seat` here is NOT a job title —
+assigned to it and a position rate to compare against. On the page the two figures are labelled
+**Current Rate** (what the occupant is actually paid, set on their profile card) and **Position
+Rate** (what the seat is budgeted at, `max_wage`), with **Variance** the first minus the second. `seat` here is NOT a job title —
 `employees.position` is, loaded from the classification worksheet.
 
-**Phase C deleted the tab; Phase D brought it back, read-only and gated.** It was deleted because it
+**Phase C deleted the tab; Phase D brought it back, gated.** It was deleted because it
 rendered every seat's holder next to their hourly rate and a ceiling, and with no permissions system
 that was readable by every signed-in account. Manufacturing Costs answered the costing question in
 aggregate but not this one — "is the person in this seat inside the ceiling budgeted for it" — and
@@ -350,12 +352,34 @@ the table removed in the first place.
 | | |
 |---|---|
 | `GET /api/economics` | every seat, in `num` order. Needs the **salaries tier**, all-or-nothing — unlike the employees projection, which narrows a row, every column here is part of the same compensation view. |
-| `PATCH /api/economics` `{id, name}` | assign or unassign **one** seat. Needs the salaries tier. |
+| `PATCH /api/economics` `{id, employeeId}` | assign or unassign **one** seat. Needs the salaries tier. |
+| `PATCH /api/economics` `{id, maxWage}` | set **one** seat's position rate. Needs the salaries tier. |
 
-**Only `name` is writable.** `num`, `section`, `seat` and `max_wage` are the plan; moving a ceiling
-is a budgeting decision rather than a staffing one, and a body naming any of them is **refused, not
-filtered** — a 200 that silently dropped `max_wage` would report a ceiling change that did not
-happen. There is no create and no delete: adding or removing a seat changes the size of the plan.
+**Two columns are writable: the occupant and `max_wage`, the position rate.** `num`, `section` and
+`seat` are the plan's *shape* — changing those resizes or retitles the plan — and a body naming one
+is **refused, not filtered**, because a 200 that silently dropped a column would report a change
+that did not happen. There is no create and no delete.
+
+`max_wage` was on that refused list, on the argument that moving a ceiling is a budgeting decision
+rather than a staffing one. What that produced in practice was a figure nobody could move: the
+number the entire variance column is measured against was editable only by writing SQL against a
+live table, which is both a worse audit trail than an app write and a standing reason for the plan
+to drift out of date. So it is typed on the page now. The gate is unchanged — the endpoint already
+needs the salaries tier to *read* a ceiling, so the people who can set one are exactly the people
+who could already see one.
+
+**One column per request.** A body naming both `employeeId` and `maxWage` is refused: they are
+unrelated facts and one response cannot report both honestly.
+
+**The position rate is parsed, bounded, and has no history table.** `45`, `45.00` and `$45.00` all
+mean the same thing; empty clears the ceiling, which is a real state the page has always drawn as a
+dash (unlike an hourly rate, which `wage_history` cannot record as having gone away); zero is a
+coherent ceiling and is stored. Anything above **1,000** is refused as a misplaced decimal point or
+an annual figure pasted into an hourly field — the accident worth guarding, because a ceiling of
+95,000 does not *look* wrong, it quietly makes the variance column meaningless for that seat.
+Re-sending the stored value writes nothing, so the blur that fires on every tab-through does not
+stamp `updated_at`. There is no `max_wage` history: the PATCH response returns `previousMaxWage` and
+the page states the move in a toast, which is the only place the old figure appears.
 
 **No replace-all, ever.** The old page saved the whole table with `PUT` → `db.replaceAll`, which
 DELETEs every row and re-inserts, over the only record of a per-seat rate ceiling, with no screen
