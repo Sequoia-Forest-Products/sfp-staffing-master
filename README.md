@@ -354,6 +354,7 @@ the table removed in the first place.
 | `GET /api/economics` | every seat, in `num` order. Needs the **salaries tier**, all-or-nothing — unlike the employees projection, which narrows a row, every column here is part of the same compensation view. |
 | `PATCH /api/economics` `{id, employeeId}` | assign or unassign **one** seat. Needs the salaries tier. |
 | `PATCH /api/economics` `{id, maxWage}` | set **one** seat's position rate. Needs the salaries tier. |
+| `GET /api/economics?history=<seat uuid>` | that seat's recorded changes, newest first, up to 50. Needs the salaries tier. |
 
 **Two columns are writable: the occupant and `max_wage`, the position rate.** `num`, `section` and
 `seat` are the plan's *shape* — changing those resizes or retitles the plan — and a body naming one
@@ -371,15 +372,42 @@ who could already see one.
 **One column per request.** A body naming both `employeeId` and `maxWage` is refused: they are
 unrelated facts and one response cannot report both honestly.
 
-**The position rate is parsed, bounded, and has no history table.** `45`, `45.00` and `$45.00` all
+**Every change to a seat is recorded in `economics_history`** — both the position rate and the
+occupant. `SCHEMA_ECONOMICS_HISTORY.sql` creates it, applied 2026-09-10. **History is written first**, and a failure to
+record aborts the change: the same rule `wage_history` follows, because an overwrite with no history
+is what a history table exists to prevent, while a history row for a change that then failed to
+apply is recoverable. Before that migration has run, a *read* of the log is an empty list saying
+why, and a *write* is refused with a 503 naming the file — writing a change nobody can audit is the
+thing the table exists to stop.
+
+One table covers two kinds of change, discriminated by `field`. `previous_value`/`new_value` carry
+the raw stored figures and `previous_display`/`new_display` carry what they *meant* at the time,
+because an `employee_id` is an unreadable UUID whose employee may later be renamed or deleted and a
+history row has to still make sense years on. The seat's number, section and title are copied onto
+every row: the FK is `ON DELETE SET NULL`, so without them a row for a deleted seat could not say
+what it was about. `changed_by` is a column, not a sentence — `wage_history` put the editor's email
+inside its prose `note` and the result is an immutable record whose only machine-readable actor is a
+string that still named a page after that page was deleted. RLS is on with no policy, so the table
+is unreachable by a browser holding the publishable key; the read is served by `/api/economics`,
+which resolves the caller's tiers itself.
+
+The migration writes **one opening row per seat that has a ceiling**, not a backfill — there is
+nothing to backfill from, which is the whole reason the table exists. Those rows record that the
+figure predates the trail, and the page shows them as "on file before changes were recorded" rather
+than as somebody's edit. Without them the first real edit of a seat would look like the first time
+its ceiling was ever set.
+
+**The position rate is parsed and bounded.** `45`, `45.00` and `$45.00` all
 mean the same thing; empty clears the ceiling, which is a real state the page has always drawn as a
 dash (unlike an hourly rate, which `wage_history` cannot record as having gone away); zero is a
 coherent ceiling and is stored. Anything above **1,000** is refused as a misplaced decimal point or
 an annual figure pasted into an hourly field — the accident worth guarding, because a ceiling of
 95,000 does not *look* wrong, it quietly makes the variance column meaningless for that seat.
 Re-sending the stored value writes nothing, so the blur that fires on every tab-through does not
-stamp `updated_at`. There is no `max_wage` history: the PATCH response returns `previousMaxWage` and
-the page states the move in a toast, which is the only place the old figure appears.
+stamp `updated_at` — and records no history row, because a trail full of rows saying nothing moved
+is a trail nobody will read. The PATCH response returns `previousMaxWage` so the page can state the
+move in a toast; unlike before `economics_history` existed, that toast is no longer the only place
+the old figure survives.
 
 **No replace-all, ever.** The old page saved the whole table with `PUT` → `db.replaceAll`, which
 DELETEs every row and re-inserts, over the only record of a per-seat rate ceiling, with no screen

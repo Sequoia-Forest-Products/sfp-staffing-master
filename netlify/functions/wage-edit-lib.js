@@ -167,10 +167,21 @@ function planWageEdit({ employee, value, editorEmail = null, now = new Date(),
   const changePct = changePercent(previousRate, rate);
   const flagged = changePct !== null && Math.abs(changePct) > threshold;
 
+  // NAMES NO PAGE ANY MORE, and that is a correction rather than a
+  // simplification. This said "on Salaries & Wages" — a page deleted on
+  // 2026-09-10, when the hourly half of it moved to the employee profile card.
+  // Every row written between those dates therefore names a screen that does
+  // not exist, in a record that cannot be edited afterwards.
+  //
+  // The lesson is that a UI location does not belong in an audit note at all:
+  // it is the one fact in the sentence guaranteed to rot, it was never what
+  // anybody reading the history wanted to know, and `source` already
+  // distinguishes a typed correction ('manual') from a vendor observation
+  // ('bbsi'), which is the distinction that actually matters.
   const who = textOf(editorEmail) || 'an app user';
   const note = previousRate === null
-    ? `First rate on file, set on Salaries & Wages by ${who}.`
-    : `Changed from ${previousRate.toFixed(2)} to ${rate.toFixed(2)} on Salaries & Wages by ${who}.` +
+    ? `First rate on file, set in the app by ${who}.`
+    : `Changed from ${previousRate.toFixed(2)} to ${rate.toFixed(2)} by ${who}.` +
       (flagged ? ` Flagged: a move of ${changePct}% is beyond the ${threshold}% threshold.` : '');
 
   return {

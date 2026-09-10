@@ -63,7 +63,8 @@ function fakeEl(id) {
 }
 
 function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats: seatsIn = SEATS,
-                   assignable = true, patchStatus = 200, patchSeat = null } = {}) {
+                   assignable = true, patchStatus = 200, patchSeat = null,
+                   historyRows = [], historyMissing = false } = {}) {
   // DEEP-COPIED PER SANDBOX. The page assigns the returned row over the one in
   // state, so handing every test the same objects let one test's assignment
   // show up in the next. That is not a hypothetical: it made the duplicate-seat
@@ -126,6 +127,14 @@ function sandbox({ tiers = ['hourly_wages', 'salaries'], econStatus = 200, seats
                             name: match ? match.name : null, unlinked: false };
           Object.assign(seat, updated);
           return { ok: true, status: 200, json: async () => ({ ok: true, seat: updated, alsoIn }) };
+        }
+        if (/[?&]history=/.test(u)) {
+          if (historyMissing) {
+            return { ok: true, status: 200, json: async () => ({
+              ok: true, history: [], historyMissing: true,
+              note: 'economics_history does not exist yet — run SCHEMA_ECONOMICS_HISTORY.sql.' }) };
+          }
+          return { ok: true, status: 200, json: async () => ({ ok: true, history: historyRows }) };
         }
         if (econStatus !== 200) {
           return { ok: false, status: econStatus, json: async () => ({
@@ -688,4 +697,105 @@ test('a draft survives a re-render mid-edit', async () => {
   assert.match(ctx.renderEconomics(), /class="econ-max" value="39\.7"/);
   // And a different seat is undisturbed by it.
   assert.match(ctx.renderEconomics(), /class="econ-max" value="30\.00"/);
+});
+
+// ---------------------------------------------------------------------------
+// seat history
+// ---------------------------------------------------------------------------
+//
+// Both writes on this page are recorded in economics_history. Without a surface
+// that would be a write-only table, which is only half an audit trail — the
+// reason SQL-only editing was a problem in the first place was that nobody
+// could see what had happened.
+
+const HIST = [
+  { id: 'x2', field: 'max_wage', previous: '38.50', next: '42.00',
+    changedBy: 'peter.stroble@sequoiafp.com', changedAt: '2026-09-10T22:00:00Z', opening: false },
+  { id: 'x1', field: 'employee_id', previous: 'Bo Tran', next: 'Ana Reyes',
+    changedBy: 'ryley.stanley@sequoiafp.com', changedAt: '2026-09-05T17:30:00Z', opening: false },
+  { id: 'x0', field: 'max_wage', previous: null, next: '38.50',
+    changedBy: 'migration', changedAt: '2026-09-01T00:00:00Z', opening: true }
+];
+
+test('every seat offers its history, and nothing is read until asked', async () => {
+  const ctx = await loaded({ historyRows: HIST });
+  const hits = () => ctx.__calls.filter(c => /history=/.test(c.url)).length;
+  assert.match(ctx.renderEconomics(), /econToggleHistory\('e1'\)/);
+  assert.strictEqual(hits(), 0, '55 seats of history on load is a table nobody asked for');
+  await ctx.econToggleHistory('e1');
+  assert.strictEqual(hits(), 1);
+});
+
+test('the log reads as changes, with who and when', async () => {
+  const ctx = await loaded({ historyRows: HIST });
+  await ctx.econToggleHistory('e1');
+  const html = ctx.renderEconomics();
+  // A ceiling moved between figures, formatted as money.
+  assert.match(html, /Position rate<\/b> \$38\.50 → \$42\.00/);
+  // An occupant moved between people, by name.
+  assert.match(html, /Assigned<\/b> Bo Tran → Ana Reyes/);
+  assert.match(html, /peter\.stroble@sequoiafp\.com/);
+  assert.match(html, /Sep 10, 2026/);
+});
+
+test("the migration's opening rows are not presented as somebody's edit", async () => {
+  // They record that a figure predates the trail. Showing them as a change
+  // would put words in somebody's mouth on the audit log's first day.
+  const ctx = await loaded({ historyRows: HIST });
+  await ctx.econToggleHistory('e1');
+  const html = ctx.renderEconomics();
+  assert.match(html, /on file before changes were recorded/);
+  // And no actor is shown for them, because 'migration' is not a person.
+  const opening = html.slice(html.indexOf('on file before changes were recorded'));
+  assert.ok(!/migration/.test(opening.slice(0, 200)));
+});
+
+test('a null reads as the right kind of nothing for each field', async () => {
+  // 'no rate' for a ceiling, 'vacant' for a seat. The column means "none" in
+  // both cases and they are not the same sentence.
+  const ctx = await loaded({ historyRows: [
+    { id: 'a', field: 'max_wage', previous: '38.50', next: null,
+      changedBy: 'p@x.com', changedAt: '2026-09-10T22:00:00Z', opening: false },
+    { id: 'b', field: 'employee_id', previous: 'Ana Reyes', next: null,
+      changedBy: 'p@x.com', changedAt: '2026-09-10T22:00:00Z', opening: false }
+  ] });
+  await ctx.econToggleHistory('e1');
+  const html = ctx.renderEconomics();
+  assert.match(html, /Position rate<\/b> \$38\.50 → no rate/);
+  assert.match(html, /Assigned<\/b> Ana Reyes → vacant/);
+});
+
+test('toggling closes it again, without re-reading', async () => {
+  const ctx = await loaded({ historyRows: HIST });
+  await ctx.econToggleHistory('e1');
+  await ctx.econToggleHistory('e1');
+  assert.ok(!/Position rate<\/b>/.test(ctx.renderEconomics()), 'closed');
+  await ctx.econToggleHistory('e1');
+  assert.strictEqual(ctx.__calls.filter(c => /history=/.test(c.url)).length, 1,
+    'cached for this sitting');
+});
+
+test('a change to a seat re-reads its log rather than leaving it stale', async () => {
+  const ctx = await loaded({ historyRows: HIST });
+  await ctx.econToggleHistory('e1');
+  const before = ctx.__calls.filter(c => /history=/.test(c.url)).length;
+  await ctx.econSaveMax('e1', '44.00');
+  const after = ctx.__calls.filter(c => /history=/.test(c.url)).length;
+  assert.strictEqual(after, before + 1, 'the open log is refreshed after the write');
+});
+
+test('no record yet says so, and names the file to run', async () => {
+  // Reading before the migration is an empty list, not a failure. A writer is
+  // refused instead — that rule lives on the server.
+  const ctx = await loaded({ historyMissing: true });
+  await ctx.econToggleHistory('e1');
+  const html = ctx.renderEconomics();
+  assert.match(html, /No record yet/);
+  assert.match(html, /SCHEMA_ECONOMICS_HISTORY\.sql/);
+});
+
+test('a seat with nothing recorded says that, rather than rendering blank', async () => {
+  const ctx = await loaded({ historyRows: [] });
+  await ctx.econToggleHistory('e1');
+  assert.match(ctx.renderEconomics(), /Nothing recorded for this seat/);
 });

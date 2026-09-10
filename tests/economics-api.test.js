@@ -51,19 +51,43 @@ function cookie(email = CALLER) {
 // not been run: any select naming employee_id answers 400 / 42703, exactly as
 // PostgREST does.
 function stub(t, { tier = 'salaries', seats = SEATS, employees = EMPLOYEES,
-                   missingTable = false, noKeyColumn = false } = {}) {
+                   missingTable = false, noKeyColumn = false,
+                   historyMissing = false } = {}) {
   const real = payrollDb.fetchEmployees;
   t.after(() => { payrollDb.fetchEmployees = real; });
   payrollDb.fetchEmployees = async () => employees;
 
   const rows = seats.map(x => ({ ...x }));     // per-test, never shared
+  const historyRows = [];                     // what a history READ returns
   const calls = [];
   const writes = [];
+  const history = [];
   global.fetch = async (url, opts = {}) => {
     const u = decodeURIComponent(String(url));
     const method = opts.method || 'GET';
     const body = opts.body ? JSON.parse(opts.body) : null;
     calls.push({ url: u, method, body });
+    // History inserts are collected SEPARATELY from writes to the plan. Two
+    // reasons: every existing assertion about `writes[0]` is about the seat
+    // row and should stay readable, and the ORDER between the two is itself
+    // under test — the history row goes in first, so a caller that never
+    // reaches the seat write left no half-recorded change.
+    if (/economics_history/.test(u)) {
+      if (historyMissing) {
+        return { ok: false, status: 404,
+                 text: async () => 'PGRST205 could not find the table public.economics_history',
+                 json: async () => ({}) };
+      }
+      if (method === 'POST') {
+        history.push({ url: u, body, afterSeatWrites: writes.length });
+        return { ok: true, status: 201, json: async () => [body], text: async () => JSON.stringify([body]) };
+      }
+      const rowsOut = historyRows.filter(h => {
+        const want = (/seat_id=eq\.([^&]+)/.exec(u) || [])[1];
+        return !want || String(h.seat_id) === want;
+      });
+      return { ok: true, status: 200, json: async () => rowsOut, text: async () => JSON.stringify(rowsOut) };
+    }
     if (method !== 'GET') writes.push({ url: u, method, body });
 
     if (u.includes('user_permissions')) {
@@ -94,13 +118,15 @@ function stub(t, { tier = 'salaries', seats = SEATS, employees = EMPLOYEES,
       (!notId || r.id !== notId));
     return { ok: true, status: 200, json: async () => out, text: async () => JSON.stringify(out) };
   };
-  return { calls, writes, rows };
+  return { calls, writes, rows, history, historyRows };
 }
 
-const call = (method, body, email = CALLER) => api.handler({
+// (method, body, queryStringParameters, email). Nothing passed a third argument
+// before the history read existed, so adding params there disturbs no call site.
+const call = (method, body, params = {}, email = CALLER) => api.handler({
   httpMethod: method,
   headers: email ? { cookie: cookie(email) } : {},
-  queryStringParameters: {},
+  queryStringParameters: params,
   body: body === undefined ? undefined : JSON.stringify(body)
 });
 
@@ -559,4 +585,179 @@ test('a rate for a seat that does not exist is a 404, and writes nothing', async
   const res = await call('PATCH', { id: '99999999-9999-9999-9999-999999999999', maxWage: 42 });
   assert.strictEqual(res.statusCode, 404);
   assert.deepStrictEqual(writes, []);
+});
+
+// ---------------------------------------------------------------------------
+// economics_history
+// ---------------------------------------------------------------------------
+//
+// Both writes this endpoint has are recorded: the ceiling, and the occupant.
+// Until 2026-09-10 neither was, and that was tolerable while the ceiling was
+// read-only in the app — moving one meant writing SQL by hand, which at least
+// left a trace in somebody's query history. It is a field on a page now.
+//
+// HISTORY FIRST, ALWAYS, and a failure to record aborts the change. Same rule
+// wage-edit-lib states first and for the same reason: an overwrite with no
+// history is what a history table exists to prevent, while a history row for a
+// change that then failed to apply is recoverable.
+
+test('a ceiling change records history BEFORE it writes the seat', async (t) => {
+  const { writes, history } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: 42 });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(history.length, 1);
+  assert.strictEqual(writes.length, 1);
+  // The ordering assertion, and the reason the stub records it: zero seat
+  // writes had happened when the history row went in.
+  assert.strictEqual(history[0].afterSeatWrites, 0, 'history is written first');
+});
+
+test('the recorded ceiling row says what moved, from what, and who moved it', async (t) => {
+  const { history } = stub(t);
+  await call('PATCH', { id: SEAT_1, maxWage: 42 });
+  const h = history[0].body;
+  assert.strictEqual(h.field, 'max_wage');
+  assert.strictEqual(h.previous_value, '38.5');
+  assert.strictEqual(h.new_value, '42');
+  // The displays are what the figures MEANT, formatted for a reader years on.
+  assert.strictEqual(h.previous_display, '38.50');
+  assert.strictEqual(h.new_display, '42.00');
+  assert.strictEqual(h.changed_by, CALLER);
+  // The seat is copied in, so the row still identifies its seat after a rename
+  // or a delete — the FK is ON DELETE SET NULL.
+  assert.strictEqual(h.seat_id, SEAT_1);
+  assert.strictEqual(h.seat_num, 1);
+  assert.strictEqual(h.seat_title, 'Millwright 1');
+  assert.strictEqual(h.seat_section, 'Mill');
+});
+
+test('an assignment is recorded too, by name as well as by id', async (t) => {
+  // The occupant is included because it is the other write here, and because a
+  // table called economics_history that silently covered half the writes would
+  // be worse than none — a reader would conclude nothing else had changed.
+  const { history } = stub(t);
+  await call('PATCH', { id: SEAT_2, employeeId: BO });
+  const h = history[0].body;
+  assert.strictEqual(h.field, 'employee_id');
+  assert.strictEqual(h.previous_value, ANA);
+  assert.strictEqual(h.new_value, BO);
+  // A UUID is unreadable and its employee may later be renamed or deleted, so
+  // the name at the time is recorded beside it.
+  assert.strictEqual(h.previous_display, 'Ana Reyes');
+  assert.strictEqual(h.new_display, 'Bo Tran');
+});
+
+test('a vacancy is recorded as null, not as the word "vacant"', async (t) => {
+  // The column means "none" when empty. A sentinel string would sort, group
+  // and deduplicate as a person called vacant.
+  const { history } = stub(t);
+  await call('PATCH', { id: SEAT_2, employeeId: '' });
+  const h = history[0].body;
+  assert.strictEqual(h.new_value, null);
+  assert.strictEqual(h.new_display, null);
+  assert.strictEqual(h.previous_display, 'Ana Reyes', 'and who left is still named');
+});
+
+test('clearing a ceiling records the figure that went away', async (t) => {
+  const { history } = stub(t);
+  await call('PATCH', { id: SEAT_1, maxWage: '' });
+  const h = history[0].body;
+  assert.strictEqual(h.previous_display, '38.50');
+  assert.strictEqual(h.new_value, null);
+  assert.strictEqual(h.new_display, null);
+});
+
+test('a no-op records nothing at all', async (t) => {
+  // The endpoint answers `unchanged` without writing, so there must be no
+  // history row either — a trail full of rows saying nothing moved is a trail
+  // nobody will read.
+  const { writes, history } = stub(t);
+  const res = await call('PATCH', { id: SEAT_1, maxWage: '38.50' });
+  assert.strictEqual(json(res).unchanged, true);
+  assert.deepStrictEqual(writes, []);
+  assert.deepStrictEqual(history, []);
+});
+
+test('a refused change records nothing', async (t) => {
+  const { writes, history } = stub(t);
+  for (const bad of [{ maxWage: 'forty' }, { maxWage: 95000 }, { maxWage: -5 }]) {
+    await call('PATCH', { id: SEAT_1, ...bad });
+  }
+  assert.deepStrictEqual(writes, []);
+  assert.deepStrictEqual(history, [], 'refused before anything is recorded');
+});
+
+test('if the history cannot be recorded, the change is REFUSED', async (t) => {
+  // The rule that matters. A missing economics_history must not mean "write the
+  // change unrecorded" — that is exactly the state the table was added to end.
+  const { writes } = stub(t, { historyMissing: true });
+  const res = await call('PATCH', { id: SEAT_1, maxWage: 42 });
+  assert.strictEqual(res.statusCode, 503);
+  assert.strictEqual(json(res).historyMissing, true);
+  assert.match(json(res).error, /SCHEMA_ECONOMICS_HISTORY\.sql/);
+  assert.deepStrictEqual(writes, [], 'the seat was NOT changed');
+});
+
+test('the missing-history message is not confused with a missing plan', async (t) => {
+  // Both look like a missing table to PostgREST. Reporting "the plan does not
+  // exist" when the plan is fine would send somebody looking in the wrong
+  // place, so the history case is checked first and named.
+  const { } = stub(t, { historyMissing: true });
+  const res = await call('PATCH', { id: SEAT_1, employeeId: BO });
+  assert.strictEqual(res.statusCode, 503);
+  assert.ok(!/does not exist in this database/.test(json(res).error),
+    'not the economics-table message');
+  assert.match(json(res).error, /economics_history does not exist/);
+});
+
+// ---- reading it back ----
+
+test('GET ?history=<seat> returns that seat\'s changes, shaped for a reader', async (t) => {
+  const { historyRows } = stub(t);
+  historyRows.push(
+    { id: 'h1', seat_id: SEAT_1, field: 'max_wage', previous_display: '38.50',
+      new_display: '42.00', changed_by: CALLER, changed_at: '2026-09-10T22:00:00Z' },
+    { id: 'h0', seat_id: SEAT_1, field: 'max_wage', previous_display: null,
+      new_display: '38.50', changed_by: 'migration', changed_at: '2026-09-01T00:00:00Z' });
+
+  const res = await call('GET', null, { history: SEAT_1 });
+  assert.strictEqual(res.statusCode, 200);
+  const rows = json(res).history;
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[0].previous, '38.50');
+  assert.strictEqual(rows[0].next, '42.00');
+  assert.strictEqual(rows[0].changedBy, CALLER);
+  assert.strictEqual(rows[0].opening, false);
+  // The migration's opening rows are marked, so the page can say "predates the
+  // trail" rather than presenting them as somebody's edit.
+  assert.strictEqual(rows[1].opening, true);
+  // The raw values are deliberately not sent: a UUID of somebody who may have
+  // left adds nothing a reader can use.
+  assert.ok(!('previous_value' in rows[0]));
+});
+
+test('reading the history needs the salaries tier, like the plan', async (t) => {
+  stub(t, { tier: null });
+  const res = await call('GET', null, { history: SEAT_1 });
+  assert.strictEqual(res.statusCode, 403);
+  assert.match(json(res).detail, /salaries tier/);
+});
+
+test('a history read for a non-UUID is refused', async (t) => {
+  stub(t);
+  const res = await call('GET', null, { history: 'Millwright 1' });
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(json(res).error, /seat UUID/);
+});
+
+test('READING before the migration is an empty list, not an error', async (t) => {
+  // The one place the read and the write differ. Somebody opening the log
+  // before the table exists should see "nothing recorded" and why; a WRITER
+  // must be refused.
+  stub(t, { historyMissing: true });
+  const res = await call('GET', null, { history: SEAT_1 });
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(json(res).history, []);
+  assert.strictEqual(json(res).historyMissing, true);
+  assert.match(json(res).note, /SCHEMA_ECONOMICS_HISTORY\.sql/);
 });

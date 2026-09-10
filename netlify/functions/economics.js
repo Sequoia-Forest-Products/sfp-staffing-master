@@ -113,6 +113,19 @@ const MAX_CEILING = 1000;
 const BASE_COLUMNS = 'id,num,section,seat,name,max_wage';
 const FULL_COLUMNS = BASE_COLUMNS + ',employee_id';
 
+// economics_history. Written BEFORE the row it describes, and a failure to
+// record aborts the change — the same rule wage-edit-lib states first and for
+// the same reason: an overwrite with no history is the thing a history table
+// exists to prevent, and a history row for a change that then failed to apply
+// is recoverable, while the reverse is not.
+const HISTORY_TABLE = 'economics_history';
+
+const HISTORY_MIGRATION_HINT =
+  'economics_history does not exist yet — run SCHEMA_ECONOMICS_HISTORY.sql. The plan still ' +
+  'READS, and an assignment or a position rate can still be looked at, but neither can be ' +
+  'CHANGED until the trail exists: a change nobody can audit is the thing that file was added ' +
+  'to stop, so it is refused rather than written unrecorded.';
+
 const MIGRATION_HINT =
   'The economics table does not exist in this database. The staffing plan lives there; ' +
   'nothing else depends on it, so the rest of the app is unaffected.';
@@ -160,6 +173,49 @@ async function employeesById() {
     });
   }
   return out;
+}
+
+// Records one change, and RETURNS NOTHING — it either writes or throws, and a
+// throw is what stops the caller applying the change.
+//
+// The seat is copied onto the row (num, section, title) so the record still
+// identifies its seat after a rename or a delete; the FK is ON DELETE SET NULL,
+// so without the copies such a row could not say what it was about.
+//
+// Values go in twice on purpose: `previous_value`/`new_value` are the raw
+// stored figures, and `previous_display`/`new_display` are what they MEANT at
+// the time. An employee_id is an unreadable UUID whose employee may later be
+// renamed or deleted, and a history row has to still make sense years later.
+async function recordChange({ seat, field, previousValue, newValue, previousDisplay, newDisplay, changedBy }) {
+  await db.insert(HISTORY_TABLE, {
+    seat_id: seat.id,
+    seat_num: seat.num,
+    seat_section: seat.section,
+    seat_title: seat.seat,
+    field,
+    previous_value: previousValue == null ? null : String(previousValue),
+    new_value: newValue == null ? null : String(newValue),
+    previous_display: previousDisplay == null ? null : String(previousDisplay),
+    new_display: newDisplay == null ? null : String(newDisplay),
+    changed_by: changedBy
+  });
+}
+
+// One history row as the page reads it. The raw values are deliberately NOT
+// sent: the page renders the displays, and shipping a UUID of somebody who may
+// have left adds nothing a reader can use.
+function shapeHistory(row) {
+  return {
+    id: row.id,
+    field: row.field,
+    previous: row.previous_display,
+    next: row.new_display,
+    changedBy: row.changed_by,
+    changedAt: row.changed_at,
+    // The opening rows §4 of the migration wrote. Marked so the page can say
+    // "predates the trail" rather than presenting them as somebody's edit.
+    opening: row.changed_by === 'migration'
+  };
 }
 
 const isAssignable = (emp) =>
@@ -230,6 +286,40 @@ exports.handler = async (event) => {
         if (isMissingTableError(err) || !isMissingColumnError(err)) throw err;
         console.warn(FK_MIGRATION_HINT);
         return { rows: await db.query(TABLE, `?select=${BASE_COLUMNS}&order=num.asc`), hasKey: false };
+      }
+    }
+
+    // GET ?history=<seat uuid> — that seat's changes, newest first.
+    //
+    // Served HERE rather than through /api/data for the same reason the plan is:
+    // this endpoint resolves the caller's tiers itself, and the history is the
+    // same compensation view as the seat it describes. economics_history also
+    // carries RLS with no policy, so it is unreachable by a browser holding the
+    // publishable key even if somebody allowlisted it there.
+    //
+    // A MISSING TABLE IS AN EMPTY LIST, not an error, and that is the one place
+    // this differs from the write path. A reader who opens the history before
+    // the migration has run should see "no changes recorded" and a note saying
+    // why, not a failure; a WRITER must be refused, because writing a change
+    // nobody can audit is the thing the table exists to stop.
+    if (method === 'GET' && textOf((event.queryStringParameters || {}).history)) {
+      const seatId = textOf((event.queryStringParameters || {}).history);
+      if (!UUID_RE.test(seatId)) {
+        return fail(400, 'history must be a seat UUID');
+      }
+      try {
+        const rows = await db.query(HISTORY_TABLE,
+          `?select=id,field,previous_display,new_display,changed_by,changed_at` +
+          `&seat_id=eq.${encodeURIComponent(seatId)}&order=changed_at.desc&limit=50`);
+        return { statusCode: 200, headers,
+                 body: JSON.stringify({ ok: true, history: (rows || []).map(shapeHistory) }) };
+      } catch (err) {
+        if (isMissingTableError(err)) {
+          return { statusCode: 200, headers,
+                   body: JSON.stringify({ ok: true, history: [], historyMissing: true,
+                                          note: HISTORY_MIGRATION_HINT }) };
+        }
+        throw err;
       }
     }
 
@@ -373,6 +463,17 @@ exports.handler = async (event) => {
           return { statusCode: 200, headers,
                    body: JSON.stringify({ ok: true, seat: shapeSeat(seat, byIdNow, true), unchanged: true }) };
         }
+        // HISTORY FIRST. If this throws, the update below never runs and the
+        // caller is told the change was not recorded — see the catch at the
+        // foot of this try, which turns a missing table into a 503 naming the
+        // file to run.
+        await recordChange({
+          seat, field: 'max_wage',
+          previousValue: currentMax, newValue: nextMax,
+          previousDisplay: currentMax == null ? null : currentMax.toFixed(2),
+          newDisplay: nextMax == null ? null : nextMax.toFixed(2),
+          changedBy: session.email
+        });
         const updatedMax = await db.update(TABLE, id, { max_wage: nextMax });
         const maxRow = (Array.isArray(updatedMax) ? updatedMax[0] : updatedMax)
           || { ...seat, max_wage: nextMax };
@@ -410,6 +511,27 @@ exports.handler = async (event) => {
                  body: JSON.stringify({ ok: true, seat: shapeSeat(seat, byId, true), unchanged: true }) };
       }
 
+      // HISTORY FIRST, as above. The occupant is recorded as well as the
+      // ceiling: it is the other write this endpoint has, a seat's occupant
+      // moving is as much a change to the plan, and a table called
+      // economics_history that silently covered half the writes would be worse
+      // than none — a reader would conclude nothing else had changed.
+      //
+      // The DISPLAY is the name, because that is what the change meant to a
+      // person. A vacancy is null in both, not the string 'vacant': the column
+      // means "none" when empty, and a sentinel would sort and group as a
+      // person called vacant.
+      const previousOccupant = seat.employee_id
+        ? ((await employeesById()).get(String(seat.employee_id)) || null)
+        : null;
+      await recordChange({
+        seat, field: 'employee_id',
+        previousValue: seat.employee_id || null, newValue: nextId,
+        previousDisplay: previousOccupant ? previousOccupant.name : (textOf(seat.name) || null),
+        newDisplay: emp ? emp.name : null,
+        changedBy: session.email
+      });
+
       // `name` goes with it, and this is the one place it is still written: not
       // as the source of truth but as the last-known spelling, so a row that
       // ever loses its key is not left anonymous. Everything READS the key.
@@ -436,6 +558,13 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers,
                body: JSON.stringify({ ok: true, seat: shapeSeat(row, byId, true), alsoIn }) };
     } catch (err) {
+      // The history table gets its own answer, and it has to be checked FIRST:
+      // a missing economics_history and a missing economics both look like a
+      // missing table to PostgREST, and reporting "the plan does not exist"
+      // when the plan is fine would send somebody looking in the wrong place.
+      if (/economics_history/i.test(String((err && err.message) || ''))) {
+        return fail(503, HISTORY_MIGRATION_HINT, { historyMissing: true });
+      }
       if (isMissingTableError(err)) return fail(503, MIGRATION_HINT);
       if (isMissingColumnError(err)) return fail(503, FK_MIGRATION_HINT);
       throw err;
