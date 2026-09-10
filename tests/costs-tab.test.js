@@ -174,20 +174,26 @@ test('the roster load does not fetch the staffing plan — that would 403 for mo
   assert.match(econ, /'\/api\/economics'/, 'its own module does the fetch');
 });
 
-test('the two gated tabs ship HIDDEN, and the ungated ones do not', () => {
+test('the one gated tab ships HIDDEN, and the ungated ones do not', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
   assert.match(html, /data-tab="costs"[^>]*>Manufacturing Costs</);
   assert.match(html, /data-tab="overhead"[^>]*>Overhead</);
 
   // Hidden in the markup and revealed by applyTabVisibility(), rather than the
   // other way round. A tab that appears and then vanishes has already told
-  // everybody that a salaries page exists and that they are not allowed in it.
-  for (const tab of ['salaries', 'economics']) {
-    const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
-    assert.ok(m, `no ${tab} tab in app.html`);
-    assert.match(m[0], /\bhidden\b/, `the ${tab} tab must ship hidden`);
+  // everybody that an overhead page exists and that they are not allowed in it.
+  const overhead = /<button[^>]*data-tab="overhead"[^>]*>/.exec(html);
+  assert.ok(overhead, 'no overhead tab in app.html');
+  assert.match(overhead[0], /\bhidden\b/, 'the overhead tab must ship hidden');
+
+  // The other two gated pages are no longer tabs, so there is nothing to hide:
+  // the staffing plan is a sub-view of Manufacturing Costs and the salaried
+  // roster is a sub-view of Overhead.
+  for (const gone of ['salaries', 'economics', 'dailyhours', 'reports']) {
+    assert.ok(!new RegExp(`data-tab="${gone}"`).test(html),
+      `${gone} is no longer a top-level tab`);
   }
-  for (const tab of ['employees', 'costs', 'overhead', 'reports', 'settings']) {
+  for (const tab of ['employees', 'costs', 'overtime', 'settings']) {
     const m = new RegExp(`<button[^>]*data-tab="${tab}"[^>]*>`).exec(html);
     assert.ok(m && !/\bhidden\b/.test(m[0]), `${tab} is not gated and must not ship hidden`);
   }
@@ -361,34 +367,32 @@ test('Overhead renders both sections and no cost per MBF', async () => {
   assert.match(html, /not production cost/);
 });
 
-test('Overhead is totals only WITHOUT the salaries tier', async () => {
-  // SG&A is seven people across five departments, so at the base tier's
-  // suppression floor a breakdown withholds nearly every row it draws. A table
-  // of dashes is worse than no table.
+test('the whole Overhead TAB is refused without the salaries tier', async () => {
+  // It used to be an ungated tab that drew totals and withheld the breakdown.
+  // That is no longer the shape: /api/cost-report refuses both overhead classes
+  // outright, so a page drawing totals here would be drawing nothing. The tab
+  // says so instead — see renderOverheadTab.
   const ctx = sandbox();
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-  const html = ctx.renderOverhead();
-  assert.ok(!html.includes('By department'), 'Overhead must not draw a department table');
-  assert.ok(!html.includes('By position group'), 'Overhead must not draw a position-group table');
-  assert.ok(!html.includes('Bullpen'), 'a null position group is normal for non-mill staff');
-  // The totals still render, and the omission is stated rather than silent.
-  assert.match(html, /totals only/);
-  assert.match(html, /worse than no table/);
+  const html = ctx.renderOverheadTab();
+  assert.match(html, /needs the salaries tier/);
+  assert.ok(!html.includes('By department'), 'no breakdown without the tier');
+  assert.ok(!html.includes('Mill Overhead &'), 'not even the sub-nav');
 });
 
-test('Overhead shows the breakdown WITH the salaries tier', async () => {
-  // The gate is the server's: it set the suppression floor to 1 from the
-  // caller's own tiers, so the figures in this payload are real. The page is
-  // only declining to draw a table it would otherwise fill with dashes.
+test('Overhead shows both sub-views, and the full breakdown, WITH the tier', async () => {
   const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
   ctx.switchTab('overhead', null);
   await new Promise(r => setImmediate(r));
-  const html = ctx.renderOverhead();
+  const html = ctx.renderOverheadTab();
+  // The sub-nav, and both views in it.
+  assert.match(html, /Mill Overhead &amp; SG&amp;A|Mill Overhead & SG&A/);
+  assert.match(html, /Salaries/);
+  // The breakdown, unconditionally: everybody who can open this tab holds the
+  // tier, so there is no base-tier posture left to hedge about.
   assert.match(html, /By department/);
   assert.match(html, /By position group/);
-  // And it says why it is visible, so nobody assumes everyone sees this.
-  assert.match(html, /because you hold the salaries tier/);
+  assert.ok(!/because you hold the salaries tier/.test(html),
+    'no conditional copy — the tier is a precondition of being here at all');
 });
 
 test('the breakdown follows the SERVER, not the browser', async () => {

@@ -330,7 +330,7 @@ function renderPreApproved(){
   const vsActual = state.otReport
     ? renderPreApprovedVsActual()
     : `<div class="pre-note">Load the <button class="btn btn-outline btn-sm" style="padding:1px 8px"
-        onclick="switchReportView('otreport')">OT Report</button> to see each allowance against the overtime
+        onclick="switchOvertimeView('otreport')">OT Report</button> to see each allowance against the overtime
         actually worked. That comparison needs a week's payroll data, which this view does not fetch.</div>`;
 
   return style

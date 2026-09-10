@@ -302,16 +302,22 @@ function smsCell(e) {
 // read-only until asked otherwise: Edit swaps the same card into inputs, Save
 // writes through the existing saveEdit(), Cancel discards.
 //
-// COMPENSATION IS NOT ON THIS CARD. Neither annual_salary nor wage appears, in
-// either mode, and Phase D did not change that — it is a decision about where
-// compensation lives, not a consequence of there being no tiers.
+// THE HOURLY RATE IS ON THIS CARD, in both modes, and that is a reversal.
 //
-// Every signed-in sequoiafp.com account can open every profile. annual_salary is
-// not in their payload at all unless they hold the salaries tier (the projection
-// is built from the caller's tiers — see netlify/functions/data.js), and wage,
-// although it is in the payload and on the roster, is not extended onto a new
-// surface. Both live on Salaries & Wages, which is one page to look at and one
-// place to change.
+// It was kept off deliberately while Salaries & Wages existed: that page was
+// the one surface that typed a rate, and a second box here would have let one
+// move as a side effect of editing a phone number. The page is gone. Its hourly
+// half came here — where a supervisor already goes to change a department —
+// and its salaried half went to Overhead → Salaries, behind the tier that
+// annual_salary needs in both directions. See THE HOURLY WAGE FIELD below for
+// how the side-effect objection is answered rather than inherited.
+//
+// ANNUAL SALARY IS STILL NOT HERE, in either mode. Every signed-in
+// sequoiafp.com account can open every profile, and annual_salary is not in
+// their payload at all unless they hold the salaries tier — the projection is
+// built from the caller's tiers, see netlify/functions/data.js. employees.wage
+// is a base-tier column in both directions, which is what makes the difference
+// a decision about data rather than about layout.
 //
 // state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
 // state.editing is what saveEdit() reads, and it clears it on success, which
@@ -528,7 +534,11 @@ function profileReadBody(e){
       pf('Cost class',e.costClass,{empty:'not set'}),
       pf('Position group',e.positionGroup,{empty:'none — not mill floor staff'}),
       pf('Position',e.position,{empty:'not set'}),
-      pf('Pay type',payTypeOf(e))
+      pf('Pay type',payTypeOf(e)),
+      // The rate is READ here and typed in edit mode. annual_salary is still
+      // not on this card in either mode: it is not in the payload at all
+      // without the salaries tier, and it is set under Overhead → Salaries.
+      pf('Hourly wage',isSalaried(e)?'— salaried —':fmtWage(e))
     ])}
     ${profileGroup('Contact',[
       pf('Phone',e.phone),
@@ -757,14 +767,145 @@ function birthdayField(e){
     <input type="date" value="${esc(iso)}" oninput="state.editing.birthday=this.value"></div>`;
 }
 
+// ------------------------------------------------------------------------
+// THE HOURLY WAGE FIELD
+// ------------------------------------------------------------------------
+//
+// THIS IS WHERE AN HOURLY RATE IS TYPED, and it used to be somewhere else. The
+// Salaries & Wages tab held both columns; it is gone, and the hourly half came
+// here while annual salary went to Overhead → Salaries. The reason is audience:
+// employees.wage is writable at the base tier, the people who correct a rate
+// are supervisors, and a supervisor should not have to open a company pay list
+// to fix one number on one person. The card is already where they go to change
+// a department or a phone number.
+//
+// The old note here said a rate must not be editable on this card, because a
+// bulk save would append a wage_history row for a save nobody thought of as a
+// rate change. That objection is answered rather than ignored, in two places:
+//
+//   HERE, by profileWageForRow(), which omits `wage` from the payload entirely
+//   unless the typed value differs from what is stored. Saving a phone number
+//   sends no wage at all.
+//
+//   AND ON THE SERVER, which is what actually makes it safe: data.js plans
+//   every wage in a PATCH through wage-edit-lib and DELETES an unchanged one
+//   from the body before writing, so history stays free of rows saying a rate
+//   moved when it did not. See the note above hasWage in data.js.
+//
+// So the history row is still written by the server, still written BEFORE the
+// rate it replaces, and still impossible to produce by accident.
+
+// The note under the field: what this draft would do if saved. Rendered into
+// its own element and refreshed in place by wageDraftSet(), because a full
+// render() on every keystroke moves the caret to the end of the input.
+function profileWageNote(e){
+  const draft=state.editing?state.editing.wage:'';
+  const parsed=parseRate(draft);
+  if(!canEditRate(state.editing)){
+    return `<span style="color:#b8860b">No employee number yet — wage history is keyed by it, so a rate cannot be recorded until one is set above.</span>`;
+  }
+  if(parsed===undefined){
+    return `<span style="color:#b8860b">Not an hourly rate. Enter a number greater than zero, e.g. 24.50.</span>`;
+  }
+  if(parsed===null){
+    return currentRate(e)==null
+      ? `<span style="color:var(--muted)">No rate on file — their cost cannot be computed until one is set.</span>`
+      : `<span style="color:#b8860b">A rate cannot be cleared, only corrected. Wage history has no way to record a rate that went away.</span>`;
+  }
+  const pct=wageMovePct(e,parsed);
+  if(pct==null) return `<span style="color:var(--muted)">First rate on file. Every change from here is recorded in wage history.</span>`;
+  if(pct===0) return `<span style="color:var(--muted)">Unchanged — saving will not add a wage history row.</span>`;
+  const flag=Math.abs(pct)>WAGE_FLAG_PCT;
+  return `<span style="color:${flag?'#b8860b':'var(--muted)'}">${pct>0?'+':''}${pct}% — recorded in wage history${flag?', and flagged for review':''}</span>`;
+}
+
+function wageDraftSet(v){
+  if(!state.editing) return;
+  state.editing.wage=v;
+  const el=document.getElementById('profileWageNote');
+  if(el) el.innerHTML=profileWageNote(profileEmployeeForWage());
+}
+
+// The STORED employee, not the draft. The note compares what was typed against
+// what the database holds, so it cannot read the draft for both sides.
+function profileEmployeeForWage(){
+  const id=state.editing&&state.editing.id;
+  if(!id) return null;
+  return (state.employees||[]).find(x=>String(x.id)===String(id))||null;
+}
+
+// One field, rendered the same way on the card and in the Add modal. A salaried
+// person gets no input at all: their compensation is annual_salary and writing
+// an hourly rate onto them would be counted a second time by the costing
+// reports, which is why wage-edit-lib refuses it outright.
+function wageField(e){
+  if(isSalaried(state.editing)){
+    return `
+      <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
+        <div style="padding:8px 0;font-size:13px;color:var(--muted)">— salaried —</div></div>
+      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">
+        A salaried person has no hourly rate. Their annual salary is set under <b>Overhead → Salaries</b>,
+        and the costing reports divide it by 2,080.</div></div>`;
+  }
+  const stored=e||profileEmployeeForWage();
+  return `
+    <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
+      <input type="text" value="${esc(state.editing.wage==null?'':state.editing.wage)}" placeholder="24.50"
+        oninput="wageDraftSet(this.value)"></div>
+    <div class="form-group full" style="margin-top:-6px">
+      <div id="profileWageNote" style="font-size:11px;color:var(--muted);line-height:1.5">${profileWageNote(stored)}</div></div>`;
+}
+
+// What to do with the typed rate on save. Returns one of three things and
+// never writes anything itself:
+//
+//   {send:false}          send no wage. Nothing changed, or the person is
+//                         salaried and has no hourly rate to send.
+//   {send:true, wage}     the rate moved; send it, as a fixed-2 string so the
+//                         value stored is the value shown.
+//   {error}               this rate cannot be recorded. The save aborts.
+//
+// The three refusals are the client mirror of wage-edit-lib's rules 2, 3, 4 and
+// 5, each with its own sentence because each has a different remedy. The server
+// enforces all of them again; this exists so the refusal arrives before the
+// round trip and reads as English.
+function profileWageForRow(draft, stored){
+  if(isSalaried(draft)){
+    // Rule 2. A rate typed before the pay type was flipped is not an error —
+    // it is a field that no longer applies — so it is dropped rather than
+    // refused. Nothing is overwritten either way: employees.wage keeps
+    // whatever it held and isSalaried() reads pay_type first.
+    return {send:false};
+  }
+  const parsed=parseRate(draft&&draft.wage);
+  const current=stored?currentRate(stored):null;
+
+  if(parsed===undefined){
+    return {error:`"${String((draft&&draft.wage)||'').trim()}" is not an hourly rate. Enter a number greater than zero, e.g. 24.50 — nothing was saved.`};
+  }
+  if(parsed===null){
+    // Rules 3 and 4. A blank field on somebody who has no rate on file is not
+    // a clear; it is the ordinary state of a person nobody has priced yet.
+    if(current==null) return {send:false};
+    return {error:'A rate cannot be cleared, only corrected — wage history has no way to record a rate that went away. Nothing was saved.'};
+  }
+  // Compared as parsed values: '24.5' over a stored '24.50' is not a change,
+  // and sending it would ask the server to consider a rate move that did not
+  // happen.
+  if(current!=null&&Math.abs(current-parsed)<0.005) return {send:false};
+
+  // Rule 5, and it is checked here because the employee number is edited in
+  // this same form — somebody can fix it and save once, without discovering the
+  // refusal from the server after the fact.
+  if(!canEditRate(draft)){
+    return {error:`${(draft&&draft.name)||'This person'} has no employee number, so a rate change could not be recorded. Set their Emp # in this form first — nothing was saved.`};
+  }
+  return {send:true, wage:parsed.toFixed(2)};
+}
+
 // The same card, editable. Deliberately NOT a second field list: every group
 // below matches profileReadBody() group for group, so a field cannot be readable
 // and not editable, or the other way round.
-//
-// No wage input and no annual_salary input, in either mode — and as of Phase D
-// the roster's Edit modal has none either, so there is no longer anywhere in the
-// app that types an hourly rate. That was the modal's last reason to exist as a
-// separate field list; collapsing the two surfaces is what remains.
 function profileEditBody(e){
   const bdayInput=birthdayInputValue(e.birthday);
   const bdayRaw=String(e.birthday==null?'':e.birthday).trim();
@@ -819,7 +960,8 @@ function profileEditBody(e){
         <select onchange="setPayType(this.value)">
           ${PAY_TYPES.map(t=>`<option value="${esc(t)}" ${payTypeOf(e)===t?'selected':''}>${esc(t)}</option>`).join('')}
         </select></div>
-      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Compensation is not editable here. Both hourly rates and salaries are set on the <b>Salaries &amp; Wages</b> page, where every rate change is recorded. <b>Position group</b> is mill-floor only and is correctly “— none —” for office staff; <b>Position</b> applies to everyone.</div></div>
+      ${wageField(e)}
+      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5"><b>Position group</b> is mill-floor only and is correctly “— none —” for office staff; <b>Position</b> applies to everyone.</div></div>
 
       <div class="form-group"><label class="form-label">Phone</label>
         <input type="text" value="${esc(e.phone||'')}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
@@ -910,21 +1052,44 @@ async function saveEdit(){
   const e={...state.editing};const idx=e._idx;const isNew=e._isNew;
   delete e._idx;delete e._isNew;
 
+  // The row as the DATABASE holds it, captured before anything is written. The
+  // wage decision compares the draft against this, so it cannot compare the
+  // draft against itself.
+  const stored = e.id ? (state.employees||[]).find(x=>String(x.id)===String(e.id)) : null;
+
   setSyncStatus('saving');
   try{
-    // WAGE IS NOT WRITTEN FROM HERE, in either direction. The column is
-    // writable again — permissions-lib allows it at the base tier — but it is
-    // set on Salaries & Wages, which is the one surface that records the change
-    // in wage history. Sending it from this form would append a history row for
-    // a save nobody thought of as a rate change. So this save neither sends it
-    // nor edits the local copy — e.wage stays whatever the roster read, and the
-    // row behind the modal keeps showing the real rate.
-    //
-    // Pay type IS written, and is the only fact about compensation this form
-    // still asserts. Flipping to Salaried no longer nulls the rate: isSalaried()
-    // reads pay_type first, so a leftover value cannot be mistaken for theirs.
+    // Pay type is written first because the wage decision below depends on it:
+    // flipping somebody to Salaried does NOT null their rate — isSalaried()
+    // reads pay_type first, so a leftover value cannot be mistaken for theirs —
+    // but it does mean no hourly rate may be sent in the same save.
     const payType = isSalaried(e) ? 'Salaried' : 'Hourly';
     e.payType = payType;
+
+    // WAGE IS WRITTEN FROM HERE NOW, and only when it actually moved.
+    //
+    // REFUSED, NOT DROPPED. A rate this form cannot record aborts the whole
+    // save with a sentence naming the remedy, rather than saving the other
+    // fields and quietly discarding the number somebody typed into a pay field.
+    // That is the same posture partitionWrite() takes on the server: reporting
+    // success for a write that did not happen is how somebody comes to believe
+    // a rate was changed.
+    //
+    // `undefined` means "send no wage" — either nothing changed, or the person
+    // is salaried and has no hourly rate to send. It is not the same as null,
+    // which nothing here ever sends: clearing a rate is refused below.
+    const wageForRow = profileWageForRow(e, stored);
+    if (wageForRow && wageForRow.error) {
+      setSyncStatus('error');
+      toast(wageForRow.error, 'error');
+      return;
+    }
+    // The local copy carries the CANONICAL rate, not the draft string. `e`
+    // becomes state.employees[idx] below, so leaving '24.5' here would show a
+    // rate the database does not hold until the next reload. When no wage is
+    // sent, the stored value is kept for the same reason — the draft must not
+    // be able to change what is displayed without changing what is saved.
+    e.wage = wageForRow.send ? wageForRow.wage : (stored ? stored.wage : null);
 
     const row={
       name:e.name, pay_type:payType, status:e.status,
@@ -942,6 +1107,10 @@ async function saveEdit(){
       // NULL, not as ''. Both are in OPTIONAL_EMPLOYEE_COLUMNS (data.js), so a
       // database without the columns still saves the rest of the row.
       cost_class:e.costClass||null, position_group:e.positionGroup||null,
+      // Present only when the rate moved; see profileWageForRow. An absent key
+      // is not the same as a null one — data.js would plan a null as a clear
+      // and refuse it.
+      ...(wageForRow && wageForRow.send ? {wage: wageForRow.wage} : {}),
       // Phase B. position applies to everyone; position_group does not. Blank is
       // stored as NULL rather than '', the same as the other nullable fields.
       position:e.position||null,
@@ -1024,9 +1193,6 @@ async function saveEdit(){
 // HR file link) all need a saved employee id to point at.
 function renderModal(){
   const e=state.editing;
-  // Asked once, through the shared predicate, so the disabled state of the wage
-  // field and the note under it cannot disagree with the select above them.
-  const salariedHere=isSalaried(e);
   return `
     <div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -1042,16 +1208,12 @@ function renderModal(){
           <div class="form-group"><label class="form-label">Pay type</label><select onchange="setPayType(this.value)">
             ${PAY_TYPES.map(t=>`<option value="${t}" ${payTypeOf(e)===t?'selected':''}>${t}</option>`).join('')}
           </select></div>
-          <!-- READ-ONLY, and deliberately not an input. The column IS writable now, by
-               anybody signed in — but on Salaries & Wages, which is the surface that
-               records every change in wage_history. A second box here would let a rate
-               move as a side effect of editing somebody's phone number, and the history
-               row would say it was a rate change. The value is still SHOWN, because
-               "what is this person paid" is a fair question to ask of an employee
-               record. -->
-          <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
-            <div style="padding:8px 0;font-size:13px;color:var(--text)">${esc(fmtWage(e))}</div></div>
-          <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">${salariedHere?'A salaried person has no hourly rate. Their salary is entered on the Salaries &amp; Wages page.':'Hourly rates are not editable here. They are set on the <b>Salaries &amp; Wages</b> page, where every change is recorded in wage history.'}</div></div>
+          <!-- EDITABLE HERE TOO, and it has to be: a new hire with no rate cannot
+               be costed at all, so the one form that creates people is the wrong
+               place to have to leave it blank. data.js plans the wage on POST the
+               same way it does on PATCH — wage-edit-lib decides it, the history
+               row is written after the insert against the new id. -->
+          ${wageField(null)}
           <div class="form-group"><label class="form-label">Employee # (payroll)</label><input type="text" value="${e.empNum||''}" placeholder="0319" oninput="state.editing.empNum=this.value" onchange="this.value=normEmpNum(this.value);state.editing.empNum=this.value"></div>
           <!-- The three taxonomy axes: three separate selects, three separate columns,
                and no handler here touches more than its own field. Changing the

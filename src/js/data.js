@@ -211,6 +211,6 @@ async function loadEmailSettings(){
 // the profile card — keep their own tests in
 // tests/employee-write-columns.test.js.
 //
-// Rates are set on Salaries & Wages, one row at a time, where the change is
+// Rates are set on the employee profile card, one person at a time, where the change is
 // recorded. If a bulk roster write is ever wanted again it needs a design, not
 // this function restored.

@@ -198,7 +198,7 @@ function renderOTReport(){
       </select>
       <button class="btn btn-outline btn-sm" onclick="loadOTReport(state.otReportWeek)">Refresh</button>
       ${emailBtn}
-      <button class="btn btn-outline btn-sm" onclick="goToTab('dailyhours')">Daily Hours</button>
+      <button class="btn btn-outline btn-sm" onclick="goToOvertime('dailyhours')">Daily Hours</button>
       <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
     </div>`;
 
@@ -512,7 +512,7 @@ function renderOTReport(){
   if(iss.unassignedRows) issueBits.push(`<div class="ot-warn"><strong>${iss.unassignedRows} row(s) carry no department.</strong> ${(iss.unassignedEmployees||[]).map(esc).join(', ')}
     <div style="font-size:11px;margin-top:4px">Set the department on the employee, then re-stamp the affected dates from the Daily Hours tab — the department on a daily row is a snapshot taken at import.</div>
     <div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="goToTab('employees')">Set department on the Employees tab</button>
-    <button class="btn btn-outline btn-sm" onclick="goToTab('dailyhours')">Re-stamp departments</button></div></div>`);
+    <button class="btn btn-outline btn-sm" onclick="goToOvertime('dailyhours')">Re-stamp departments</button></div></div>`);
   if((iss.flagged||[]).length) issueBits.push(`<div class="ot-flag"><strong>${iss.flagged.length} flagged row(s):</strong>
     <div style="margin-top:6px">${iss.flagged.map(f=>`<span class="ot-chip">${fmtDateShort(f.workDate)} · ${esc(f.name||('#'+f.employeeNumber))} · ${(f.flags||[]).map(esc).join(', ')}</span>`).join('')}</div></div>`);
   if((pre.unmatchedNames||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved OT names that match no employee:</strong> ${pre.unmatchedNames.map(esc).join(', ')}</div>`);
@@ -526,7 +526,7 @@ function renderOTReport(){
   // their earnings are null and every total folds a null to zero.
   if((iss.workedRateMissing||[]).length) issueBits.unshift(`<div class="ot-warn"><strong>${iss.workedRateMissing.length} ${iss.workedRateMissing.length===1?'person':'people'} worked with no hourly rate on file:</strong>
     <div style="margin-top:6px">${iss.workedRateMissing.map(p=>`<span class="ot-chip">${esc(p.name||('#'+p.employeeNumber))} · ${fmtHrs(p.hours)}h · ${esc(p.department||'Unassigned')}</span>`).join('')}</div>
-    <div style="font-size:11px;margin-top:4px">Their hours are in every figure on this page and their dollars are not, so every dollar total here is understated by whatever they are owed. Set their rate on <strong>Salaries &amp; Wages</strong>; this report recomputes from it.</div></div>`);
+    <div style="font-size:11px;margin-top:4px">Their hours are in every figure on this page and their dollars are not, so every dollar total here is understated by whatever they are owed. Set their rate on their profile card, under <strong>Employees</strong>; this report recomputes from it.</div></div>`);
   const issueBlock=`
     <div class="section-head"><span>Issues</span></div>
     <div class="ot-panel">${issueBits.length?issueBits.join(''):'<div class="ot-ok">✓ No data issues in this week.</div>'}</div>`;

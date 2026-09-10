@@ -148,12 +148,62 @@ test('an unknown cost class is 400 and names the valid ones', async (t) => {
   assert.deepStrictEqual(ctx.calls.index, [], 'validation happens before the database');
 });
 
-test('all three real cost classes are accepted', async (t) => {
+test('all three real cost classes are accepted, given the access each needs', async (t) => {
+  // Manufacturing is open to every signed-in account. The two overhead classes
+  // need the salaries tier — see the gate below — so this asserts the classes
+  // are VALID, which is a different question from who may read them.
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
   for (const cls of ['Manufacturing', 'Mill Overhead', 'SG&A']) {
     const { res, body } = await run(t, { class: cls });
     assert.strictEqual(res.statusCode, 200, cls);
     assert.strictEqual(body.report.costClass, cls);
   }
+});
+
+// ---------------------------------------------------------------------------
+// the overhead classes are gated WHOLE
+// ---------------------------------------------------------------------------
+//
+// Suppression cannot protect Mill Overhead and SG&A: they are the office, and
+// their buckets are one and two people deep almost everywhere. A threshold high
+// enough to be safe leaves a table of dashes; one low enough to be useful
+// publishes a salary with a department name on it. So the class is refused
+// rather than dashed, which is also what makes the Overhead tab's hidden button
+// honest — hiding it while this endpoint answered would protect nobody.
+
+test('the overhead classes are refused without the salaries tier', async (t) => {
+  for (const cls of ['Mill Overhead', 'SG&A']) {
+    withPermissionRows(t, []);
+    const { res, body } = await run(t, { class: cls });
+    assert.strictEqual(res.statusCode, 403, cls);
+    assert.match(body.error, new RegExp(`Not permitted to read ${cls.replace('&', '&')}`));
+    assert.match(body.detail, /salaries tier/);
+  }
+});
+
+test('Manufacturing is NOT refused — it stays open and leans on suppression', async (t) => {
+  withPermissionRows(t, []);
+  const { res, body } = await run(t, { class: 'Manufacturing' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.disclosure.suppressionLifted, false,
+    'open to everybody, so the money in a thin bucket is still withheld');
+});
+
+test('the admin tier alone does not open the overhead classes', async (t) => {
+  // Admin grants access; it does not itself read pay. Same rule as the column
+  // registry and the suppression floor.
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'admin' }]);
+  const { res } = await run(t, { class: 'SG&A' });
+  assert.strictEqual(res.statusCode, 403);
+});
+
+test('a refused class is refused before the database is touched for hours', async (t) => {
+  withPermissionRows(t, []);
+  const ctx = stub(t);
+  const res = await handler(event({ class: 'SG&A' }));
+  assert.strictEqual(res.statusCode, 403);
+  assert.deepStrictEqual(ctx.calls.index, [],
+    'no daily-hours scan for a class the caller may not read');
 });
 
 test('cost class defaults to Manufacturing', async (t) => {
@@ -250,6 +300,10 @@ test('no individual pay figure appears anywhere in the response', async (t) => {
 });
 
 test('membership is cost class alone — the salaried supervisor is in, the hourly clerk is out', async (t) => {
+  // The tier is granted because the SG&A half of this assertion needs it now;
+  // the claim under test is about MEMBERSHIP, which does not depend on who is
+  // reading.
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
   const { body } = await run(t);
   assert.strictEqual(body.report.headcount, 7, 'six hourly plus the salaried supervisor');
   const groups = body.report.byPositionGroup.map(g => g.key);
@@ -288,6 +342,7 @@ test('an unreachable database is a 500, not a silent flattening of every split',
 });
 
 test('allocations split cost across departments and leave hours with the primary', async (t) => {
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
   const { body } = await run(t, { class: 'SG&A' }, {
     fetchAllocations: async () => ([
       { employee_id: 'sga1', department: 'Accounting', percent: 34 },
@@ -299,10 +354,13 @@ test('allocations split cost across departments and leave hours with the primary
   assert.strictEqual(body.allocations.count, 3);
   const depts = body.report.byDepartment.map(d => d.key).sort();
   assert.deepStrictEqual(depts, ['Accounting', 'Corporate', 'HR']);
-  // One person, so every bucket is suppressed — which is exactly right, and is
-  // why this asserts on the shape rather than on the dollars.
-  assert.ok(body.report.byDepartment.every(d => d.suppressed));
-  assert.ok(body.report.hasSuppressedBuckets);
+  // Every bucket is one person, and NOTHING IS SUPPRESSED — because the only
+  // readers of an overhead class are the salaries tier, whose floor is 1. That
+  // is the whole trade the class gate buys: the reader who gets in gets a
+  // report rather than a table of dashes.
+  assert.ok(body.report.byDepartment.every(d => !d.suppressed));
+  assert.strictEqual(body.report.hasSuppressedBuckets, false);
+  assert.strictEqual(body.disclosure.suppressionLifted, true);
 });
 
 // ---------------------------------------------------------------------------

@@ -72,26 +72,27 @@ async function loadPermissions(){
   }
 }
 
-// Both tabs start hidden in app.html, because a tab that appears and then
-// vanishes when permissions load is worse than one that appears a moment late.
-// Which of them stays hidden is decided here.
+// Which TOP-LEVEL tabs the salaries tier unlocks. One, now: Overhead.
 //
-// SALARIES & WAGES IS NO LONGER ONE OF THEM. It was, while the whole page was
-// annual salaries; since 2026-08-22 its Hourly section is where every pay rate
-// in the company is typed, and employees.wage is writable at the base tier. A
-// supervisor who cannot set a rate anywhere is a worse failure than a page with
-// one section they cannot see, so the tab opens for everybody and the salaried
-// SECTION is what the tier gates — see renderSalaries.
+// It starts hidden in app.html, because a tab that appears and then vanishes
+// when permissions load is worse than one that appears a moment late — and
+// because a tab that flashes has already told everybody that an overhead page
+// exists and that they are not allowed in it.
+//
+// THE OTHER TWO GATED PAGES ARE NO LONGER TABS, and that is why this list
+// shrank rather than grew:
+//
+//   Staffing Economics  is now the 'Staff' view of Manufacturing Costs. Its
+//                       parent tab is open to everyone, so the gate moved into
+//                       the sub-nav — COSTS_VIEWS in costs.js carries a `tier`
+//                       and visibleViews() filters it out.
+//   Salaries & Wages    is gone. Its salaried half is the 'Salaries' view of
+//                       Overhead, covered by this tab's own gate; its hourly
+//                       half is on the employee profile card at the base tier.
 //
 // Listed rather than derived, so adding a gated tab is one edit in one place
 // and forgetting it leaves the tab visible-but-empty rather than silently open.
-const SALARIES_TABS=['economics'];
-
-// Shown to everybody the moment permissions resolve, whatever they resolve to.
-// Unhidden HERE rather than left visible in app.html: this function is the one
-// place that decides, and a tab whose visibility is set in two places is a tab
-// that will one day disagree with itself.
-const OPEN_TABS=['salaries'];
+const SALARIES_TABS=['overhead'];
 
 function applyTabVisibility(){
   const allowed=canSeeSalaries();
@@ -99,12 +100,18 @@ function applyTabVisibility(){
     const tab=document.querySelector('.sfp-tab[data-tab="'+name+'"]');
     if(tab) tab.hidden=!allowed;
   }
-  for(const name of OPEN_TABS){
-    const tab=document.querySelector('.sfp-tab[data-tab="'+name+'"]');
-    if(tab) tab.hidden=false;
-  }
-  // If they were looking at one when a grant was revoked in another window, do
-  // not leave them on a tab that no longer has anything to show.
+  // A gated SUB-view, resolved BEFORE the tab bounce below. Nothing re-renders
+  // the sub-nav on its own, so a reader sitting on Manufacturing Costs → Staff
+  // when the grant goes away would keep the view until they clicked something
+  // else. costsSubView() resolves a key it can no longer offer to the first
+  // visible view, so asking it and storing the answer is the whole fix.
+  //
+  // ORDER MATTERS HERE. This ran after the bounce once, behind an early return,
+  // which meant the one case that needs both — somebody on Overhead whose
+  // costsView was also 'staff' — got the bounce and kept the view.
+  if(state.costsView) state.costsView=costsSubView(state.costsView).key;
+  // If they were looking at a gated TAB when a grant was revoked in another
+  // window, do not leave them on one that no longer has anything to show.
   if(!allowed&&SALARIES_TABS.includes(state.tab)) goToTab('employees');
 }
 
@@ -118,9 +125,9 @@ function applyTabVisibility(){
 // nothing. The comment above loadPermissions said a failure "says so on the
 // Settings page"; no such surface existed, so what actually happened was that a
 // transient /api/permissions failure dropped somebody to the base tier with no
-// explanation anywhere. The Access section vanishes, Staffing Economics
-// vanishes, salaried figures stop rendering — and the obvious reading of that,
-// for an admin, is that somebody revoked them.
+// explanation anywhere. The Access section vanishes, the Overhead tab
+// vanishes, Manufacturing Costs loses its Staff view — and the obvious reading
+// of that, for an admin, is that somebody revoked them.
 //
 // It is on Settings rather than as a global banner because that is where the
 // consequences are visible and where the fix is: an admin whose tiers failed to

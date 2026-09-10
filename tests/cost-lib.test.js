@@ -641,3 +641,56 @@ test('hours with no matching employee_number are ignored rather than guessed at'
   });
   assert.strictEqual(r.totals.hours, 10, "a stranger's hours must not join this cost class");
 });
+
+// ---------------------------------------------------------------------------
+// THE ONE EXCEPTION, stated as one claim
+// ---------------------------------------------------------------------------
+//
+// Asserted together, in one test, because the two halves are one decision and
+// splitting them across the file is how one half comes to be changed without
+// the other. Both figures are the live roster's.
+//
+//   Eduardo Rivera  is SALARIED and IS costed into Manufacturing, at
+//                   annual_salary / 2,080 — not excluded for being salaried,
+//                   and not costed at zero.
+//   Axeri Ramirez   is HOURLY and is NOT in Manufacturing. She is SG&A.
+//
+// Together they are the whole reason membership is cost_class and nothing else.
+// A filter on pay type would drop Eduardo; a filter on department would pull
+// Axeri in. Either one reproduces the bug the v2 model was built to remove.
+
+test('the one exception: Eduardo is salaried and costed into Manufacturing at salary/2080', () => {
+  // The rate and the hours, at the person level.
+  const p = personCost(EDUARDO, 0);
+  assert.strictEqual(p.rate, 50.48, '105000 / 2080 = 50.4808, rounded to the cent');
+  assert.strictEqual(p.source, 'salary/2080');
+  // A standard week, because the payroll file reports salaried people as zeros
+  // and rate x actual hours would make him free.
+  assert.strictEqual(costedHours(EDUARDO, 0), STANDARD_WEEKLY_HOURS);
+  assert.strictEqual(p.cost, 2019.2, '50.48 x 40');
+
+  // And in the report: a member of Manufacturing, with his cost in it.
+  const r = buildCostReport({ employees: [EDUARDO], costClass: 'Manufacturing', minBucketHeadcount: 1 });
+  assert.strictEqual(r.headcount, 1, 'salaried does not mean excluded');
+  const dept = r.byDepartment.find(d => d.key === 'Production');
+  assert.strictEqual(dept.cost, 2019.2, 'never costed at zero');
+  assert.strictEqual(dept.costPerHour, 50.48);
+  assert.deepStrictEqual(dept.gaps, [], 'a salary on file is not a rate gap');
+});
+
+test('the one exception, other half: Axeri is hourly and is SG&A, not Manufacturing', () => {
+  assert.strictEqual(AXERI.pay_type, 'Hourly', 'hourly, and that is not what decides membership');
+  assert.strictEqual(AXERI.cost_class, 'SG&A', 'SG&A is where she belongs');
+
+  const mfg = buildCostReport({ employees: [AXERI], costClass: 'Manufacturing', minBucketHeadcount: 1 });
+  assert.strictEqual(mfg.headcount, 0, 'being hourly does not put her in Manufacturing');
+
+  const sga = buildCostReport({ employees: [AXERI], costClass: 'SG&A', minBucketHeadcount: 1 });
+  assert.strictEqual(sga.headcount, 1);
+  const p = personCost(AXERI, 40);
+  assert.strictEqual(p.rate, 25, 'an hourly person is costed from employees.wage');
+  assert.strictEqual(p.source, 'employees.wage');
+  // Her null position_group is CORRECT — that axis is mill-floor only — and
+  // must not be reported as a finding outside Manufacturing.
+  assert.deepStrictEqual(sga.bullpen, []);
+});

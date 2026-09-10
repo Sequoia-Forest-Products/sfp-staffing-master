@@ -222,7 +222,7 @@ test('there is no whole-roster writer in the frontend', () => {
 // the field itself
 // ---------------------------------------------------------------------------
 
-test('the Add form has no wage input, and says where the rate comes from', () => {
+test('the Add form takes a wage, because a new hire with no rate cannot be costed', () => {
   // The modal is Add-only now. Editing an existing person opens the profile
   // card, so a modal rendered over an existing employee is a state that can no
   // longer be reached — testing it would pin behaviour nothing produces.
@@ -235,14 +235,11 @@ test('the Add form has no wage input, and says where the rate comes from', () =>
 
   assert.match(html, /Add employee/);
   assert.ok(!/Edit —/.test(html), 'the unreachable Edit title is gone, not just unused');
-  assert.ok(!/id="wageInput"/.test(html), 'no wage input');
-  assert.ok(!/state\.editing\.wage\s*=/.test(html), 'nothing in the form assigns a wage');
-  assert.ok(!/formatWageInput/.test(html), 'the wage formatter is gone with its field');
-  // Whoever is adding somebody needs to know where the rate DOES come from,
-  // or they will go looking for the field.
   assert.match(html, /Hourly wage/);
-  assert.match(html, /not editable here/i);
-  assert.match(html, /Salaries &amp; Wages/);
+  assert.match(html, /wageDraftSet\(this\.value\)/, 'and it is a bound input, not a display');
+  // The one form that creates people is the wrong place to have to leave the
+  // rate blank: data.js plans a wage on POST the same way it does on PATCH.
+  assert.ok(!/Salaries &amp; Wages/.test(html), 'that page no longer exists to point at');
 });
 
 test('adding a salaried person is told where the salary lives', () => {
@@ -253,20 +250,21 @@ test('adding a salaried person is told where the salary lives', () => {
   ctx.setPayType('Salaried');
 
   const html = ctx.renderModal();
-  assert.ok(!/id="wageInput"/.test(html));
-  assert.match(html, /Salaries &amp; Wages page/);
+  assert.ok(!/wageDraftSet/.test(html), 'no hourly input for a salaried person');
+  assert.match(html, /Overhead → Salaries/);
 });
 
-test('the profile card still has no compensation field of any kind', () => {
+test('the profile card takes a wage and still refuses the salary', () => {
   const ctx = sandbox();
   ctx.state.employees = [{ ...PERSON }];
   ctx.state.profile = { idx: 0 };
   ctx.startProfileEdit();
 
   const html = ctx.renderProfile();
-  assert.ok(!/id="wageInput"/.test(html));
+  assert.match(html, /wageDraftSet\(this\.value\)/);
+  // annual_salary moved in neither direction. It is not in the payload without
+  // the tier, and it is not on this card with it either.
   assert.ok(!/annual_salary|annualSalary/.test(html));
-  assert.ok(!/state\.editing\.wage\s*=/.test(html));
 });
 
 // ---------------------------------------------------------------------------
