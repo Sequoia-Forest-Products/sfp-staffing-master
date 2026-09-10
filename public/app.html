@@ -187,19 +187,27 @@
     </div>
     <div class="sfp-tabs">
       <button class="sfp-tab active" data-tab="employees" onclick="switchTab('employees',this)">Employees</button>
+      <!-- Manufacturing Costs carries two sub-views: Department & Group (the
+           aggregate cost report, open to everyone) and Staff (the budgeted
+           staffing plan, formerly the Staffing Economics tab, behind the
+           salaries tier). The tab itself is NOT gated — its sub-nav hides the
+           view somebody may not open. See costs.js. -->
       <button class="sfp-tab" data-tab="costs" onclick="switchTab('costs',this)">Manufacturing Costs</button>
-      <button class="sfp-tab" data-tab="overhead" onclick="switchTab('overhead',this)">Overhead</button>
-      <button class="sfp-tab" data-tab="dailyhours" onclick="switchTab('dailyhours',this)">Daily Hours</button>
       <!-- HIDDEN BY DEFAULT and revealed by applyTabVisibility() once
            /api/permissions answers. Hidden-then-shown is the right way round: a
-           tab that appears and then vanishes has already told everybody that a
-           salaries page exists and that they are not allowed in it. -->
-      <button class="sfp-tab" data-tab="salaries" hidden onclick="switchTab('salaries',this)">Salaries &amp; Wages</button>
-      <button class="sfp-tab" data-tab="economics" hidden onclick="switchTab('economics',this)">Staffing Economics</button>
-      <!-- Reports absorbs three former top-level tabs: Pre-Approved Overtime,
-           OT Report and Points Tracker. Placed after Daily Hours because that is
-           the order of work — hours are imported, then reported on. -->
-      <button class="sfp-tab" data-tab="reports" onclick="switchTab('reports',this)">Reports</button>
+           tab that appears and then vanishes has already told everybody that an
+           overhead page exists and that they are not allowed in it.
+           Gated WHOLE, unlike Manufacturing Costs: both of its sub-views are
+           compensation at office headcount, where bucket suppression cannot
+           protect anybody. /api/cost-report refuses the two overhead classes
+           without the tier, so this is a courtesy and not the control. -->
+      <button class="sfp-tab" data-tab="overhead" hidden onclick="switchTab('overhead',this)">Overhead</button>
+      <!-- Overtime was 'Reports' and absorbed three top-level tabs in Phase C:
+           Pre-Approved Overtime, OT Report and Points Tracker. Daily Hours
+           joined them here rather than sitting alongside, because it is the
+           first step of the same job — hours are imported, then reported on —
+           and it leads the sub-nav for that reason. -->
+      <button class="sfp-tab" data-tab="overtime" onclick="switchTab('overtime',this)">Overtime</button>
       <button class="sfp-tab" data-tab="settings" onclick="switchTab('settings',this)">Settings</button>
     </div>
   </div>

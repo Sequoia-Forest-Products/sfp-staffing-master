@@ -22,24 +22,54 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-- **Employees tab** — roster with search, filter, sort, inline edit modals, the employee profile
-  card, SMS reachability column, SMS opt-out toggle, Drive folder linking
-- **Manufacturing Costs tab** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
-  department and position group, with burdened cost and cost per MBF. Replaced Staffing Economics.
-  Aggregates only: no individual's pay rate is sent to the browser, and a grouping too small to
-  average withholds its money rather than publishing somebody's rate as a bucket average.
-- **Overhead tab** — the same report for `Mill Overhead` and `SG&A`, **totals only**. No department
-  breakdown: SG&A is 7 people across 5 departments, so nearly every row would have to withhold its
-  cost. See *Deferred to Phase D*.
-- **Daily Hours tab** — manual `.xlsx` payroll upload with preview-before-commit, imported-day
-  history, department re-stamping, and the email pipeline's issue queue
+Five top-level tabs. Three of them are containers with a sub-nav; one of them is gated whole.
+
+- **Employees tab** — roster with search, filter, sort, the Add form, and the employee profile
+  card, SMS reachability column, SMS opt-out toggle, Drive folder linking. **The hourly wage is
+  typed here**, on the profile card, at the base tier — see *Where pay is typed* below.
+- **Manufacturing Costs tab** — two sub-views, and the tab itself is open to everyone:
+  - **Department & Group** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
+    department and position group, with burdened cost and cost per MBF. Aggregates only: no
+    individual's pay rate is sent to the browser, and a grouping too small to average withholds
+    its money rather than publishing somebody's rate as a bucket average.
+  - **Staff** — the budgeted staffing plan, 55 numbered seats with a per-seat rate ceiling and the
+    variance against it. Needs the **salaries** tier, so the sub-nav omits it for everybody else.
+    Was the *Staffing Economics* tab.
+- **Overhead tab** — **needs the salaries tier, whole**. Two sub-views:
+  - **Mill Overhead & SG&A** — the same cost report for those two classes, with the full department
+    breakdown. Suppression is lifted throughout, because these buckets are one and two people deep
+    and there is no threshold that both protects them and leaves a report. That is why the tab is
+    gated instead of dashed out; `/api/cost-report` refuses both classes without the tier.
+  - **Salaries** — the salaried roster and the only place `annual_salary` is set. Was the salaried
+    half of the *Salaries & Wages* tab.
+- **Overtime tab** — four sub-views, in the order of the work: **Daily Hours** (manual `.xlsx`
+  payroll upload with preview-before-commit, imported-day history, department re-stamping, and the
+  email pipeline's issue queue), **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend), the
+  weekly **OT Report** (All / Pre-Approved / Net OT, production vs. maintenance day split,
+  department breakdown, manager email), and the **Points Tracker** (attendance points,
+  disciplinary flags). Was the *Reports* tab, with Daily Hours alongside it.
+- **Settings tab** — email settings, taxonomy values, and the admin **Access** section that grants
+  and revokes tiers.
 - **Cost allocation** — a person's cost can split across departments (Jeff Cook 50/50 Corporate /
   Sales & Marketing; Axeri Ramirez thirds across HR / Corporate / Accounting). Cost only, never
   hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the
   profile card.
-- **Reports tab** — three sub-views: **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend),
-  the weekly **OT Report** (All / Pre-Approved / Net OT, production vs. maintenance day split, department
-  breakdown, manager email), and the **Points Tracker** (attendance points, disciplinary flags)
+
+### Where pay is typed
+
+One column, one surface, and the two are gated differently because the columns are:
+
+| Column | Set on | Who |
+|---|---|---|
+| `employees.wage` (hourly rate) | the employee **profile card** | anyone signed in (base tier) |
+| `employees.annual_salary` | **Overhead → Salaries** | the `salaries` tier |
+
+Both were on one *Salaries & Wages* tab until the split. The hourly half moved to the card because
+the people who correct a rate are supervisors, and a supervisor should not have to open the company
+pay list to fix one number on one person. Every hourly change is still recorded in `wage_history`
+by the server, still written before the rate it replaces: a profile save omits `wage` entirely
+unless the typed value differs from what is stored, and `data.js` deletes an unchanged wage from the
+body before writing either way.
 - **Payroll email ingestion** — hourly scheduled function reads the `payroll import` Gmail
   label on `info@` over IMAP and imports the daily report automatically
 - **Weekly manager OT email** — Monday scheduled function emails the Mon–Sun week that just
@@ -160,7 +190,7 @@ Plus the four axes below, and `annual_salary`.
 
 `wage` is an **hourly rate and nothing else**, and it is **ours** — the record of truth behind
 every dollar this system computes. It is NULL for salaried people; the literal `'Salary'` sentinel
-was retired 2026-08-22. It is typed on the **Salaries & Wages** page by any signed-in user
+was retired 2026-08-22. It is typed on the **employee profile card** by any signed-in user
 (`permissions-lib.js` allows it at the base tier), and every change is recorded in `wage_history`,
 which is append-only — the server writes the history row **before** the rate, so a failure between
 the two leaves a record with no change rather than a change with no record.
@@ -249,7 +279,7 @@ That is a real change in what app access means, made deliberately on 2026-08-22,
 stated here rather than left to be discovered. Since the daily file stopped carrying a rate,
 `employees.wage` is the record of truth behind every dollar the system computes, and it is
 writable at the base tier — no grant, no tier, nothing to configure. A new user's first login
-gives them a field on Salaries & Wages next to every hourly employee in the company.
+gives them a field on the profile card of every hourly employee in the company.
 
 What that is bounded by:
 
@@ -301,7 +331,7 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 `section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
-The staffing plan behind the **Staffing Economics** tab: 55 numbered seats, each with the employee
+The staffing plan behind **Manufacturing Costs → Staff**: 55 numbered seats, each with the employee
 assigned to it and a maximum hourly rate to compare against. `seat` here is NOT a job title —
 `employees.position` is, loaded from the classification worksheet.
 
@@ -423,7 +453,7 @@ idempotent. `department` is a **snapshot** taken at import, never a live join.
 `is_scheduled_day` is generated: Mon-Thu true, Fri-Sun false. **The column name is misleading and
 the split it drives is not.** Fri-Sun is not unscheduled — maintenance crews are scheduled those
 days — it is simply not production. The OT report calls the two blocks **Production · Mon-Thu** and
-**Maintenance · Fri-Sun** for that reason, and the Daily Hours tab shows no such column at all: it
+**Maintenance · Fri-Sun** for that reason, and the Daily Hours view shows no such column at all: it
 was labelling every day of the week with a claim about who was rostered. The split itself is what
 keeps Fri-Sun labour visible as its own line instead of dissolving into a weekly total, so it stays.
 
@@ -515,7 +545,7 @@ re-enable it, and record why — see the comment in the migration.
 
 Keyed by `employee_number` as well as `employee_id`, and the number is NOT NULL: the daily file
 identifies people by number, and a rate cannot be recorded for somebody who has none. That is why
-the Salaries & Wages page shows no input for such a person rather than a box that fails on save.
+the profile card shows no wage input for such a person rather than a box that fails on save.
 
 `source` is `'bbsi'` for a rate observed in the daily file — historical, nothing writes it now — or
 `'manual'` for one typed in the app. `flagged` marks a move beyond `WAGE_CHANGE_ALERT_PCT`
@@ -701,7 +731,7 @@ Pacific. (**BBSI and Central Servers are one vendor** — BBSI is the PEO, Centr
 their reporting platform and the actual sender, `no-reply@centralservers.com`. Not two
 systems.) A Gmail filter labels it `payroll import` and skips the inbox. An hourly
 scheduled function searches **only that label** over IMAP, parses the attachment, and upserts one
-`daily_hours` row per employee. The OT Report tab reads that table; the Daily Hours tab is the
+`daily_hours` row per employee. The OT Report view reads that table; the Daily Hours view is the
 manual upload path and the permanent fallback.
 
 Four things about it are load-bearing and easy to undo by accident:
@@ -760,7 +790,7 @@ A payroll file that reports no hours builds **no `daily_hours` rows**. That is c
 no hours to record — but for months it meant an empty day and a missing day were the same absence,
 and everything downstream guessed the same way:
 
-- The Daily Hours tab derived gaps by subtracting the dates that came back from the date range, and
+- The Daily Hours view derived gaps by subtracting the dates that came back from the date range, and
   put every one in a red banner as a "probable missed delivery".
 - `payroll-missed-check` did the same arithmetic against `daily_hours` and emailed about it.
 
@@ -818,7 +848,7 @@ the one thing with two implementations (`buildOtEmailPayload` server-side,
 report and demands they are byte-identical.
 
 **What replaced what.** The automatic send used to be a hook in `commitDailyImport()` in
-`src/js/daily-hours.js` — in the *browser*, after a manual upload on the Daily Hours tab. When
+`src/js/daily-hours.js` — in the *browser*, after a manual upload on the Daily Hours view. When
 hours moved to the hourly email ingest, that hook stopped being reachable: nothing about a cron
 opens a browser. The checkbox stayed on and the email silently never went out again. It is removed
 rather than kept alongside the schedule, because two automatic senders covering different weeks is
@@ -856,17 +886,34 @@ taken deliberately and each one has a visible consequence today.
 (`SCHEMA_PHASE_D_PERMISSIONS.sql`), `netlify/functions/permissions-lib.js` gates both reads and
 writes of `employees`, and the Salaries & Wages page and the admin grant surface are shipped.
 
-One thing about that page changed afterwards and is worth reading as part of it: the tab is
-**no longer behind the salaries tier**. Its Hourly section is where every pay rate in the company
-is typed, and `employees.wage` is writable at the base tier, so the tab opens for everybody and the
-**salaried section** is what the tier gates. Bouncing somebody off the page for lacking the tier
-would take the rate editor away along with the salaries they cannot see. Staffing Economics is
-still gated as a whole tab.
+**That page no longer exists, and the reason is worth reading as part of this.** It held two
+columns with two audiences: `employees.wage` at the base tier and `annual_salary` behind the
+salaries tier. First the tab was ungated with the salaried *section* gated inside it, so that a
+supervisor who could not see salaries could still type a rate. Then the two halves went to
+different places entirely — the hourly half to the employee profile card, the salaried half to
+**Overhead → Salaries** — because a page that has to be ungated so one of its sections can be
+reached is a page holding two things that do not belong together. See *Where pay is typed* above.
+
+**Overhead became the gated tab.** It was ungated and totals-only, withholding its department
+breakdown because at 7 people across 5 departments nearly every row would have had to withhold its
+cost. That was the wrong instrument: no suppression threshold both protects a bucket that thin and
+leaves a usable report. So `/api/cost-report` now refuses `Mill Overhead` and `SG&A` outright
+without the salaries tier, the tab is hidden for everybody else, and for the readers who can open
+it the breakdown is drawn in full. Manufacturing is unchanged — open to everyone, and protected by
+suppression, which works because its buckets are deep enough for a threshold to mean something.
 
 **~~Staffing Economics comes back, gated~~ — DONE.** The page is back behind the salaries tier with
 `max_wage` and the wage-vs-max variance column, and seat assignment works from the app again — as a
 PATCH of one column on one row through `/api/economics`, not the whole-table `PUT` that made the old
 one unsafe. See the `economics` schema section above for what that endpoint will and will not do.
+
+It is no longer a tab of its own: it is **Manufacturing Costs → Staff**, next to the aggregate cost
+report. The two answer different questions about the same class — "what does this cost" and "is the
+person in this seat inside the ceiling budgeted for it" — and the gate moved from the tab to the
+sub-nav, which is filtered rather than disabled so the view is not announced to people who cannot
+open it. What that gate actually protects is `max_wage`, the per-seat rate ceiling: this is the only
+screen it appears on. The occupant's hourly rate beside it is base-tier and readable on the roster,
+and no salaried figure appears on the page at all — a salaried occupant shows a name and dashes.
 
 **~~Seeing what an allocation does~~ — DONE for the salaries tier.** Allocations are enforced and
 applied, and their effect is a department-level figure. With the salaries tier the suppression floor
@@ -885,7 +932,7 @@ every row would withhold its cost, and a table of dashes is worse than no table.
 
 With the **salaries tier** the breakdown is shown, because the suppression floor drops to 1 for
 that tier. Not a favour: suppression protects a figure the reader may not see, and that reader can
-open Salaries & Wages and read every annual_salary by name. `/api/cost-report` decides this
+open Overhead → Salaries and read every annual_salary by name. `/api/cost-report` decides this
 server-side from the caller's own tiers and reports the posture it applied in `disclosure`; the
 page only declines to draw a table it would otherwise fill with dashes. The lift applies to every
 cost class rather than only Overhead — the argument does not stop at a class boundary, since a

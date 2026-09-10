@@ -27,11 +27,11 @@ const SCRIPT_MODULES = [
   'points.js',
   'ot-report.js',
   'daily-hours.js',
-  // After the three modules it renders, so the container cannot be assembled
+  // After the four modules it renders, so the container cannot be assembled
   // without them. Only function declarations cross module boundaries here, but
   // keeping the order honest is how the manifest stays readable as a dependency
   // list rather than an arbitrary sequence.
-  'reports.js',
+  'overtime.js',
   'settings-tab.js',
   'bootstrap.js'
 ];

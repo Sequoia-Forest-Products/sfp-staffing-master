@@ -135,7 +135,7 @@ function econSetMhr(v){ const n=Number(v); state.mhr=isFinite(n)&&n>0?n:state.mh
 function renderEconomics(){
   if(!canSeeSalaries()){
     return `<div style="max-width:720px;margin:40px auto;padding:20px;text-align:center">
-      <div style="font-size:16px;font-weight:700;margin-bottom:8px">Staffing Economics</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:8px">Staff</div>
       <div style="font-size:13px;color:var(--muted);line-height:1.6">
         This page needs the salaries tier. An administrator can grant it under Settings → Access.
       </div></div>`;
@@ -247,7 +247,7 @@ function renderEconomics(){
   </style>
 
   <div style="max-width:1100px;margin:0 auto;padding:20px">
-    <h2 style="font-size:24px;font-weight:700;margin-bottom:6px;color:var(--text)">Staffing Economics</h2>
+    <h2 style="font-size:24px;font-weight:700;margin-bottom:6px;color:var(--text)">Staff</h2>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
       The budgeted staffing plan: one row per <b>seat</b>, not per person. A seat can be vacant and
       still be a real row — that is the point of the plan. <b>Max</b> is the rate ceiling budgeted

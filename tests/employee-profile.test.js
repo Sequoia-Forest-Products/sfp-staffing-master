@@ -109,27 +109,47 @@ function openCard(ctx, people, { editing = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Compensation stays off the card
+// The hourly rate is ON the card. The salary is not.
 // ---------------------------------------------------------------------------
+//
+// The split is the point, and it is a split by COLUMN rather than by screen:
+// employees.wage is base tier in both directions, so it belongs where the
+// person is edited; annual_salary needs the salaries tier in both directions
+// and is not even in the payload without it, so it stays under Overhead.
 
-test('the read-only card shows no wage and no salary', () => {
+test('the read-only card shows the hourly wage and never the salary', () => {
   const ctx = sandbox();
   const html = openCard(ctx, [person()]);
 
   assert.ok(html.includes('Rollin Tolle'), 'sanity: the card rendered');
-  assert.ok(!/31\.5|31,50|\$31/.test(html), 'the hourly wage must not appear');
+  assert.match(html, /Hourly wage/, 'the rate is a labelled field now');
+  assert.match(html, /31\.5/, 'and it shows the real rate');
   assert.ok(!/145000|145,000/.test(html), 'the salary must not appear');
-  assert.ok(!/Wage|Salary/i.test(html.replace(/Salaries &amp; Wages/g, '')),
-    'no compensation label either');
+  assert.ok(!/Annual salary/i.test(html), 'nor a label for it');
 });
 
-test('the editable card has no compensation input', () => {
+test('the editable card has a wage input, bound and pre-filled', () => {
   const ctx = sandbox();
   const html = openCard(ctx, [person()], { editing: true });
 
-  assert.ok(!/31\.5|145000/.test(html), 'no compensation value in any input');
-  assert.ok(!/state\.editing\.wage/.test(html), 'and nothing bound to the wage field');
-  assert.ok(!/wageInput/.test(html), 'not even the roster modal wage input id');
+  assert.match(html, /wageDraftSet\(this\.value\)/, 'the input is bound to the draft');
+  assert.match(html, /31\.5/, 'pre-filled with the stored rate, not blank');
+  assert.ok(!/145000/.test(html), 'and still no salary anywhere');
+  assert.ok(!/annual_salary|annualSalary/.test(html), 'not even the field name');
+});
+
+test('a salaried person gets no wage input at all', () => {
+  const ctx = sandbox();
+  const html = openCard(ctx, [person({ payType: 'Salaried', wage: '', annualSalary: 210000 })],
+    { editing: true });
+
+  // Rule 2 of wage-edit-lib, stated on screen: their compensation is
+  // annual_salary and the costing reports divide it by 2,080, so an hourly rate
+  // written onto them would be counted twice.
+  assert.ok(!/wageDraftSet/.test(html), 'no input for a rate they cannot have');
+  assert.match(html, /salaried/i);
+  assert.match(html, /Overhead → Salaries/, 'and it says where the salary IS set');
+  assert.ok(!/210000|210,000/.test(html), 'without showing the figure');
 });
 
 test('a salaried person still shows no figure', () => {

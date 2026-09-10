@@ -2,7 +2,7 @@
 //
 // Phase C Task 3 is a reorganization, not a rewrite: Pre-Approved Overtime, the
 // OT Report and Points stop being top-level tabs and become sub-views of one
-// Reports tab. Nothing about how they render changes.
+// Overtime tab. Nothing about how they render changes.
 //
 // The reason this file exists is the named failure mode. Rewriting the OT Report
 // tab in Phase A orphaned its manager-email functions and left the Settings
@@ -78,10 +78,10 @@ function sandbox() {
   for (const m of __SCRIPT_MODULES) {
     vm.runInContext(fs.readFileSync(path.join(SRC, m), 'utf8'), ctx, { filename: m });
   }
-  // state and REPORT_VIEWS are declared with const, so they live in the context's
+  // state and OVERTIME_VIEWS are declared with const, so they live in the context's
   // global LEXICAL scope and are not properties of the global object. Function
-  // declarations (renderReports, switchReportView, ...) are properties already.
-  vm.runInContext('globalThis.state = state; globalThis.REPORT_VIEWS = REPORT_VIEWS;',
+  // declarations (renderOvertime, switchOvertimeView, ...) are properties already.
+  vm.runInContext('globalThis.state = state; globalThis.OVERTIME_VIEWS = OVERTIME_VIEWS;',
     ctx, { filename: 'expose-lexicals.js' });
   ctx.__calls = calls;
   return ctx;
@@ -91,15 +91,22 @@ function sandbox() {
 // The container
 // ---------------------------------------------------------------------------
 
-test('Reports offers exactly the three consolidated views', () => {
+test('Overtime offers exactly the four consolidated views, hours first', () => {
   const ctx = sandbox();
   // Array.from is THIS realm's, deliberately. An array built inside the vm
   // context carries that context's Array.prototype, so deepStrictEqual fails on
   // prototype identity with "same structure but not reference-equal" even when
   // the contents match. Anything crossing out of the sandbox has to be rebuilt
   // here before a strict comparison.
-  assert.deepStrictEqual(Array.from(ctx.REPORT_VIEWS, v => v.key),
-    ['preapproved', 'otreport', 'points']);
+  //
+  // DAILY HOURS LEADS, and the order is the order of work: the hours are
+  // imported, then the three views after it report on them. It was a top-level
+  // tab beside Reports for that reason, which is the argument for it being the
+  // first thing inside.
+  assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.key),
+    ['dailyhours', 'preapproved', 'otreport', 'points']);
+  assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.label),
+    ['Daily Hours', 'Pre-Approved OT', 'OT Report', 'Points']);
 });
 
 test('every view that reads an endpoint has a load hook', () => {
@@ -111,19 +118,21 @@ test('every view that reads an endpoint has a load hook', () => {
   // needs data says so", since a view with no hook renders a shell that never
   // fills — which reads as an empty week rather than a bug.
   const ctx = sandbox();
-  assert.strictEqual(ctx.state.reportView, 'preapproved');
-  assert.strictEqual(typeof ctx.reportView('preapproved').load, 'function');
-  assert.strictEqual(typeof ctx.reportView('otreport').load, 'function');
+  assert.strictEqual(ctx.state.overtimeView, 'dailyhours');
+  assert.strictEqual(typeof ctx.overtimeView('dailyhours').load, 'function');
+  assert.strictEqual(typeof ctx.overtimeView('preapproved').load, 'function');
+  assert.strictEqual(typeof ctx.overtimeView('otreport').load, 'function');
   // Points renders from state.points, loaded with the roster. No endpoint, no hook.
-  assert.strictEqual(ctx.reportView('points').load, undefined);
+  assert.strictEqual(ctx.overtimeView('points').load, undefined);
 });
 
 test('a load hook is guarded, so re-opening a view does not re-fetch', () => {
-  // switchTab and switchReportView both call load(). Without the guard, every
+  // switchTab and switchOvertimeView both call load(). Without the guard, every
   // click on the tab strip fires another request.
   const ctx = sandbox();
-  const src = fs.readFileSync(path.join(SRC, 'reports.js'), 'utf8');
-  for (const guard of ['!state.preLoaded && !state.preLoading',
+  const src = fs.readFileSync(path.join(SRC, 'overtime.js'), 'utf8');
+  for (const guard of ['!state.dailyLoaded && !state.dailyLoading',
+                       '!state.preLoaded && !state.preLoading',
                        '!state.otReport && !state.otReportLoading']) {
     assert.ok(src.includes(guard), `load hook is missing the guard: ${guard}`);
   }
@@ -132,21 +141,21 @@ test('a load hook is guarded, so re-opening a view does not re-fetch', () => {
 
 test('an unknown view falls back to the first rather than rendering nothing', () => {
   const ctx = sandbox();
-  assert.strictEqual(ctx.reportView('nonsense').key, 'preapproved');
-  assert.strictEqual(ctx.reportView(undefined).key, 'preapproved');
+  assert.strictEqual(ctx.overtimeView('nonsense').key, 'dailyhours');
+  assert.strictEqual(ctx.overtimeView(undefined).key, 'dailyhours');
 });
 
 test('the container adds no reporting logic of its own', () => {
   // The whole point of Task 3: each view renders through the function it always
   // used. If this file starts computing anything, the OT report has two
   // implementations.
-  const src = fs.readFileSync(path.join(SRC, 'reports.js'), 'utf8');
-  for (const fn of ['renderPreApproved()', 'renderOTReport()', 'renderPoints()']) {
-    assert.ok(src.includes(fn), `reports.js should delegate to ${fn}`);
+  const src = fs.readFileSync(path.join(SRC, 'overtime.js'), 'utf8');
+  for (const fn of ['renderDailyHours()', 'renderPreApproved()', 'renderOTReport()', 'renderPoints()']) {
+    assert.ok(src.includes(fn), `overtime.js should delegate to ${fn}`);
   }
   // No arithmetic, no data access, no fetches.
-  assert.ok(!/fetch\(/.test(src), 'reports.js must not fetch');
-  assert.ok(!/state\.otReport\s*\./.test(src), 'reports.js must not read report data');
+  assert.ok(!/fetch\(/.test(src), 'overtime.js must not fetch');
+  assert.ok(!/state\.otReport\s*\./.test(src), 'overtime.js must not read report data');
 });
 
 // ---------------------------------------------------------------------------
@@ -159,8 +168,8 @@ test('selecting the OT Report view triggers its load', () => {
   ctx.loadOTReport = () => { loaded++; };
   ctx.render = () => {};
 
-  ctx.switchReportView('otreport');
-  assert.strictEqual(ctx.state.reportView, 'otreport');
+  ctx.switchOvertimeView('otreport');
+  assert.strictEqual(ctx.state.overtimeView, 'otreport');
   assert.strictEqual(loaded, 1, 'the report must load when its view is opened');
 });
 
@@ -171,12 +180,12 @@ test('the load does not re-fire when the report is already present', () => {
   ctx.render = () => {};
 
   ctx.state.otReport = { dateRange: 'Aug 17 – Aug 23' };
-  ctx.switchReportView('otreport');
+  ctx.switchOvertimeView('otreport');
   assert.strictEqual(loaded, 0, 'an already-loaded week must not reload on every click');
 });
 
 test('opening the Reports tab on the OT Report view still loads it', () => {
-  // The deep-link path. goToReport('otreport') sets the view and then switches
+  // The deep-link path. goToOvertime('otreport') sets the view and then switches
   // tabs, so the load hook has to fire from switchTab too — otherwise the report
   // renders its shell and never fills in, which reads as an empty week.
   const ctx = sandbox();
@@ -184,8 +193,8 @@ test('opening the Reports tab on the OT Report view still loads it', () => {
   ctx.loadOTReport = () => { loaded++; };
   ctx.render = () => {};
 
-  ctx.state.reportView = 'otreport';
-  ctx.switchTab('reports', null);
+  ctx.state.overtimeView = 'otreport';
+  ctx.switchTab('overtime', null);
   assert.strictEqual(loaded, 1);
 });
 
@@ -195,8 +204,8 @@ test('opening Reports on a view with no loader fires no request', () => {
   ctx.loadOTReport = () => { loaded++; };
   ctx.render = () => {};
 
-  ctx.state.reportView = 'preapproved';
-  ctx.switchTab('reports', null);
+  ctx.state.overtimeView = 'preapproved';
+  ctx.switchTab('overtime', null);
   assert.strictEqual(loaded, 0);
 });
 
@@ -472,16 +481,28 @@ test('the per-employee columns still split the two blocks apart', () => {
 // Nothing that pointed at the old tabs is left dangling
 // ---------------------------------------------------------------------------
 
-test('no navigation still targets the three retired tab keys', () => {
+// Every tab key that was top-level once and is a sub-view or gone now. 'points'
+// and 'otreport' retired in Phase C along with the old 'overtime' key — which
+// meant Pre-Approved OT, and is NOT the container's key; the container is
+// 'overtime' and is live, which is exactly the collision this list has to keep
+// straight. 'dailyhours', 'salaries' and 'economics' retired with the
+// restructure, and 'reports' is the container's own former name.
+const RETIRED_TAB_KEYS =
+  ['points', 'otreport', 'preapproved', 'dailyhours', 'salaries', 'economics', 'reports'];
+
+test('no navigation still targets a retired tab key', () => {
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
-  for (const key of ['overtime', 'points', 'otreport']) {
+  for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!app.includes(`data-tab="${key}"`), `app.html still has a ${key} tab button`);
   }
-  assert.ok(app.includes('data-tab="reports"'), 'and Reports must be there');
+  // The five that survive, and nothing else.
+  const live = Array.from(app.matchAll(/data-tab="([^"]+)"/g), m => m[1]);
+  assert.deepStrictEqual(live.sort(),
+    ['costs', 'employees', 'overhead', 'overtime', 'settings']);
 
-  // goToTab('otreport') would now silently render nothing. goToReport() is the
+  // goToTab('otreport') would now silently render nothing. goToOvertime() is the
   // supported way in.
-  // Comments stripped first. reports.js documents why goToTab('otreport') no
+  // Comments stripped first. overtime.js documents why goToTab('otreport') no
   // longer resolves, and a substring scan over the raw file reads that
   // explanation as a call site.
   const stripComments = (src) => src
@@ -490,36 +511,38 @@ test('no navigation still targets the three retired tab keys', () => {
 
   for (const m of __SCRIPT_MODULES) {
     const code = stripComments(fs.readFileSync(path.join(SRC, m), 'utf8'));
-    for (const key of ['overtime', 'points', 'otreport']) {
+    for (const key of RETIRED_TAB_KEYS) {
       assert.ok(!code.includes(`goToTab('${key}')`),
-        `${m} still calls goToTab('${key}') — use goToReport('${key}')`);
+        `${m} still calls goToTab('${key}') — use goToOvertime('${key}')`);
     }
   }
 });
 
-test('render dispatches Reports and no longer dispatches the three', () => {
+test('render dispatches the five live tabs and no retired one', () => {
   const core = fs.readFileSync(path.join(SRC, 'core.js'), 'utf8');
-  assert.ok(/state\.tab==='reports'\)el\.innerHTML=renderReports\(\)/.test(core));
-  for (const key of ['overtime', 'points', 'otreport']) {
+  assert.ok(/state\.tab==='overtime'\)el\.innerHTML=renderOvertime\(\)/.test(core));
+  assert.ok(/state\.tab==='costs'\)el\.innerHTML=renderCostsTab\(\)/.test(core));
+  assert.ok(/state\.tab==='overhead'\)el\.innerHTML=renderOverheadTab\(\)/.test(core));
+  for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!new RegExp(`state\\.tab==='${key}'`).test(core),
       `core.js still dispatches the retired '${key}' tab`);
   }
 });
 
-test('goToReport opens the Reports tab on the requested view', () => {
+test('goToOvertime opens the Overtime tab on the requested view', () => {
   const ctx = sandbox();
   const switched = [];
   ctx.goToTab = (t) => switched.push(t);
 
-  ctx.goToReport('points');
-  assert.strictEqual(ctx.state.reportView, 'points');
-  assert.deepStrictEqual(switched, ['reports']);
+  ctx.goToOvertime('points');
+  assert.strictEqual(ctx.state.overtimeView, 'points');
+  assert.deepStrictEqual(switched, ['overtime']);
 });
 
-test('reports.js is in the session manifest', () => {
+test('overtime.js is in the session manifest', () => {
   // Modules are listed, not discovered — a file that is not in the manifest is
   // not in the bundle, and the tab would be an undefined function at runtime.
-  assert.ok(__SCRIPT_MODULES.includes('reports.js'));
-  assert.ok(__SCRIPT_MODULES.indexOf('reports.js') > __SCRIPT_MODULES.indexOf('ot-report.js'),
+  assert.ok(__SCRIPT_MODULES.includes('overtime.js'));
+  assert.ok(__SCRIPT_MODULES.indexOf('overtime.js') > __SCRIPT_MODULES.indexOf('ot-report.js'),
     'listed after the modules it renders');
 });

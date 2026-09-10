@@ -49,6 +49,15 @@ const {
 } = require('./week-index-lib');
 const { buildCostReport, COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
 
+// The cost classes that need the salaries tier, whole. These are the two the
+// Overhead tab stacks; see the refusal in the handler for why they are gated as
+// classes rather than protected by the bucket threshold.
+//
+// Listed rather than derived as "everything except Manufacturing": a fourth
+// cost class added to COST_CLASSES must be a decision about who may read it,
+// not something that inherits a gate by being new.
+const GATED_COST_CLASSES = ['Mill Overhead', 'SG&A'];
+
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
 
 // Bounds on the two display parameters. They arrive from a query string, so they
@@ -156,6 +165,30 @@ exports.handler = async (event) => {
     // safe direction. A permissions read that breaks costs somebody their
     // breakdown; it cannot publish one.
     const tiers = await perms.fetchTiers(session.email, db);
+
+    // THE OVERHEAD CLASSES ARE GATED WHOLE, not by bucket. Manufacturing stays
+    // open to every signed-in account and is protected by suppression, the way
+    // it always was.
+    //
+    // Mill Overhead and SG&A are different, and the difference is headcount
+    // rather than sensitivity: those two classes are the office, they are small,
+    // and their buckets are one and two people deep almost everywhere. A
+    // threshold cannot protect a population that thin — suppress enough to be
+    // safe and there is no report left, publish anything and it is somebody's
+    // salary with a department name on it. So the class is refused rather than
+    // dashed out, which is also what makes the Overhead tab's own gate honest:
+    // hiding the tab button while this endpoint answered would protect nobody.
+    if (GATED_COST_CLASSES.includes(costClass) && !perms.has(tiers, perms.TIER_SALARIES)) {
+      return {
+        statusCode: 403, headers,
+        body: JSON.stringify({
+          ok: false,
+          error: `Not permitted to read ${costClass}`,
+          detail: 'Overhead costs need the salaries tier. An administrator can grant it under Settings → Access.'
+        })
+      };
+    }
+
     const floor = perms.has(tiers, perms.TIER_SALARIES) ? 1 : DEFAULT_MIN_BUCKET;
     const minBucketHeadcount = requestedMin === null
       ? floor

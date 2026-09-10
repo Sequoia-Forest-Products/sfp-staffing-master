@@ -282,19 +282,56 @@ test('it is not fetched on boot — that would 403 for most of the roster', () =
   const ctx = sandbox();
   const hits = () => ctx.__calls.filter(c => c.url.startsWith('/api/economics')).length;
   assert.strictEqual(hits(), 0);
-  ctx.switchTab('economics', null);
-  assert.strictEqual(hits(), 1, 'loaded on first open of its own tab');
+  // It is the 'staff' view of Manufacturing Costs now, not a tab. Selecting the
+  // view is what loads it.
+  ctx.switchCostsView('staff');
+  assert.strictEqual(hits(), 1, 'loaded on first open of its own sub-view');
 });
 
-test('losing the tier bounces off this tab too', () => {
+test('opening the parent tab on the staff view still loads it', () => {
+  // The hook that stops firing when a tab becomes a sub-view. Somebody who was
+  // last on 'staff', navigates away and comes back, opens the tab with that
+  // view already selected — and switchTab has to fire its load or the view
+  // renders its shell over nothing.
+  const ctx = sandbox();
+  ctx.state.costsView = 'staff';
+  const hits = () => ctx.__calls.filter(c => c.url.startsWith('/api/economics')).length;
+  assert.strictEqual(hits(), 0);
+  ctx.switchTab('costs', null);
+  assert.strictEqual(hits(), 1);
+});
+
+test('the staff view is not offered at all without the tier', () => {
   const ctx = sandbox({ tiers: ['hourly_wages'] });
-  ctx.state.tab = 'economics';
+  const html = ctx.renderCostsTab();
+  // Filtered out of the sub-nav rather than disabled in it: a greyed-out button
+  // still announces the page exists.
+  assert.ok(!/switchCostsView\('staff'\)/.test(html), 'no button for a view they cannot open');
+  // With one view left there is no sub-nav either — a single-button nav is
+  // furniture that explains nothing.
+  assert.ok(!/doc-tab/.test(html), 'no sub-nav for a single view');
+  // And the parent tab still renders its own report, because it is not gated.
+  assert.match(html, /cost-bar/);
+});
+
+test('losing the tier resolves the staff view away, and hides Overhead', () => {
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  ctx.state.costsView = 'staff';
+  ctx.state.tab = 'overhead';
   ctx.applyTabVisibility();
+  // The gated TAB bounces, as it always did.
   assert.strictEqual(ctx.state.tab, 'employees');
-  assert.strictEqual(ctx.__el('tab:economics').hidden, true);
-  // Salaries & Wages is NOT hidden with it any more: its Hourly section is
-  // where every pay rate in the company is typed, and that is the base tier.
-  assert.strictEqual(ctx.__el('tab:salaries').hidden, false);
+  assert.strictEqual(ctx.__el('tab:overhead').hidden, true);
+  // And the gated SUB-VIEW resolves to the first one they can read, so a
+  // revocation in another window does not leave them sitting on it.
+  assert.strictEqual(ctx.state.costsView, 'deptgroup');
+});
+
+test('a deep link to the staff view still lands on a sentence', () => {
+  // The sub-nav omitting the button is a courtesy. renderEconomics itself has
+  // to refuse, because state.costsView is reachable from the console.
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  assert.match(ctx.renderEconomics(), /needs the salaries tier/i);
 });
 
 // ---------------------------------------------------------------------------
