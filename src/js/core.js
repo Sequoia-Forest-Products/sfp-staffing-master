@@ -108,7 +108,12 @@ let state = {
   // swallow what was typed into a ceiling, and cleared once the server answers.
   // Keyed by seat rather than a single draft because every row is editable at
   // once here — unlike Overhead → Salaries, where one screen edits one person.
-  econMaxDrafts:{}
+  econMaxDrafts:{},
+  // Seat history, read on demand: 55 seats' change logs on every page load
+  // would be most of a table nobody asked to see. `econHistoryOpen` is the seat
+  // id whose log is expanded, or null; `econHistory` caches what was read,
+  // keyed by seat, and is dropped for a seat after a change to it.
+  econHistoryOpen:null, econHistory:{}
 };
 
 function fmt$(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}

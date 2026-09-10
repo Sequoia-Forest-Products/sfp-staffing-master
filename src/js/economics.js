@@ -107,6 +107,8 @@ async function econAssign(seatId, employeeId){
     if(!res.ok||d.ok===false) throw new Error(d.detail||d.error||('Request failed ('+res.status+')'));
 
     if(seat&&d.seat) Object.assign(seat,d.seat);
+    econForgetHistory(seatId);
+    if(state.econHistoryOpen===String(seatId)) econLoadHistory(seatId);
 
     if(d.unchanged){
       // Nothing to say. The server declined to write a value that was already
@@ -206,6 +208,11 @@ async function econSaveMax(seatId,raw){
 
     if(d.seat) Object.assign(seat,d.seat);
     econClearMaxDraft(seatId);
+    // The change is now in economics_history. Drop the cached log so the next
+    // open re-reads rather than showing a list one row out of date — and
+    // re-read immediately if it is open on screen right now.
+    econForgetHistory(seatId);
+    if(state.econHistoryOpen===String(seatId)) econLoadHistory(seatId);
 
     if(d.unchanged){
       // Nothing to say — the server declined to write a value already there.
@@ -227,6 +234,94 @@ async function econSaveMax(seatId,raw){
 
 function econClearMaxDraft(seatId){
   if(state.econMaxDrafts) delete state.econMaxDrafts[String(seatId)];
+}
+
+// ------------------------------------------------------------------------
+// SEAT HISTORY
+// ------------------------------------------------------------------------
+//
+// Both writes on this page are recorded in economics_history — the ceiling and
+// the occupant — and this is where that record is read. Without a surface it
+// would be a write-only table, which is only half of an audit trail: the reason
+// SQL-only editing was a problem was that nobody could see what had happened.
+//
+// LOADED PER SEAT, ON DEMAND. 55 seats' history on every page load would be
+// most of a table nobody has asked to see. One seat at a time, cached in
+// state.econHistory until the page is reloaded, and re-read after a change to
+// that seat so the new row appears without a refresh.
+
+async function econToggleHistory(seatId){
+  const key=String(seatId);
+  if(!state.econHistory) state.econHistory={};
+  if(state.econHistoryOpen===key){ state.econHistoryOpen=null; render(); return; }
+  state.econHistoryOpen=key;
+  render();
+  if(state.econHistory[key]) return;          // already read this sitting
+  await econLoadHistory(seatId);
+}
+
+async function econLoadHistory(seatId){
+  const key=String(seatId);
+  if(!state.econHistory) state.econHistory={};
+  state.econHistory[key]={loading:true,rows:[],error:'',missing:false};
+  render();
+  try{
+    const res=await fetch('/api/economics?history='+encodeURIComponent(seatId));
+    if(res.status===401){location.href='/';return;}
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok||d.ok===false) throw new Error(d.detail||d.error||('Request failed ('+res.status+')'));
+    state.econHistory[key]={loading:false,rows:d.history||[],error:'',
+                            missing:d.historyMissing===true,note:d.note||''};
+  }catch(err){
+    state.econHistory[key]={loading:false,rows:[],error:err.message,missing:false};
+  }
+  render();
+}
+
+// Dropped after a change so the next open re-reads rather than showing a list
+// that is one row out of date.
+function econForgetHistory(seatId){
+  if(state.econHistory) delete state.econHistory[String(seatId)];
+}
+
+function econHistoryWhen(iso){
+  const d=new Date(iso);
+  if(isNaN(d)) return String(iso||'');
+  return d.toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',
+                                   hour:'numeric',minute:'2-digit'});
+}
+
+// A change, in one line. The two fields read differently on purpose: a ceiling
+// moved between figures, an occupant moved between people, and 'none' means
+// different things in each ('no ceiling' vs 'vacant').
+function econHistoryLine(h){
+  const none=h.field==='max_wage'?'no rate':'vacant';
+  const from=h.previous==null?none:(h.field==='max_wage'?fmt$(Number(h.previous)):h.previous);
+  const to=h.next==null?none:(h.field==='max_wage'?fmt$(Number(h.next)):h.next);
+  const what=h.field==='max_wage'?'Position rate':'Assigned';
+  // The opening rows the migration wrote are not somebody's edit and must not
+  // be presented as one — see §4 of SCHEMA_ECONOMICS_HISTORY.sql.
+  if(h.opening){
+    return `<b>${what}</b> ${esc(to)} <span style="color:var(--muted)">— on file before changes were recorded</span>`;
+  }
+  return `<b>${what}</b> ${esc(from)} → ${esc(to)}`;
+}
+
+function renderSeatHistory(p){
+  const key=String(p.id);
+  if(state.econHistoryOpen!==key) return '';
+  const h=(state.econHistory||{})[key];
+  const wrap=(inner)=>`<div class="econ-hist">${inner}</div>`;
+  if(!h||h.loading) return wrap('<span style="color:var(--muted)">Reading the record…</span>');
+  if(h.error) return wrap(`<span style="color:var(--brick)">${esc(h.error)}</span>`);
+  if(h.missing) return wrap(`<span style="color:#b8860b">No record yet — ${esc(h.note||'the history table has not been created.')}</span>`);
+  if(!h.rows.length) return wrap('<span style="color:var(--muted)">Nothing recorded for this seat.</span>');
+  return wrap(h.rows.map(r=>`
+    <div class="econ-hist-row">
+      <div>${econHistoryLine(r)}</div>
+      <div style="color:var(--muted);white-space:nowrap">${
+        r.opening?'':esc(r.changedBy)+' · '}${esc(econHistoryWhen(r.changedAt))}</div>
+    </div>`).join(''));
 }
 
 function econSetBurden(v){ const n=Number(v); state.burden=isFinite(n)&&n>=0?n/100:0; render(); }
@@ -333,11 +428,13 @@ function renderEconomics(){
       <div class="econ-fig">${dpm==null?'—':esc(fmt$(dpm))}</div>
       <div class="econ-fig">${maxField(p)}</div>
       <div class="econ-fig ${cls}">${esc(varStr)}</div>
-    </div>`;
+      <div class="econ-hist-cell"><button class="econ-hist-btn" title="What has changed on this seat"
+        onclick="econToggleHistory('${jsStr(p.id)}')">${state.econHistoryOpen===String(p.id)?'&times;':'&#8635;'}</button></div>
+    </div>${renderSeatHistory(p)}`;
   };
 
   return `<style>
-    .econ-row{display:grid;grid-template-columns:36px minmax(120px,1.2fr) minmax(150px,2fr) 92px 76px 92px 92px;gap:8px;align-items:center;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:3px}
+    .econ-row{display:grid;grid-template-columns:36px minmax(120px,1.2fr) minmax(150px,2fr) 92px 76px 92px 92px 24px;gap:8px;align-items:center;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:3px}
     .econ-head{font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:none;border:none;padding-bottom:0}
     .econ-sec{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#fff;background:var(--rust);padding:5px 12px;border-radius:6px;margin-top:14px}
     .econ-num{color:var(--muted);font-size:10px;font-weight:700}
@@ -351,6 +448,15 @@ function renderEconomics(){
     .econ-max:hover:not(:disabled){border-color:var(--border);background:var(--surface2)}
     .econ-max:focus{border-color:var(--rust);background:#fff;outline:none}
     .econ-max:disabled{color:var(--muted)}
+    .econ-hist-cell{display:flex;justify-content:flex-end}
+    .econ-hist-btn{font-family:var(--font);font-size:13px;line-height:1;color:var(--muted);
+      background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:4px}
+    .econ-hist-btn:hover{color:var(--rust);background:var(--surface2)}
+    /* Sits directly under its own row and is visibly attached to it: a change
+       log floating between two rows belongs to neither. */
+    .econ-hist{background:var(--surface2);border:1px solid var(--border);border-top:none;
+      border-radius:0 0 6px 6px;margin:0 0 3px;padding:8px 12px;font-size:11.5px;line-height:1.6}
+    .econ-hist-row{display:flex;justify-content:space-between;gap:16px;padding:2px 0}
     .econ-select{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;min-width:0;flex:1;background:var(--surface)}
     .econ-select-dupe{border-color:#e67e22}
     .econ-flag{color:#e67e22;font-size:10px;font-weight:700;margin-left:8px}
@@ -414,6 +520,7 @@ function renderEconomics(){
       <div>#</div><div>Seat</div><div>Assigned</div>
       <div class="econ-fig">Current Rate</div><div class="econ-fig">$/M</div>
       <div class="econ-fig">Position Rate</div><div class="econ-fig">Variance</div>
+      <div class="econ-hist-cell"></div>
     </div>
     ${rows.length
       ? sections.map(sec=>`<div class="econ-sec">${esc(sec||'—')}</div>`
