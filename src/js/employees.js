@@ -60,7 +60,7 @@ function retiredOption(v,list){
 // There were two copies, and they had already drifted twice: this one used
 // fmtWage(e) while renderEmployeeList printed e.wage raw, so the same person's
 // wage read differently depending on whether you had typed in the search box.
-// Both also interpolated name, days, phone and status UNESCAPED — employee names
+// Both also interpolated name, phone and status UNESCAPED — employee names
 // are user-controlled, which makes that an XSS surface on the roster.
 //
 // esc() on every interpolated value. fmtWage() produces its own markup-free
@@ -79,7 +79,6 @@ function employeeRow(e){
       <td${e.costClass?'':' style="color:var(--muted)"'}>${e.costClass?esc(e.costClass):'—'}</td>
       <td><span class="badge ${e.status==='Active'?'active':'inactive'}">${esc(e.status||'—')}</span></td>
       <td><span class="badge ${e.language==='Spanish'?'es':'en'}">${e.language==='Spanish'?'ES':'EN'}</span></td>
-      <td style="color:var(--muted);font-size:11px">${esc(e.days||'—')}</td>
       <td style="color:var(--muted);font-size:11px">${esc(e.phone||'—')}</td>
       <td>${smsCell(e)}</td>
       <td><button class="btn btn-outline btn-sm" onclick="openEdit(${idx})">Edit</button></td>
@@ -150,8 +149,8 @@ function renderEmployees(){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          ${['name','wage','department','costClass','status','language','days','phone'].map(col=>{
-            const labels={name:'Name',wage:'Wage/hr',department:'Department',costClass:'Cost class',status:'Status',language:'Lang',days:'Schedule',phone:'Phone'};
+          ${['name','wage','department','costClass','status','language','phone'].map(col=>{
+            const labels={name:'Name',wage:'Wage/hr',department:'Department',costClass:'Cost class',status:'Status',language:'Lang',phone:'Phone'};
             const active=state.sortCol===col;
             const arrow=active?(state.sortDir==='asc'?'↑':'↓'):'';
             return '<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="sortEmployees(\''+col+'\')">'+labels[col]+(arrow?'<span style=\"color:var(--orange);margin-left:3px\">'+arrow+'</span>':'')+'</th>';
@@ -164,7 +163,7 @@ function renderEmployees(){
              the row template so the comment is not repeated once per employee. -->
         <tbody>
           ${filtered.length?filtered.map(employeeRow).join(''):
-            '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
+            '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -220,7 +219,7 @@ function renderEmployeeList() {
   if (!tbody) return;
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No employees match</td></tr>';
     return;
   }
 
@@ -509,25 +508,8 @@ function driveLinkBlock(e){
   return '<span style="color:var(--muted)">No folder yet — one is created for a new employee automatically, or on the first upload in Drive.</span>';
 }
 
-// One break time, read-only. Three states, because a reader needs to tell them
-// apart: a formatted time, nothing on file, and something on file that cannot be
-// read. The last one used to render as the raw stored string —
-// '1899-12-30T20:45:00.000Z' — which looked like a rendering fault rather than
-// data worth fixing.
-function breakField(label,value){
-  const shown=fmtTime(value);
-  if(shown) return pf(label,shown);
-  const raw=String(value==null?'':value).trim();
-  if(raw==='') return pf(label,'',{empty:'not set'});
-  return pf(label,
-    `<span style="color:#b8860b;font-weight:700">Unreadable — ${esc(raw)}</span>`,
-    {html:true});
-}
-
 function profileReadBody(e){
   const bday=fmtBirthday(e.birthday);
-  const addr=[e.addressStreet,e.addressCity,e.addressState,e.addressPostalCode]
-    .map(v=>String(v==null?'':v).trim()).filter(Boolean);
 
   return `
     ${profileGroup('Identity',[
@@ -564,20 +546,8 @@ function profileReadBody(e){
               : '',
             {html:true,empty:'not set'})
     ])}
-    ${profileGroup('Address',[
-      pf('Street',e.addressStreet),
-      pf('City',e.addressCity),
-      pf('State',e.addressState),
-      pf('Postal code',e.addressPostalCode),
-      pf('Full',addr.length?addr.join(', '):'',{empty:'no address on file'})
-    ])}
     ${profileGroup('Files',[
       pf('HR file',`<span id="driveLinkArea">${driveLinkBlock(e)}</span>`,{html:true})
-    ])}
-    ${profileGroup('Schedule',[
-      pf('Days',e.days,{empty:'not set'}),
-      breakField('Break 1',e.break1),
-      breakField('Break 2',e.break2)
     ])}
 `;
 }
@@ -712,52 +682,6 @@ function goToEmployeeProfile(employeeId){
   goToTab('employees');
   openProfile(idx);
 }
-// A break time input.
-//
-// A <input type="time"> given a value it cannot represent renders BLANK, and the
-// next save writes that blank back as though somebody had deliberately cleared
-// the field. That is precisely the trap the birthday date picker hit on a live
-// system, so the same escape hatch applies: an unreadable value gets a text box
-// and a warning, and is preserved until a human retypes it.
-//
-// A readable value is shown in a time picker and comes back as 'HH:MM', which is
-// exactly what gets stored — so the edit path needs no conversion at all.
-function breakInput(label,field,value){
-  const picker=timeInputValue(value);
-  const raw=String(value==null?'':value).trim();
-  const unreadable=raw!==''&&picker==='';
-
-  if(unreadable){
-    return `<div class="form-group full"><label class="form-label">${esc(label)}</label>
-      <input type="text" value="${esc(raw)}" oninput="state.editing.${field}=this.value">
-      <div style="font-size:11px;color:#b8860b;margin-top:4px;line-height:1.5">Not a time the picker can show, so it is left as text rather than blanked — blanking it would write the emptiness back as fact on the next save. Retype it as a time to get a picker.</div>
-    </div>`;
-  }
-  return `<div class="form-group"><label class="form-label">${esc(label)}</label>
-    <input type="time" value="${esc(picker)}" oninput="state.editing.${field}=this.value">
-    <div style="font-size:11px;color:var(--muted);margin-top:4px">Leave blank for no break time on file. Blank is stored as nothing, not as a default.</div>
-  </div>`;
-}
-
-// Schedule days.
-//
-// A select if the roster agrees on a small set of values, free text otherwise —
-// decided from the DATA rather than assumed, because a select silently drops any
-// value not in its option list, and on this field that would rewrite somebody's
-// schedule the first time their profile was saved. SCHEDULE_DAYS holds the
-// values found in the column; anything else keeps a text box and is offered as
-// a suggestion via the datalist so the common values are still one click away.
-function daysField(e){
-  const current=String(e.days==null?'':e.days).trim();
-  const known=SCHEDULE_DAYS.includes(current);
-  const list=SCHEDULE_DAYS.map(d=>`<option value="${esc(d)}">`).join('');
-  return `<div class="form-group"><label class="form-label">Schedule days</label>
-    <input type="text" list="sched-days" value="${esc(current)}" oninput="state.editing.days=this.value">
-    <datalist id="sched-days">${list}</datalist>
-    ${(current!==''&&!known)?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Not one of the values already on the roster. Kept as typed.</div>`:''}
-  </div>`;
-}
-
 // The birthday input, shared by both edit surfaces so they cannot disagree about
 // what happens to a value the picker cannot show. See profileEditBody for why
 // blanking is not an option.
@@ -1119,18 +1043,6 @@ function profileEditBody(e){
         <input type="date" value="${esc(bdayInput)}" oninput="state.editing.birthday=this.value">
       </div>`}
 
-      ${daysField(e)}
-      ${breakInput('Break 1','break1',e.break1)}
-      ${breakInput('Break 2','break2',e.break2)}
-
-      <div class="form-group full"><label class="form-label">Street</label>
-        <input type="text" value="${esc(e.addressStreet||'')}" oninput="state.editing.addressStreet=this.value"></div>
-      <div class="form-group"><label class="form-label">City</label>
-        <input type="text" value="${esc(e.addressCity||'')}" oninput="state.editing.addressCity=this.value"></div>
-      <div class="form-group"><label class="form-label">State</label>
-        <input type="text" value="${esc(e.addressState||'')}" oninput="state.editing.addressState=this.value"></div>
-      <div class="form-group"><label class="form-label">Postal code</label>
-        <input type="text" value="${esc(e.addressPostalCode||'')}" oninput="state.editing.addressPostalCode=this.value"></div>
 
       <div class="form-group full" style="padding:10px 12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
         <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
@@ -1170,8 +1082,10 @@ const profileStyle=`<style>
 //
 // NOTHING IS LOST IN THE COLLAPSE, which was checked field by field rather than
 // assumed. The card is a strict superset: it has everything the modal had, plus
-// break times, the four address fields and the HR file link, and it offers the
-// schedule as a select where the modal had a free-text box.
+// the HR file link. The break times and the four address fields used to be the
+// other half of that superset; they were removed from both surfaces on
+// 2026-09-14, so the two field lists are closer than they have ever been and
+// the test that pins them together still holds.
 //
 // The modal survives for ADD ALONE. A person who does not exist yet has no
 // profile card to open, and the card reads state.employees by index.
@@ -1186,7 +1100,7 @@ function openEdit(idx){
 // model exists to remove.
 // The one remaining caller of renderModal. state.profile stays null, which is
 // what routes this to the modal rather than the card — see renderEmployees.
-function openAdd(){state.profile=null;state.editing={name:'',wage:'',annualSalary:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',days:'MON-THU',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',addressStreet:'',addressCity:'',addressState:'',addressPostalCode:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.profile=null;state.editing={name:'',wage:'',annualSalary:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',birthday:'',phone:'',language:'English',email:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 
@@ -1250,11 +1164,13 @@ async function saveEdit(){
 
     const row={
       name:e.name, pay_type:payType, status:e.status,
-      // clock_in / clock_out are no longer written; see the note in the form.
-      days:e.days,
-      // Normalized, preserved or null — never a fabricated default. See
-      // breakStorageValue in core.js.
-      break_1:breakStorageValue(e.break1), break_2:breakStorageValue(e.break2),
+      // days, break_1, break_2, clock_in, clock_out and the four address_*
+      // columns are deliberately ABSENT from this payload, and their absence is
+      // load-bearing rather than tidy. The form no longer collects them, so
+      // `days: e.days` would send undefined and `address_street:
+      // e.addressStreet||null` would send null — emptying six columns across
+      // the roster one save at a time, with nothing reporting it. A key that is
+      // not sent is a column PostgREST does not touch.
       birthday:e.birthday, phone:e.phone, language:e.language,
       email:e.email, sms_opted_out:e.smsOptedOut===true,
       drive_folder_id:e.driveFolderId||null,
@@ -1275,9 +1191,7 @@ async function saveEdit(){
       ...(salaryForRow && salaryForRow.send ? {annual_salary: salaryForRow.annualSalary} : {}),
       // Phase B. position applies to everyone; position_group does not. Blank is
       // stored as NULL rather than '', the same as the other nullable fields.
-      position:e.position||null,
-      address_street:e.addressStreet||null, address_city:e.addressCity||null,
-      address_state:e.addressState||null, address_postal_code:e.addressPostalCode||null
+      position:e.position||null
     };
 
     if(e.id){
@@ -1401,14 +1315,15 @@ function renderModal(){
           <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">Employee # and Department drive the daily hours import and the OT report. None of these three is ever filled in automatically — each is set here, one employee at a time. <b>Department</b> is the accounting line; the list is grouped by cost class only so twelve values stay readable. <b>Cost class</b> is a separate fact and must be chosen on its own: a salaried person can sit in Manufacturing and an hourly person in ${esc('SG&A')}. <b>Position group</b> describes where in the mill somebody stands; it is for manufacturing floor staff and is correctly left as “— none —” for everyone else.</div></div>
           <div class="form-group"><label class="form-label">Status</label><select onchange="state.editing.status=this.value"><option value="Active" ${e.status==='Active'?'selected':''}>Active</option><option value="Inactive" ${e.status==='Inactive'?'selected':''}>Inactive</option></select></div>
           <div class="form-group"><label class="form-label">Language</label><select onchange="state.editing.language=this.value"><option value="English" ${e.language==='English'?'selected':''}>English</option><option value="Spanish" ${e.language==='Spanish'?'selected':''}>Spanish</option></select></div>
-          <div class="form-group"><label class="form-label">Schedule days</label><input type="text" value="${esc(e.days||'')}" oninput="state.editing.days=this.value"></div>
-          <!-- Clock in and clock out are gone from this form. Audited across the
-               frontend, every Netlify function and both report libraries: nothing
-               read them. The Pre-Shift / Post-Shift OT categories are a stored
-               label on the overtime table chosen by a human, not a comparison
-               against a shift boundary, so removing these does not affect the OT
-               report. The COLUMNS are still there and still projected — the
-               stored values stay readable, the way dept was kept. -->
+          <!-- Clock in, clock out, the schedule days, both break times and the
+               four address fields are all gone from both edit surfaces. Audited
+               across the frontend, every Netlify function and both report
+               libraries: nothing computed anything from any of them. The mill's
+               Mon-Thu schedule that the reports DO use is isScheduledDate() in
+               core.js and period-lib.js, not this column. The COLUMNS are still
+               there and still projected — the stored values stay readable, the
+               way dept was kept — but nothing here reads or writes them, so a
+               save can no longer disturb them. -->
           ${birthdayField(e)}
           <div class="form-group"><label class="form-label">Phone</label><input type="text" value="${e.phone}" oninput="state.editing.phone=this.value;refreshSmsStatus()"></div>
           <div class="form-group full"><label class="form-label">Email</label><input type="text" value="${e.email}" oninput="state.editing.email=this.value"></div>

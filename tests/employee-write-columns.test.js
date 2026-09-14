@@ -367,11 +367,16 @@ test('the card carries every field the modal had — checked, not assumed', () =
   assert.deepStrictEqual(onlyOnModal, [],
     'these fields would become uneditable once Edit stops opening the modal: ' + onlyOnModal.join(', '));
 
-  // And the card is a STRICT superset — it has fields the modal never did, which
-  // is the other half of why the collapse is an improvement rather than a merge.
+  // The card used to be a STRICT superset, and the six card-only fields were the
+  // break times and the four address boxes. All six came off both surfaces on
+  // 2026-09-14, so what is asserted now is the half that still protects
+  // somebody: the card is never MISSING a field the modal can set. A field that
+  // exists on Add and not on Edit is one a person can enter and then never
+  // correct.
   const onlyOnCard = [...bound(card)].filter(f => !bound(modal).has(f));
   for (const f of ['break1', 'break2', 'addressStreet', 'addressCity', 'addressState', 'addressPostalCode']) {
-    assert.ok(onlyOnCard.includes(f), `${f} should be a card-only field`);
+    assert.ok(!onlyOnCard.includes(f), `${f} is back on the card`);
+    assert.ok(!bound(modal).has(f), `${f} is back on the Add form`);
   }
 });
 

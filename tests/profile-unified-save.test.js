@@ -455,99 +455,56 @@ test('removing an existing split IS written, as an empty array', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// break times on the card
+// the columns the card no longer touches
 // ---------------------------------------------------------------------------
+//
+// Street, City, State, Postal code, Scheduled Days, Break 1 and Break 2 came off
+// the profile on 2026-09-14 as extraneous. Six tests used to live here pinning
+// how the card rendered and normalized break times and the schedule box; they
+// went with the fields.
+//
+// What replaces them is the one guarantee that still has teeth. The columns are
+// STILL IN THE DATABASE and /api/data still projects them. If a save sent them
+// at all it would send `undefined` for days and `null` for the addresses —
+// because nothing populates those keys in memory any more — and PostgREST would
+// write that null. Six columns would empty out across the roster one profile at
+// a time, with every save reporting success. A key that is never sent is a
+// column PostgREST does not touch, and that is what this asserts.
 
-test('the card formats break times instead of showing the stored string', () => {
-  const ctx = openCard(sandbox());
-  const html = ctx.renderProfile();
-  // PERSON holds break1 '1899-12-30T20:45:00.000Z' and break2 '12:45 PM'. The
-  // ISO one is eight hours ahead of what it means, so both render as 12:45 PM —
-  // which is the point: the same time stored two ways now displays one way.
-  assert.match(html, /12:45 PM/);
-  assert.ok(!html.includes('1899-12-30T20:45'), 'the raw stored value must not reach the screen');
-  assert.ok(!html.includes('8:45 PM'), 'the unshifted reading must not reach the screen');
-});
-
-test('an unreadable break time is called out, not shown blank or raw', () => {
+test('a save touches none of the columns the card stopped editing', async () => {
   const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON, break1: 'after the whistle', break2: '' }];
-  ctx.state.profile = { idx: 0 };
-  ctx.state.preLoaded = true; ctx.state.allocLoaded = true;
-  const html = ctx.renderProfile();
-  assert.match(html, /Unreadable — after the whistle/);
-  assert.match(html, /not set/, 'and an absent one reads as not set, which is a different thing');
-});
-
-test('edit mode gives a time picker for a readable value and text for an unreadable one', () => {
-  const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON, break1: '1899-12-30T20:45:00.000Z', break2: 'after the whistle' }];
-  ctx.state.profile = { idx: 0 };
-  ctx.state.preLoaded = true; ctx.state.allocLoaded = true;
-  ctx.startProfileEdit();
-  const html = ctx.renderProfile();
-
-  // 20:45Z means 12:45 local, so the picker must open on 12:45. Pre-filling it
-  // with 20:45 would show a lunch break as an evening one, and saving would then
-  // store that as fact.
-  assert.match(html, /type="time" value="12:45"/, 'a readable value gets a picker, pre-filled with the LOCAL time');
-  // The blanking trap: a time input given a value it cannot represent renders
-  // empty, and the next save writes that emptiness back as fact.
-  assert.match(html, /type="text" value="after the whistle"/);
-  assert.match(html, /left as text rather than blanked/);
-  assert.ok(!/type="time" value=""/.test(html), 'never an empty picker over a real value');
-});
-
-test('schedule days is editable, with the roster values suggested but not enforced', () => {
-  const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON, days: 'WHENEVER NEEDED' }];
-  ctx.state.profile = { idx: 0 };
-  ctx.state.preLoaded = true; ctx.state.allocLoaded = true;
-  ctx.startProfileEdit();
-  const html = ctx.renderProfile();
-
-  assert.match(html, /state\.editing\.days=this\.value/);
-  assert.match(html, /<datalist id="sched-days">/);
-  assert.match(html, /<option value="MON-THU">/);
-  // Audited: MON-THU 71, FRI-MON 1, MON-SUN 1, blank 1. 'MON-FRI' was a guess
-  // and does not exist on the roster; 'FRI-MON' does and was missed.
-  assert.match(html, /<option value="FRI-MON">/);
-  assert.match(html, /<option value="MON-SUN">/);
-  assert.ok(!html.includes('MON-FRI'), 'a value that is not on the roster must not be suggested');
-  // A select would silently drop this value and rewrite the person's schedule on
-  // the first save. It is kept as typed and flagged instead.
-  assert.match(html, /value="WHENEVER NEEDED"/);
-  assert.match(html, /Not one of the values already on the roster/);
-});
-
-test('a save never fabricates a break time for somebody who has none', async () => {
-  // `break_1: e.break1 || '7:00 AM'` sat in two writers. The other one re-writes
-  // every row on the roster, so one Sync gave a fabricated break to everyone who
-  // had none on file.
-  const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON, break1: '', break2: null }];
+  // PERSON still carries days, break1 and break2, so this cannot pass merely
+  // because the fixture went quiet.
+  ctx.state.employees = [{ ...PERSON }];
   ctx.state.profile = { idx: 0 };
   ctx.state.preLoaded = true; ctx.state.allocLoaded = true;
   ctx.startProfileEdit();
   await ctx.saveEdit();
 
   const write = ctx.__calls.find(c => c.url.startsWith('/api/data?table=employees') && c.method === 'PATCH');
-  assert.strictEqual(write.body.break_1, null);
-  assert.strictEqual(write.body.break_2, null);
-  assert.ok(!JSON.stringify(write.body).includes('7:00 AM'));
+  assert.ok(write, 'the profile still saves');
+
+  for (const col of ['days', 'break_1', 'break_2', 'clock_in', 'clock_out',
+                     'address_street', 'address_city', 'address_state', 'address_postal_code']) {
+    assert.ok(!(col in write.body),
+      `${col} is in the payload — an absent key is the only thing that leaves the stored value alone`);
+  }
+
+  // And the save is still a real save, not an empty one.
+  assert.strictEqual(write.body.name, PERSON.name);
+  assert.ok('position' in write.body, 'position is still written');
 });
 
-test('a save normalizes a readable break time and preserves an unreadable one', async () => {
+test('the card offers no input for any of the removed fields', () => {
   const ctx = sandbox();
-  ctx.state.employees = [{ ...PERSON, break1: '1899-12-30T20:45:00.000Z', break2: 'after the whistle' }];
+  ctx.state.employees = [{ ...PERSON }];
   ctx.state.profile = { idx: 0 };
   ctx.state.preLoaded = true; ctx.state.allocLoaded = true;
   ctx.startProfileEdit();
-  await ctx.saveEdit();
+  const html = ctx.renderProfile();
 
-  const write = ctx.__calls.find(c => c.url.startsWith('/api/data?table=employees') && c.method === 'PATCH');
-  assert.strictEqual(write.body.break_1, '12:45',
-    'readable values are stored as 24-hour LOCAL HH:MM — the shift is removed on the way in');
-  assert.strictEqual(write.body.break_2, 'after the whistle',
-    'an unreadable value is kept — nulling it destroys the only copy');
+  assert.ok(!/state\.editing\.days\s*=/.test(html), 'the schedule box is back');
+  assert.ok(!/state\.editing\.break[12]\s*=/.test(html), 'a break time input is back');
+  assert.ok(!/state\.editing\.address[A-Za-z]*\s*=/.test(html), 'an address input is back');
+  assert.ok(!html.includes('sched-days'), 'the schedule datalist is back');
 });

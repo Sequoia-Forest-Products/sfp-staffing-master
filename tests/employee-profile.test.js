@@ -177,13 +177,34 @@ test('the card groups every specified field', () => {
   const ctx = sandbox();
   const html = openCard(ctx, [person()]);
 
-  for (const group of ['Identity', 'Classification', 'Contact', 'Personal', 'Address', 'Files']) {
+  for (const group of ['Identity', 'Classification', 'Contact', 'Personal', 'Files']) {
     assert.ok(html.includes(group), `missing group: ${group}`);
   }
   for (const value of ['0319', 'Production', 'Manufacturing', 'Sawmill Operators',
-                       'Head Sawyer', 'Hourly', '5551234567', '12 Mill Road',
-                       'Dinuba', 'CA', '93618']) {
+                       'Head Sawyer', 'Hourly', '5551234567']) {
     assert.ok(html.includes(value), `missing value: ${value}`);
+  }
+});
+
+// The address, the schedule days and the two break times came off the profile on
+// 2026-09-14. PERSON still carries all seven, so this fails if any of them finds
+// its way back onto either mode of the card — which is the failure that matters:
+// the columns are still in the database and still projected by /api/data, so a
+// single mapping line in data.js would be enough to resurrect them silently.
+test('address, schedule days and break times are gone from both modes', () => {
+  const ctx = sandbox();
+  for (const editing of [false, true]) {
+    const html = openCard(ctx, [person()], { editing });
+
+    for (const label of ['Street', 'City', 'Postal code', 'Schedule days', 'Break 1', 'Break 2']) {
+      assert.ok(!html.includes(label), `${label} is back on the card (editing=${editing})`);
+    }
+    for (const value of ['12 Mill Road', 'Dinuba', '93618', 'MON-THU', '7:00 AM', '12:45 PM']) {
+      assert.ok(!html.includes(value), `${value} still renders (editing=${editing})`);
+    }
+    assert.ok(!/state\.editing\.(days|break1|break2|address[A-Za-z]*)\s*=/.test(html),
+      `an editable binding survived (editing=${editing})`);
+    assert.ok(!/sched-days/.test(html), `the schedule datalist survived (editing=${editing})`);
   }
 });
 
@@ -326,7 +347,7 @@ test('a name containing markup is escaped on the card', () => {
 test('the roster row escapes every user-controlled field', () => {
   const ctx = sandbox();
   const evil = '"><script>alert(1)</script>';
-  ctx.state.employees = [person({ name: evil, days: evil, phone: evil, status: evil })];
+  ctx.state.employees = [person({ name: evil, phone: evil, status: evil })];
   ctx.state.profile = null;
   ctx.state.editing = null;
 
