@@ -26,8 +26,17 @@ async function loadData(){
     // Employees
     state.employees = (empJson.data||[]).map(r=>({
       id:r.id, name:r.name||'', wage:r.wage||'', dept:r.dept||'',
-      status:r.status||'Active', days:r.days||'', clockIn:r.clock_in||'',
-      clockOut:r.clock_out||'', break1:r.break_1||'', break2:r.break_2||'',
+      status:r.status||'Active',
+      // days, clock_in, clock_out, break_1, break_2 and the four address_*
+      // columns are NOT mapped. The profile dropped Street, City, State, Postal
+      // code, Scheduled Days, Break 1 and Break 2 on 2026-09-14 as extraneous,
+      // and nothing else read them — the mill's Mon-Thu schedule that the
+      // reports use is isScheduledDate() in core.js and period-lib.js, not this
+      // column. /api/data still PROJECTS all of them, so the stored values are
+      // one line away if a reader ever comes back; they simply stop entering the
+      // page. Not mapping them is also what makes the save path safe: with no
+      // e.days and no e.addressStreet in memory, there is nothing for a write to
+      // send back as undefined or null.
       birthday:r.birthday||'', phone:r.phone||'', language:r.language||'',
       email:r.email||'', ...normalizeSms(r), driveFolderId:r.drive_folder_id||'',
       empNum:r.employee_number||'', department:r.department||'',
@@ -46,12 +55,8 @@ async function loadData(){
       annualSalary:('annual_salary' in r)?(r.annual_salary??null):null,
       positionGroup:r.position_group||'',
       // Phase B. `position` is the specific job WITHIN a position group and
-      // applies to everyone: the CEO has a position and no position group. The
-      // address columns have existed since SCHEMA_V2_MODEL.sql section 4 and
-      // were simply never projected, so nothing could show them.
-      position:r.position||'',
-      addressStreet:r.address_street||'', addressCity:r.address_city||'',
-      addressState:r.address_state||'', addressPostalCode:r.address_postal_code||''
+      // applies to everyone: the CEO has a position and no position group.
+      position:r.position||''
     }));
 
     // Points
@@ -85,11 +90,7 @@ const OPTIONAL_EMPLOYEE_COLUMNS = {
   department:'the payroll department needs SCHEMA_DAILY_HOURS.sql to persist',
   cost_class:'the cost class needs SCHEMA_V2_MODEL.sql section 2 to persist',
   position_group:'the position group needs SCHEMA_V2_MODEL.sql section 3 to persist',
-  position:'the position needs SCHEMA_PHASE_B_POSITION.sql to persist',
-  address_street:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
-  address_city:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
-  address_state:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist',
-  address_postal_code:'the address needs SCHEMA_V2_MODEL.sql section 4 to persist'
+  position:'the position needs SCHEMA_PHASE_B_POSITION.sql to persist'
 };
 
 async function writeEmployeeRow(url, method, row){

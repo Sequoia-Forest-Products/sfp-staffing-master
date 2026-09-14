@@ -698,44 +698,19 @@ function timeStorageValue(value){
   return String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
 }
 
-// What a WRITE puts in break_1 / break_2. Three outcomes, and each one is a
-// deliberate choice about somebody's record:
+// break_1 / break_2 and the schedule-day list used to live here.
 //
-//   readable      -> normalized to 'HH:MM'
-//   absent        -> null. NOT a default. `break_1: e.break1 || '7:00 AM'` used
-//                    to sit in two writers, one of which re-writes every row on
-//                    the roster, so a single Sync gave a fabricated 7:00 AM
-//                    break to everybody who had none on file. A person with no
-//                    break time recorded is a fact, not a gap to fill in.
-//   unreadable    -> kept exactly as it was found. Normalizing it is impossible
-//                    and nulling it would destroy the only copy — which is the
-//                    same mistake as inventing one, pointed the other way. The
-//                    edit surface shows it as text with a warning so a human can
-//                    correct it; until then it is preserved.
-function breakStorageValue(value){
-  const normalized=timeStorageValue(value);
-  if(normalized!==null) return normalized;
-  const raw=String(value==null?'':value).trim();
-  return raw===''?null:raw;
-}
-
-// The schedule-day values present on the roster. Drives the suggestion list on
-// the profile card, NOT a validation list — a value not in here is kept as typed,
-// because a select that silently drops an unrecognised value would rewrite
-// somebody's schedule the first time their profile was saved.
+// The profile dropped Street, City, State, Postal code, Scheduled Days, Break 1
+// and Break 2 on 2026-09-14 — extraneous, and nothing computed anything from any
+// of them. So breakStorageValue (what a WRITE put in break_1 / break_2) and
+// SCHEDULE_DAYS (the datalist behind the schedule box) went with their fields:
+// there is no writer and no suggestion list left to serve.
 //
-// AUDITED 2026-08-21 against the live roster, 74 rows:
-//   MON-THU   71
-//   FRI-MON    1
-//   MON-SUN    1
-//   (blank)    1
-//
-// Three distinct values, two of them held by one person each. That is why this
-// is a datalist on a text input and not a select: a select offering only these
-// three would silently drop the next one-off somebody types, and 'FRI-MON' shows
-// that one-offs are real here. The provisional list guessed 'MON-FRI', which
-// does not exist, and missed 'FRI-MON', which does.
-const SCHEDULE_DAYS=['MON-THU','FRI-MON','MON-SUN'];
+// parseTimeParts, fmtTime, timeInputValue and timeStorageValue above them STAY,
+// and deliberately. The columns still hold their values, in three different
+// encodings including the 1899-dated ISO strings BBSI left behind, and those
+// four functions are the only code that knows how to read them. Deleting the
+// reader for data that still exists is how a column becomes unrecoverable.
 
 const MONTH_NAMES=['January','February','March','April','May','June','July',
   'August','September','October','November','December'];

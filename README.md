@@ -263,9 +263,18 @@ sfp-staffing-master/
 ## Database Schema (Supabase)
 
 ### employees
-`id, name, wage, dept, status, days, clock_in, clock_out, break_1, break_2, birthday, phone, language, email, sms_opted_out, drive_folder_id, employee_number, department, hire_date`  
+`id, name, wage, dept, status, birthday, phone, language, email, sms_opted_out, drive_folder_id, employee_number, department, hire_date`  
 Plus the four axes below, and `annual_salary`.  
 `text_bolt` — deprecated, no longer read or written; kept one release as a fallback.
+
+**Retained but unread:** `days`, `clock_in`, `clock_out`, `break_1`, `break_2`,
+`address_street`, `address_city`, `address_state`, `address_postal_code`. The profile dropped
+Street, City, State, Postal code, Scheduled Days, Break 1 and Break 2 on **2026-09-14** as
+extraneous — nothing computed anything from any of them, and the Mon–Thu schedule the reports
+actually use is `isScheduledDate()` in `core.js` and `period-lib.js`, not the `days` column.
+The columns and their values are **untouched** and `/api/data` still projects them; `data.js`
+simply stops mapping them onto `state.employees`. That is also what makes the save path safe —
+see below.
 
 `wage` is an **hourly rate and nothing else**, and it is **ours** — the record of truth behind
 every dollar this system computes. It is NULL for salaried people; the literal `'Salary'` sentinel
@@ -1109,10 +1118,28 @@ edit mode; the modal survives for **Add alone**, because a person who does not e
 to open (the card reads `state.employees` by index) and the three sections it carries beyond the
 roster row — pre-approved OT, cost allocation, the HR file link — all need a saved employee id.
 
-Nothing was lost, and that was checked rather than assumed: the card is a strict superset. It has
-everything the modal had, plus break times, the four address fields and the HR file link, and it
-offers the schedule as a select where the modal had a free-text box. A test compares the two
-RENDERED surfaces field by field and fails if anything is bound on the modal alone.
+Nothing was lost, and that was checked rather than assumed: the card had everything the modal had,
+plus break times, the four address fields and the HR file link. A test compares the two RENDERED
+surfaces field by field and fails if anything is bound on the modal alone — which is the half that
+protects somebody, because a field you can enter on Add and never correct on Edit is a trap.
+
+**The extraneous fields came off both surfaces, 2026-09-14.** Street, City, State, Postal code,
+Scheduled Days, Break 1 and Break 2 are gone from the profile card in both modes, from the Add
+form, and from the roster's *Schedule* column.
+
+The load-bearing part of that change is in **`saveEdit`**, not in the markup. Those keys had to
+leave the write payload at the same moment the inputs left the form. `days: e.days` with nothing
+populating `e.days` sends `undefined`; `address_street: e.addressStreet || null` sends `null`. Both
+are writes. Six columns would have emptied out across the roster one profile save at a time, every
+save reporting success, with nothing anywhere reporting the loss. A key that is never sent is a
+column PostgREST does not touch, and a test asserts the absence of all nine keys from the payload
+rather than trusting the form to stay quiet.
+
+`breakStorageValue` and `SCHEDULE_DAYS` went with the fields. `parseTimeParts`, `fmtTime`,
+`timeInputValue` and `timeStorageValue` **stayed**: `break_1` and `break_2` still hold values in
+three encodings, including the 1899-dated ISO strings BBSI left behind, and those four functions are
+the only code that knows how to read them. Deleting the reader for data that still exists is how a
+column becomes unrecoverable.
 
 **One `verifySession`, and it compares with `!==`.** The eleven copies are consolidated into
 `netlify/functions/session-lib.js`. The signature comparison was deliberately left as `!==` rather
