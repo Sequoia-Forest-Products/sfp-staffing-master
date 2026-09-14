@@ -148,6 +148,7 @@ sfp-staffing-master/
 ├── SCHEMA_BIRTHDAY.sql         # Birthday data audit queries
 ├── SCHEMA_SMS_OPTOUT.sql       # sms_opted_out migration
 ├── SCHEMA_RETIRE_OVERHEAD.sql  # 2026-09-14 — nulls pay outside the Manufacturing cost class
+├── SCHEMA_SETTINGS.sql         # 2026-09-15 — creates public.settings, which was never created
 ├── PAYROLL_INGESTION.md        # Daily hours, email ingestion and OT report guide
 ├── tests/
 │   ├── helpers/make-xlsx.js    # Builds real .xlsx files for the parser tests
