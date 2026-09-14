@@ -401,17 +401,18 @@ function renderCosts(){
 const COSTS_VIEWS = [
   {
     key: 'staffing',
-    label: 'Staffing',
-    // Formerly the Staffing Economics tab, and briefly 'Staff'. It answers a
-    // different question from the cost report beside it — "is the person in
-    // this seat inside the rate ceiling budgeted for it", not "what does this
-    // class cost" — which is why both survive as views of one tab rather than
-    // one replacing the other.
+    label: 'Staffing Economics',
+    // The Staffing Economics tab, back under its own name. It was 'Staff' for
+    // a release and 'Staffing' for a day; the full name is what everybody here
+    // has always called it, and it says what the view is for in a way neither
+    // short form did. It answers a different question from the cost report
+    // beside it — "is the person in this seat inside the rate ceiling budgeted
+    // for it", not "what does this class cost" — which is why both survive as
+    // views of one tab rather than one replacing the other.
     //
-    // The KEY moved with the label, from 'staff' to 'staffing'. A view whose
-    // internal name disagrees with the one on screen is a view somebody will
-    // eventually search for and not find — the same rule that renamed the
-    // Reports tab to Overtime, applied one level down.
+    // The KEY stays 'staffing': it is the distinctive word of the label, so
+    // searching either finds the other. What the key must never be is a word
+    // that appears nowhere on screen, which is what 'staff' had become.
     tier: TIER_SALARIES,
     render: () => renderEconomics(),
     load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }

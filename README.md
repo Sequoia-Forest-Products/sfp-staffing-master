@@ -28,15 +28,16 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
   card, SMS reachability column, SMS opt-out toggle, Drive folder linking. **The hourly wage is
   typed here**, on the profile card, at the base tier — see *Where pay is typed* below.
 - **Manufacturing Costs tab** — two sub-views, and the tab itself is open to everyone:
-  - **Staffing** — the budgeted staffing plan, 55 numbered seats with a per-seat rate ceiling and
-    the variance against it. Needs the **salaries** tier, so the sub-nav omits it for everybody
-    else. Was the *Staffing Economics* tab, and briefly the *Staff* view.
+  - **Staffing Economics** — the budgeted staffing plan, 55 numbered seats with a per-seat rate
+    ceiling and the variance against it. Needs the **salaries** tier, so the sub-nav omits it for
+    everybody else. Was a tab of its own under this name, and was briefly the *Staff* and
+    *Staffing* views before taking its own name back. Its state key is `staffing`.
   - **Department & Group** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
     department and position group, with burdened cost and cost per MBF. Aggregates only: no
     individual's pay rate is sent to the browser, and a grouping too small to average withholds
     its money rather than publishing somebody's rate as a bucket average.
 
-  Staffing leads because the plan comes before the actuals. It is also the gated view, which is
+  Staffing Economics leads because the plan comes before the actuals. It is also the gated view, which is
   what makes leading with it safe: `state.costsView` starts **empty** and resolves to the first
   view this reader can see, so the salaries tier opens the tab on Staffing and everybody else
   opens it on Department & Group. A hardcoded default would have opened the tab on the second

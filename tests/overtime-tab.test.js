@@ -792,13 +792,14 @@ test('switchTab fires the load for the Settings view already selected', () => {
 // Manufacturing Costs — Staffing leads (2026-09-15)
 // ---------------------------------------------------------------------------
 
-test('Staffing is first, and named what it is called on screen', () => {
+test('Staffing Economics is first, and named what it is called on screen', () => {
   const ctx = sandbox();
   assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.key), ['staffing', 'deptgroup']);
   assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.label),
-    ['Staffing', 'Department & Group']);
-  // The key moved with the label. A view whose internal name disagrees with the
-  // one on screen is a view somebody will eventually search for and not find.
+    ['Staffing Economics', 'Department & Group']);
+  // The key is the distinctive word of the label, so searching either finds the
+  // other. What it must never be is a word appearing nowhere on screen, which
+  // is what 'staff' had become.
   const src = fs.readFileSync(path.join(SRC, 'costs.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
   assert.ok(!/'staff'/.test(src), "the old 'staff' key is still in costs.js");
