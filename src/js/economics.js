@@ -34,19 +34,60 @@ function econRows(){ return state.economics || []; }
 // annual figure typed into an hourly field, not a policy about pay.
 const ECON_MAX_CEILING = 1000;
 
-// The hourly rate behind a seat's occupant, looked up BY ID. A salaried person
-// has no hourly rate at all — employees.wage is NULL for them since Phase D
-// retired the sentinel — so they contribute nothing here rather than a rate of
-// zero. The plan is a plan for hourly seats.
+// The hourly rate behind a seat's occupant, looked up BY ID, and WHERE IT CAME
+// FROM. Returns {rate, source} — the same shape and the same two sources as
+// effectiveHourlyRate() in netlify/functions/wage-sync.js, which is the server's
+// answer to this question for the costing reports. Two runtimes, one rule.
 //
-// By id and not by name, which is the point of the whole change: a rename moves
-// the name and leaves the id alone, so nothing here has to notice.
-function econWageFor(employeeId){
-  if(!employeeId) return null;
+//   'wage'    employees.wage, typed on the profile card. An hourly person.
+//   'salary'  annual_salary / 2080. IMPUTED, and labelled as such on screen.
+//   null      nothing on file, or nobody in the seat.
+//
+// A SALARIED OCCUPANT USED TO CONTRIBUTE NOTHING HERE, on the argument that
+// there is no hourly rate to contribute — "the plan is a plan for hourly seats".
+// That was true of the old model and is not true now. Eduardo Rivera sits in
+// seat #1, and Manufacturing Costs prices him at exactly annual_salary / 2080,
+// the same divisor the profile card shows beside his salary. A plan that showed
+// a dash for the one seat the cost report prices was not protecting anything —
+// it was hiding the seat's rate from the one page whose job is comparing rates
+// against ceilings.
+//
+// NO DISCLOSURE CHANGES. This view needs the salaries tier, and a reader holding
+// it can already read the salary by name on the profile card. The imputation is
+// arithmetic on a figure they have.
+//
+// By id and not by name: a rename moves the name and leaves the id alone, so
+// nothing here has to notice.
+function econRateFor(employeeId){
+  if(!employeeId) return {rate:null, source:null};
   const emp=(state.employees||[]).find(e=>String(e.id)===String(employeeId));
-  if(!emp||isSalaried(emp)) return null;
+  if(!emp) return {rate:null, source:null};
+
+  if(isSalaried(emp)){
+    // parseSalary, not parseFloat: it is the same helper the profile card's
+    // salary field validates with, so the two cannot disagree about what counts
+    // as a salary.
+    const annual=parseSalary(emp.annualSalary);
+    // POSITIVE, or no rate. parseSalary tolerates 0 — it is validating a field
+    // somebody is typing into, where 0 is a value to complain about rather than
+    // discard — but a salary of zero imputes to a rate of zero, and a seat
+    // priced at $0.00 with a full negative variance against its ceiling is an
+    // invention that looks exactly like a computed figure.
+    //
+    // The server already refuses it: effectiveHourlyRate() runs annual_salary
+    // through normalizeRate(), which is null for anything <= 0. This is that
+    // rule, mirrored — which is the claim the comment above makes.
+    if(annual==null||annual===undefined||!(annual>0)) return {rate:null, source:null};
+    return {rate:Math.round(annual/SALARY_HOURS_PER_YEAR*100)/100, source:'salary'};
+  }
+
   const n=parseFloat(String(emp.wage==null?'':emp.wage).replace(/[$,]/g,''));
-  return isFinite(n)?n:null;
+  return isFinite(n)?{rate:n, source:'wage'}:{rate:null, source:null};
+}
+
+// The rate alone, for the arithmetic that does not care where it came from.
+function econWageFor(employeeId){
+  return econRateFor(employeeId).rate;
 }
 
 function econDollarPerM(wage){
@@ -387,7 +428,8 @@ function renderEconomics(){
       onchange="econSaveMax('${jsStr(p.id)}',this.value)">`;
 
   const seatRow=(p)=>{
-    const wage=econWageFor(p.employeeId);
+    const priced=econRateFor(p.employeeId);
+    const wage=priced.rate;
     const max=p.max_wage==null?null:Number(p.max_wage);
     const dpm=econDollarPerM(wage);
     const variance=(wage!=null&&max!=null)?Math.round((wage-max)*100)/100:null;
@@ -424,7 +466,11 @@ function renderEconomics(){
           ${eligible.map(e=>`<option value="${esc(String(e.id))}"${String(p.employeeId)===String(e.id)?' selected':''}>${esc(e.name)}</option>`).join('')}
         </select>${
         isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>
-      <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}</div>
+      <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}${
+        priced.source==='salary'
+          ? '<span class="econ-imputed" title="Imputed from an annual salary — annual ÷ '
+            +SALARY_HOURS_PER_YEAR.toLocaleString('en-US')+'. This person is salaried; the figure is what the costing reports use.">imputed</span>'
+          : ''}</div>
       <div class="econ-fig">${dpm==null?'—':esc(fmt$(dpm))}</div>
       <div class="econ-fig">${maxField(p)}</div>
       <div class="econ-fig ${cls}">${esc(varStr)}</div>
@@ -460,6 +506,12 @@ function renderEconomics(){
     .econ-select{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;min-width:0;flex:1;background:var(--surface)}
     .econ-select-dupe{border-color:#e67e22}
     .econ-flag{color:#e67e22;font-size:10px;font-weight:700;margin-left:8px}
+    /* An imputed rate is still a rate — it is what the costing reports use — so
+       it is marked rather than dimmed. Small and grey says "this figure was
+       derived"; a warning colour would say "this figure is suspect". */
+    .econ-imputed{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.3px;
+      text-transform:uppercase;color:var(--muted);background:var(--surface2);
+      border:1px solid var(--border);border-radius:9px;padding:0 5px;margin-left:6px;vertical-align:middle}
     .econ-fig{text-align:right}
     .var-over{color:#e74c3c;font-weight:700}
     .var-under{color:#2a7a47;font-weight:600}
@@ -485,8 +537,12 @@ function renderEconomics(){
       or retitling a seat changes what the plan is rather than what it budgets.
     </div>
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      Seats are hourly. A salaried person contributes no rate here, because there is no hourly rate
-      to contribute — not a rate of zero.
+      <b>A salaried occupant's rate is imputed</b>, marked <span class="econ-imputed">imputed</span>,
+      and is annual salary ÷ ${SALARY_HOURS_PER_YEAR.toLocaleString('en-US')} — the same figure
+      Manufacturing Costs prices them at, and the same divisor shown beside the salary on their
+      profile card. It counts in the wage pool and in the variance against the seat ceiling like any
+      other rate, because for the purpose this page exists for it is one. A salaried person with no
+      salary on file still contributes nothing, and that is a gap to fill rather than a rate of zero.
     </div>
 
     <div class="econ-ctrls">
