@@ -231,6 +231,13 @@ test('the Add form takes a wage, because a new hire with no rate cannot be coste
   ctx.state.profile = null;
   ctx.openAdd();
 
+  // A NEW ROW STARTS UNCLASSIFIED, so there is no pay field until the cost
+  // class is chosen — pay is only held for Manufacturing. Classify, then pay:
+  // the same order employee_setup_tasks queues the work in for an auto-created
+  // arrival, and the reason the cost-class select re-renders the form.
+  assert.ok(!/wageDraftSet/.test(ctx.renderModal()), 'no rate box before a cost class');
+
+  ctx.state.editing.costClass = 'Manufacturing';
   const html = ctx.renderModal();
 
   assert.match(html, /Add employee/);
@@ -242,16 +249,19 @@ test('the Add form takes a wage, because a new hire with no rate cannot be coste
   assert.ok(!/Salaries &amp; Wages/.test(html), 'that page no longer exists to point at');
 });
 
-test('adding a salaried person is told where the salary lives', () => {
+test('adding a salaried person gets the salary field, not the hourly one', () => {
   const ctx = sandbox();
   ctx.state.employees = [];
   ctx.state.profile = null;
   ctx.openAdd();
+  ctx.state.editing.costClass = 'Manufacturing';
   ctx.setPayType('Salaried');
 
   const html = ctx.renderModal();
   assert.ok(!/wageDraftSet/.test(html), 'no hourly input for a salaried person');
-  assert.match(html, /Overhead → Salaries/);
+  // This sandbox holds the salaries tier; without it the field is a sentence
+  // about the tier instead — see tests/profile-wage-edit.test.js.
+  assert.match(html, /Annual salary/);
 });
 
 test('the profile card takes a wage and still refuses the salary', () => {

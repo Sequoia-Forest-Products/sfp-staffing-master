@@ -19,7 +19,6 @@ const SCRIPT_MODULES = [
   'permissions.js',
   'data.js',
   'employees.js',
-  'salaries.js',
   'economics.js',
   'costs.js',
   'preapproved.js',
@@ -27,7 +26,8 @@ const SCRIPT_MODULES = [
   'points.js',
   'ot-report.js',
   'daily-hours.js',
-  // After the four modules it renders, so the container cannot be assembled
+  'sga-ot.js',
+  // After the five modules it renders, so the container cannot be assembled
   // without them. Only function declarations cross module boundaries here, but
   // keeping the order honest is how the manifest stays readable as a dependency
   // list rather than an arbitrary sequence.

@@ -30,25 +30,47 @@ const { __SCRIPT_MODULES } = require('../netlify/functions/session.js');
 // Every fixture carries an explicit status, because the page filters on it and
 // a fixture that left it out would exercise the blank-reads-as-active fallback
 // in every test rather than the ordinary path.
+// EVERY FIXTURE CARRIES A COST CLASS, and it is load-bearing rather than
+// decoration: since 2026-09-14 compensation is only held for Manufacturing, so
+// a fixture without one gets no pay field at all and every assertion below
+// would be testing that message instead of its own. The SG&A people at the end
+// are the fixtures for exactly that case.
 const SALARIED = [
   { id: 's1', name: 'Eduardo Rivera', payType: 'Salaried', wage: '', annualSalary: 105000,
-    position: 'Plant Superintendent', department: 'Production', empNum: '0101', status: 'Active' },
-  { id: 's2', name: 'Jeff Cook', payType: 'Salaried', wage: '', annualSalary: 250000,
-    position: 'CEO', department: 'Corporate', empNum: '', status: 'Active' },
+    position: 'Plant Superintendent', department: 'Production', empNum: '0101', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 's3', name: 'No Salary Yet', payType: 'Salaried', wage: '', annualSalary: null,
-    position: 'Controller', department: 'Accounting', empNum: '', status: 'Active' },
+    position: 'Production Lead', department: 'Production', empNum: '0104', status: 'Active',
+    costClass: 'Manufacturing' },
   // Inactive, and carrying a real salary — so a test that finds this figure on
   // the page is finding a leak, not an empty row.
   { id: 's4', name: 'Gone Salaried', payType: 'Salaried', wage: '', annualSalary: 90000,
-    position: 'Former', department: 'Corporate', empNum: '', status: 'Inactive' }
+    position: 'Former', department: 'Production', empNum: '', status: 'Inactive',
+    costClass: 'Manufacturing' }
 ];
 const HOURLY = [
   { id: 'h1', name: 'Ana Reyes', payType: 'Hourly', wage: 22, annualSalary: null,
-    position: 'Puller', department: 'Production', empNum: '0201', status: 'Active' },
+    position: 'Puller', department: 'Production', empNum: '0201', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 'h2', name: 'No Rate', payType: 'Hourly', wage: '', annualSalary: null,
-    position: 'Utility', department: 'Production', empNum: '0202', status: 'Active' },
+    position: 'Utility', department: 'Production', empNum: '0202', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 'h3', name: 'Gone Hourly', payType: 'Hourly', wage: '18.00', annualSalary: null,
-    position: 'Former', department: 'Production', empNum: '0203', status: 'Inactive' }
+    position: 'Former', department: 'Production', empNum: '0203', status: 'Inactive',
+    costClass: 'Manufacturing' }
+];
+// The people this app stopped costing. They are on the roster in full and carry
+// no pay at all — the database columns were nulled the same day.
+const UNCOSTED = [
+  { id: 'g1', name: 'Axeri Ramirez', payType: 'Hourly', wage: null, annualSalary: null,
+    position: 'Administrative', department: 'Accounting', empNum: '1643', status: 'Active',
+    costClass: 'SG&A' },
+  { id: 'g2', name: 'Adam Coppini', payType: 'Salaried', wage: null, annualSalary: null,
+    position: 'Sales Associate', department: 'Sales & Marketing', empNum: '', status: 'Active',
+    costClass: 'SG&A' },
+  // The state the BBSI import auto-creates: a name and a number, nothing else.
+  { id: 'u1', name: 'Just Arrived', payType: 'Hourly', wage: null, annualSalary: null,
+    position: '', department: '', empNum: '7522', status: 'Active', costClass: '' }
 ];
 
 function fakeEl(id) {
@@ -112,7 +134,7 @@ function sandbox({ tiers = ['hourly_wages'], grants = null, responder = null } =
   ctx.__toasts = toasts;
   ctx.__calls = calls;
   ctx.__el = getEl;
-  ctx.state.employees = [...SALARIED, ...HOURLY].map(e => ({ ...e }));
+  ctx.state.employees = [...SALARIED, ...HOURLY, ...UNCOSTED].map(e => ({ ...e }));
   ctx.state.loading = false;
   // Seeded synchronously so the render tests do not each have to await
   // loadPermissions. The tests that are ABOUT loadPermissions call it and let
@@ -168,15 +190,86 @@ test('an hourly rate is editable with no grant at all', () => {
   assert.match(html, /value="22"/, 'pre-filled with the stored rate');
 });
 
-test('a salaried person gets no rate field, and is told why', () => {
-  // Rule 2. Their compensation is annual_salary and the costing reports divide
-  // it by 2,080, so an hourly rate on them would be counted twice.
+test('a salaried person gets no HOURLY field — they get the salary instead', () => {
+  // Rule 2. Their compensation is annual_salary and the costing report divides
+  // it by 2,080, so an hourly rate on them would be counted twice. With the
+  // tier, the salary is editable on this same card; the two fields are never
+  // both drawn.
   const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
   const html = editCard(ctx, 's1');
-  assert.ok(!/wageDraftSet/.test(html));
+  assert.ok(!/wageDraftSet/.test(html), 'no hourly input for a salaried person');
+  assert.match(html, /Annual salary/);
+  assert.match(html, /salaryDraftSet\(this\.value\)/);
+  assert.match(html, /value="105000"/, 'pre-filled — correcting 105 to 110 should not mean retyping');
+});
+
+test('a salaried person WITHOUT the tier gets neither field, and a sentence', () => {
+  // annual_salary is not in this reader's payload at all, so an input would
+  // start blank and saving the card would look like it had cleared somebody's
+  // salary. A sentence cannot do that.
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  const html = editCard(ctx, 's1');
+  assert.ok(!/wageDraftSet|salaryDraftSet/.test(html));
   assert.match(html, /salaried/i);
-  assert.match(html, /Overhead → Salaries/);
-  assert.ok(!/105000|105,000/.test(html), 'and no figure, even with the tier');
+  assert.match(html, /salaries tier/);
+  assert.ok(!/105000|105,000/.test(html), 'and no figure');
+});
+
+// ---------------------------------------------------------------------------
+// the cost-class scope — added 2026-09-14 with the Overhead tab's removal
+// ---------------------------------------------------------------------------
+
+test('somebody outside Manufacturing gets no pay field at all, at any tier', () => {
+  for (const tiers of [['hourly_wages'], ['hourly_wages', 'salaries'], ['hourly_wages', 'salaries', 'admin']]) {
+    for (const id of ['g1', 'g2']) {
+      const ctx = sandbox({ tiers });
+      const html = editCard(ctx, id);
+      assert.ok(!/wageDraftSet|salaryDraftSet/.test(html),
+        `${id} at ${tiers.join('+')} must have no pay input`);
+      // esc()'d, because 'SG&A' carries an ampersand and everything that lands
+      // in HTML goes through it — the same round trip the department options
+      // have to survive.
+      assert.match(html, /not held for SG&amp;A staff/);
+      assert.match(html, /Manufacturing/);
+    }
+  }
+});
+
+test('an unclassified new arrival is told to classify, not that they lack a rate', () => {
+  // The BBSI auto-create path. Classify first, then pay — which is the order
+  // employee_setup_tasks queues the work in.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  const html = editCard(ctx, 'u1');
+  assert.ok(!/wageDraftSet|salaryDraftSet/.test(html));
+  assert.match(html, /not held for unclassified staff/);
+  assert.match(html, /no cost class yet/);
+});
+
+test('a save on an uncosted person sends neither pay column', async () => {
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  openEdit(ctx, 'g1');
+  ctx.state.editing.phone = '555-0199';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w.length, 1);
+  assert.ok(!('wage' in w[0].body), 'no wage for an SG&A employee');
+  assert.ok(!('annual_salary' in w[0].body), 'and no salary either');
+});
+
+test('a leftover draft from before a reclassification is dropped, not refused', async () => {
+  // Somebody types a rate, then changes the cost class in the same edit. The
+  // field disappears; what was typed must not abort the save, and must not be
+  // written either.
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  openEdit(ctx, 'h1');
+  ctx.state.editing.wage = '31.00';
+  ctx.state.editing.costClass = 'SG&A';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w.length, 1, 'the save still happens');
+  assert.ok(!('wage' in w[0].body));
+  assert.strictEqual(w[0].body.cost_class, 'SG&A');
+  assert.notStrictEqual(lastToast(ctx).type, 'error');
 });
 
 test('somebody with no employee number is told before they type', () => {

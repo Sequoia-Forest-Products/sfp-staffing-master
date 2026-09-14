@@ -16,9 +16,13 @@ process.env.PAYROLL_TIME_ZONE = 'America/Los_Angeles';
 const { planWageEdit, todayInZone, SOURCE } = require('../netlify/functions/wage-edit-lib');
 const { DEFAULT_THRESHOLD_PCT } = require('../netlify/functions/wage-sync');
 
+// cost_class IS PART OF THE FIXTURE, not decoration. Rule 7 refuses a rate for
+// anybody outside the Manufacturing cost class, and it is checked before every
+// other refusal — so a fixture without it would be refused for the wrong reason
+// and every assertion below would be testing that message instead of its own.
 const HOURLY = {
   id: 'h1', name: 'Bo Tran', employee_number: '0101',
-  pay_type: 'Hourly', wage: '24.50'
+  pay_type: 'Hourly', wage: '24.50', cost_class: 'Manufacturing'
 };
 
 const plan = (over = {}, value = '26.00', extra = {}) =>
@@ -199,4 +203,49 @@ test('a cut past the threshold is flagged too, not only a rise', () => {
   const p = plan({ wage: '40.00' }, '20.00');
   assert.strictEqual(p.history.change_pct, -50);
   assert.strictEqual(p.flagged, true);
+});
+
+// ---------------------------------------------------------------------------
+// rule 7 — only the Manufacturing cost class carries pay
+// ---------------------------------------------------------------------------
+//
+// Added 2026-09-14 with the removal of the Overhead tab. SG&A and Mill Overhead
+// are not analysed in this app any more and hold no compensation at all.
+
+test('a rate is refused for every cost class except Manufacturing', () => {
+  for (const cls of ['SG&A', 'Mill Overhead']) {
+    const p = plan({ cost_class: cls });
+    assert.strictEqual(p.ok, false, `${cls} must not accept a rate`);
+    assert.match(p.error, new RegExp(cls.replace('&', '&')));
+    // The remedy names the fix, not the symptom.
+    assert.match(p.detail, /cost class/i);
+  }
+});
+
+test('an unclassified person is refused, and told to classify rather than to retype', () => {
+  // The state the BBSI import auto-creates: a name, a number, nothing else.
+  // Refusing here is what makes classify-then-pay the order of work.
+  for (const cls of [null, undefined, '', '   ']) {
+    const p = plan({ cost_class: cls });
+    assert.strictEqual(p.ok, false);
+    assert.match(p.error, /until a cost class is chosen/);
+  }
+});
+
+test('rule 7 is checked BEFORE the salaried and employee-number refusals', () => {
+  // All three are true of this person. The cost class is the one that matters:
+  // "this rate cannot be recorded" is the wrong sentence for somebody who has
+  // no rate to record, and it points at a fix that would not work.
+  const p = plan({ cost_class: 'SG&A', pay_type: 'Salaried', employee_number: null });
+  assert.strictEqual(p.ok, false);
+  assert.match(p.error, /SG&A/);
+  assert.doesNotMatch(p.error, /salaried employee has no hourly rate/i);
+});
+
+test('Manufacturing still accepts a rate, whatever else changed', () => {
+  // The guard against over-reading rule 7: it must refuse the other classes
+  // without also refusing the class the whole mill is in.
+  const p = plan({ cost_class: 'Manufacturing' }, '26.00');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.wage, '26.00');
 });

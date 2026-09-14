@@ -1,41 +1,28 @@
-// costs — the Manufacturing Costs tab and the Overhead tab.
+// costs — the Manufacturing Costs tab.
 //
 // Shares one global scope with the other files in src/js (see core.js).
 //
-// Both tabs are the same report over /api/cost-report, asked about a different
-// cost class. Manufacturing Costs asks about one; Overhead asks about two and
-// stacks them. Each is now a tab with a sub-nav — see THE TWO CONTAINERS at the
-// foot of this file for what else lives under each and why.
+// IT WAS TWO TABS. The Overhead tab stacked the same report over Mill Overhead
+// and SG&A, behind the salaries tier, and it was removed on 2026-09-14 along
+// with the analysis it existed for: those two classes are not costed in this
+// app any more, pay-scope-lib.js holds compensation for Manufacturing alone,
+// and /api/cost-report refuses both classes outright rather than gating them —
+// there is nothing behind the gate to unlock. Their people are still on the
+// roster, still have hours, still have overtime; they have no pay here.
 //
 // NOTHING HERE COMPUTES A COST. Every figure arrives already aggregated, because
 // the browser cannot price a salaried person even in principle: annual_salary is
-// deliberately absent from /api/data's projection and effectiveHourlyRate lives
-// in wage-sync.js, which never reaches a browser. That is the whole reason the
-// endpoint exists — see the note at the top of netlify/functions/cost-lib.js.
+// absent from /api/data's projection for anyone without the salaries tier, and
+// effectiveHourlyRate lives in wage-sync.js, which never reaches a browser. That
+// is the whole reason the endpoint exists — see the note at the top of
+// netlify/functions/cost-lib.js.
 //
-// THE TWO TABS ARE NOW GATED DIFFERENTLY, and this is the change to know about.
-//
-//   Manufacturing Costs stays UNGATED and stays an aggregate for that reason:
-//   it is opened by every signed-in sequoiafp.com account, so a per-person rate
-//   on it would be published to all of them. Its suppression FLOOR answers to
-//   the reader's tiers — see the note at the top of cost-report.js.
-//
-//   Overhead is GATED WHOLE, behind the salaries tier, and the suppression
-//   argument is why. Mill Overhead and SG&A are the office: seven people across
-//   five departments in one of them. At that headcount a threshold high enough
-//   to protect anybody leaves a table of dashes, and one low enough to be
-//   useful publishes a salary with a department name on it. There is no
-//   threshold that is both, so the class is refused instead — by
-//   /api/cost-report, which is the control; the hidden tab button is a
-//   courtesy. Everybody who can open the tab holds the tier, which is why
-//   nothing under it hedges about what the reader may see.
+// MANUFACTURING COSTS IS UNGATED, and stays an aggregate for that reason: it is
+// opened by every signed-in sequoiafp.com account, so a per-person rate on it
+// would be published to all of them. Its suppression FLOOR answers to the
+// reader's tiers — see the note at the top of cost-report.js.
 //
 const COST_CLASS_MANUFACTURING = 'Manufacturing';
-const COST_CLASS_MILL_OVERHEAD = 'Mill Overhead';
-const COST_CLASS_SGA = 'SG&A';
-
-// The Overhead tab's two sections, in the order they read.
-const OVERHEAD_CLASSES = [COST_CLASS_MILL_OVERHEAD, COST_CLASS_SGA];
 
 function emptyCostView(){
   return {report:null, weeks:[], week:'', loading:false, error:'',
@@ -296,9 +283,10 @@ function costStatCards(report, opts){
   </div>`;
 }
 
-// The controls, shared by both tabs. `classes` is who gets reloaded when a
-// parameter changes: on the Overhead tab both sections move together, because
-// two sections of the same page disagreeing about burden would be a bug nobody
+// The controls. `classes` is who gets reloaded when a parameter changes — a
+// list rather than a single class because the Overhead tab moved two sections
+// together, and the shape is kept: burden and MBF/hr are reader assumptions,
+// and two sections of one page disagreeing about them would be a bug nobody
 // could see.
 function costControls(view, classes, opts){
   const weeks=view.weeks||[];
@@ -334,8 +322,7 @@ function costRefresh(classes){
   for(const c of classes) loadCostReport(c, costView(c).week||'');
 }
 
-// One cost class, rendered whole. Used once by Manufacturing Costs and twice by
-// Overhead.
+// One cost class, rendered whole.
 function costSection(costClass, classes, opts){
   const view=costView(costClass);
   if(view.loading&&!view.report) return `<div class="loading-state">Loading ${esc(costClass)} costs…</div>`;
@@ -346,39 +333,22 @@ function costSection(costClass, classes, opts){
 
   const r=view.report;
 
-  // TOTALS ONLY on Overhead WITHOUT THE SALARIES TIER, by decision, not by
-  // omission. SG&A is seven people across five departments — Corporate 1,
-  // Procurement 1, Accounting 2, Sales & Marketing 3 — so at the base tier's
-  // suppression floor a department breakdown withholds almost every row it
-  // draws, and a table of dashes is worse than no table.
+  // THE BULLPEN IS NOT DROPPED HERE, and a comment here used to claim it was.
   //
-  // With the salaries tier the floor is 1 and those rows carry real figures, so
-  // the breakdown is drawn. The decision is made server-side and this only
-  // follows it: for a base-tier caller the money is already null in the payload,
-  // so rendering the table anyway would produce the dashes, not a leak.
+  // What actually happened was that a totals-only early return — for the
+  // Overhead tab, which is gone — returned before costBullpenBlock ran, so the
+  // bullpen was absent by accident. The moment the salaries tier lifted
+  // suppression, that early return stopped firing and the Overhead tab listed
+  // its whole SG&A roster as unclassified.
   //
-  // THE BULLPEN IS NOT DROPPED HERE, and this comment used to claim it was.
-  //
-  // What actually happened was that the early return below — for a totals-only
-  // Overhead view — returned before costBullpenBlock ran, so the bullpen was
-  // absent by accident. The moment the salaries tier lifted suppression, that
-  // early return stopped firing and the Overhead tab listed its whole SG&A
-  // roster as unclassified.
-  //
-  // The rule is right and it now lives in cost-lib, which builds the array:
+  // The rule is right and it lives in cost-lib, which builds the array:
   // position group is mill-floor only, so its absence is a finding for
-  // Manufacturing and the correct answer for everybody else. report.bullpen is
-  // empty for the other classes, so this renders nothing without needing to
-  // know why.
+  // Manufacturing and the correct answer for everybody else.
   const head = costTruncationNote(view)
     + costAllocationNote(view)
     + costStatCards(r, opts)
     + costTotalsNote(r)
     + costRateGapNote(r);
-
-  // `totalsOnly` asks for totals; `suppressionLifted` overrides it, because the
-  // only reason it was asked for was that the rows would have been dashes.
-  if(opts&&opts.totalsOnly&&!(view.disclosure&&view.disclosure.suppressionLifted)) return head;
 
   return head
     + costSuppressionNote(r)
@@ -400,47 +370,22 @@ function renderCosts(){
     + costSection(COST_CLASS_MANUFACTURING, classes, {showMbf:true});
 }
 
-// ---- Overhead: Mill Overhead and SG&A ----
-function renderOverhead(){
-  const classes=OVERHEAD_CLASSES.slice();
-  const view=costView(COST_CLASS_MILL_OVERHEAD);
-  // No conditional copy about what the reader may see: this view is inside a
-  // tab that only the salaries tier can open, so suppression is always lifted
-  // here and the breakdown is always drawn. That is the point of gating the tab
-  // whole rather than dashing out its rows — see the header of this file.
-  return costStyle
-    + costControls(view, classes, {showMbf:false})
-    + `<div class="cost-note"><strong>Two cost classes, with the department breakdown under each.</strong>
-        Mill Overhead is the salaried staff whose cost belongs to the mill but not to a board foot;
-        SG&A is everything corporate. Neither carries a cost per MBF — they are not production cost,
-        which is the point of separating them.
-        Small-bucket suppression is lifted throughout, because these buckets are one and two people deep
-        and there is no threshold that both protects them and leaves a report. That is what the tier on
-        this tab is for; the same figures are readable by name under Salaries.</div>`
-    + OVERHEAD_CLASSES.map(c=>
-        `<div class="cost-section-title" style="font-size:15px;border-bottom:2px solid var(--rust);padding-bottom:4px">${esc(c)}</div>`
-        + costSection(c, classes, {showMbf:false, totalsOnly:true})
-      ).join('');
-}
-
 // ============================================================
 // THE TWO CONTAINERS
 // ============================================================
 //
-// Manufacturing Costs and Overhead are both tabs with a sub-nav now, and the
-// two are gated differently on purpose:
+// Manufacturing Costs is a tab with a sub-nav. The TAB is open to everybody;
+// its 'Staff' view needs the salaries tier, so the sub-nav omits it for
+// everybody else and the tab still works.
 //
-//   Manufacturing Costs   the TAB is open to everybody. Its 'Staff' view needs
-//                         the salaries tier, so the sub-nav omits it for
-//                         everybody else and the tab still works.
-//   Overhead              the TAB is gated whole. Both views are compensation
-//                         at office headcount, where bucket suppression cannot
-//                         protect anybody — see the refusal in
-//                         netlify/functions/cost-report.js.
+// The Overhead tab was the other container here and is gone — see the header of
+// this file. What is left of the machinery (visibleViews, subNav) is kept
+// general rather than folded back into one tab: the sub-nav is how a gated view
+// is hidden from somebody, and there is still one of those.
 //
-// Both sub-navs are built from a list, and each entry owns its own `load`, for
-// the same reason REPORT_VIEWS did: a lazy-load hook that lives in switchTab()
-// keyed on a tab name stops firing the moment that tab becomes a sub-view.
+// The sub-nav is built from a list and each entry owns its own `load`, for the
+// same reason REPORT_VIEWS did: a lazy-load hook that lives in switchTab() keyed
+// on a tab name stops firing the moment that tab becomes a sub-view.
 
 const COSTS_VIEWS = [
   {
@@ -462,25 +407,6 @@ const COSTS_VIEWS = [
   }
 ];
 
-const OVERHEAD_VIEWS = [
-  {
-    key: 'costs',
-    label: 'Mill Overhead & SG&A',
-    render: () => renderOverhead(),
-    load: () => loadCostsOnce(OVERHEAD_CLASSES)
-  },
-  {
-    key: 'salaries',
-    label: 'Salaries',
-    // The salaried half of what was the Salaries & Wages tab. It sits under
-    // Overhead because that is what a salary IS in this model — Mill Overhead
-    // and SG&A are the salaried staff — and because the two need the same
-    // grant, so one gate covers both. Hourly rates went the other way: they are
-    // typed on the employee's own profile card, at the base tier.
-    render: () => renderSalariedPay()
-  }
-];
-
 // A view somebody may not open is not in their sub-nav at all. Filtered rather
 // than disabled: a greyed-out tab still announces the page exists, and the
 // point of the tier is that most of the roster never learns it is there.
@@ -497,21 +423,9 @@ function costsSubView(key) {
   return open.find(v => v.key === key) || open[0];
 }
 
-function overheadSubView(key) {
-  const open = visibleViews(OVERHEAD_VIEWS);
-  return open.find(v => v.key === key) || open[0];
-}
-
 function switchCostsView(key) {
   const view = costsSubView(key);
   state.costsView = view.key;
-  render();
-  if (view.load) view.load();
-}
-
-function switchOverheadView(key) {
-  const view = overheadSubView(key);
-  state.overheadView = view.key;
   render();
   if (view.load) view.load();
 }
@@ -539,20 +453,4 @@ function subNav(views, activeKey, handler) {
 function renderCostsTab() {
   const active = costsSubView(state.costsView);
   return subNav(COSTS_VIEWS, active.key, 'switchCostsView') + active.render();
-}
-
-// REFUSES TO DRAW WITHOUT THE TIER, like renderEconomics does. The hidden tab
-// button is a courtesy; a deep link, a stale state.tab, or a hand-typed
-// switchTab() in the console has to land on a sentence rather than on a page
-// whose every request would 403.
-function renderOverheadTab() {
-  if (!canSeeSalaries()) {
-    return `<div style="max-width:720px;margin:40px auto;padding:20px;text-align:center">
-      <div style="font-size:16px;font-weight:700;margin-bottom:8px">Overhead</div>
-      <div style="font-size:13px;color:var(--muted);line-height:1.6">
-        This tab needs the salaries tier. An administrator can grant it under Settings → Access.
-      </div></div>`;
-  }
-  const active = overheadSubView(state.overheadView);
-  return subNav(OVERHEAD_VIEWS, active.key, 'switchOverheadView') + active.render();
 }

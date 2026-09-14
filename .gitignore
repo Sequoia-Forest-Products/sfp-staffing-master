@@ -4,3 +4,4 @@ node_modules/
 .env.local
 *.zip
 .DS_Store
+.claude/settings.local.json

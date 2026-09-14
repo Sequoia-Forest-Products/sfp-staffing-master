@@ -347,17 +347,23 @@ test('the staff view is not offered at all without the tier', () => {
   assert.match(html, /cost-bar/);
 });
 
-test('losing the tier resolves the staff view away, and hides Overhead', () => {
+test('losing the tier resolves the staff view away', () => {
   const ctx = sandbox({ tiers: ['hourly_wages'] });
   ctx.state.costsView = 'staff';
+  ctx.applyTabVisibility();
+  // The gated SUB-VIEW resolves to the first one they can read, so a revocation
+  // in another window does not leave them sitting on it.
+  assert.strictEqual(ctx.state.costsView, 'deptgroup');
+});
+
+test('a session left on the retired Overhead tab is bounced, not left blank', () => {
+  // A page open across the 2026-09-14 deploy, or a hand-typed switchTab() in the
+  // console. render() has no branch for 'overhead' any more, so without this the
+  // tab content would simply stay as it was with nothing explaining why.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
   ctx.state.tab = 'overhead';
   ctx.applyTabVisibility();
-  // The gated TAB bounces, as it always did.
-  assert.strictEqual(ctx.state.tab, 'employees');
-  assert.strictEqual(ctx.__el('tab:overhead').hidden, true);
-  // And the gated SUB-VIEW resolves to the first one they can read, so a
-  // revocation in another window does not leave them sitting on it.
-  assert.strictEqual(ctx.state.costsView, 'deptgroup');
+  assert.strictEqual(ctx.state.tab, 'employees', 'bounced even WITH the tier — the tab is gone');
 });
 
 test('a deep link to the staff view still lands on a sentence', () => {

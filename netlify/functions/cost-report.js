@@ -1,6 +1,6 @@
 // GET /api/cost-report — aggregated labour cost for one cost class.
 //
-//   ?class=Manufacturing|Mill Overhead|SG&A   default Manufacturing
+//   ?class=Manufacturing   the only class this app costs; default and only value
 //   ?week=YYYY-MM-DD   any date inside the wanted week (snapped to the Monday).
 //                      Omitted => the most recent week that has data.
 //   ?burden=0.44       burden multiplier, as a decimal. A display parameter the
@@ -22,10 +22,10 @@
 // cost-lib.js withholds money for any grouping small enough that its average IS
 // somebody's rate. That protects a figure the reader is not allowed to see —
 // so for a reader who IS allowed to see it, the same dashes protect nothing and
-// cost everything. Somebody holding the salaries tier can open Salaries & Wages
-// and read every annual_salary by name; hourly rates are base-tier and visible
-// to everyone on the roster. There is no figure a small bucket could leak to
-// them that they cannot already read directly.
+// cost everything. Somebody holding the salaries tier can read every
+// annual_salary by name on the employee's own profile card; hourly rates are
+// base-tier and visible to everyone on the roster. There is no figure a small
+// bucket could leak to them that they cannot already read directly.
 //
 // So the floor is 1 for the salaries tier and DEFAULT_MIN_BUCKET for everybody
 // else, and it is decided HERE, server-side, from the caller's own tiers. A
@@ -38,6 +38,13 @@
 // leaks the same salary/2080 to the same reader. Narrowing it to SG&A would
 // leave dashes on Manufacturing that protect nothing from the person looking at
 // them.
+//
+// 2026-09-14: MANUFACTURING IS THE ONLY CLASS LEFT TO ASK ABOUT. The Overhead
+// tab is gone and pay-scope-lib holds compensation for Manufacturing alone, so
+// the other two classes are refused here rather than gated — there is no longer
+// a tier that could unlock them, because there is nothing behind them to
+// unlock. The suppression floor above is untouched and still answers to the
+// reader's tier: a one-person Manufacturing bucket is still somebody's rate.
 
 const db = require('./db');
 const perms = require('./permissions-lib');
@@ -47,16 +54,14 @@ const { verifySession, getCookies } = require('./session-lib');
 const {
   fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
 } = require('./week-index-lib');
-const { buildCostReport, COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
+const { buildCostReport, REPORTED_COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
 
-// The cost classes that need the salaries tier, whole. These are the two the
-// Overhead tab stacks; see the refusal in the handler for why they are gated as
-// classes rather than protected by the bucket threshold.
-//
-// Listed rather than derived as "everything except Manufacturing": a fourth
-// cost class added to COST_CLASSES must be a decision about who may read it,
-// not something that inherits a gate by being new.
-const GATED_COST_CLASSES = ['Mill Overhead', 'SG&A'];
+// The cost classes this endpoint used to serve behind the salaries tier, and
+// now refuses outright. Kept as a named list rather than deleted so the refusal
+// can say WHICH decision removed the report — a bare "unknown cost class" for a
+// value that worked last week reads as a bug and sends somebody looking for
+// one.
+const RETIRED_COST_CLASSES = ['Mill Overhead', 'SG&A'];
 
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
 
@@ -114,12 +119,24 @@ exports.handler = async (event) => {
   // ---- validate everything before touching the database, so a typo costs nothing ----
 
   const costClass = String(params.class || params.costClass || 'Manufacturing').trim();
-  if (!COST_CLASSES.includes(costClass)) {
+  if (RETIRED_COST_CLASSES.includes(costClass)) {
     return {
       statusCode: 400, headers,
       body: JSON.stringify({
         ok: false,
-        error: `Unknown cost class "${costClass}" — expected one of ${COST_CLASSES.join(', ')}`
+        error: `${costClass} is no longer costed in this app.`,
+        detail: 'The Overhead tab was removed on 2026-09-14. Those employees are still on the ' +
+                'roster and their hours and overtime are still reported; their pay is not held ' +
+                'here any more, so there is no cost to report.'
+      })
+    };
+  }
+  if (!REPORTED_COST_CLASSES.includes(costClass)) {
+    return {
+      statusCode: 400, headers,
+      body: JSON.stringify({
+        ok: false,
+        error: `Unknown cost class "${costClass}" — expected one of ${REPORTED_COST_CLASSES.join(', ')}`
       })
     };
   }
@@ -166,28 +183,11 @@ exports.handler = async (event) => {
     // breakdown; it cannot publish one.
     const tiers = await perms.fetchTiers(session.email, db);
 
-    // THE OVERHEAD CLASSES ARE GATED WHOLE, not by bucket. Manufacturing stays
-    // open to every signed-in account and is protected by suppression, the way
-    // it always was.
-    //
-    // Mill Overhead and SG&A are different, and the difference is headcount
-    // rather than sensitivity: those two classes are the office, they are small,
-    // and their buckets are one and two people deep almost everywhere. A
-    // threshold cannot protect a population that thin — suppress enough to be
-    // safe and there is no report left, publish anything and it is somebody's
-    // salary with a department name on it. So the class is refused rather than
-    // dashed out, which is also what makes the Overhead tab's own gate honest:
-    // hiding the tab button while this endpoint answered would protect nobody.
-    if (GATED_COST_CLASSES.includes(costClass) && !perms.has(tiers, perms.TIER_SALARIES)) {
-      return {
-        statusCode: 403, headers,
-        body: JSON.stringify({
-          ok: false,
-          error: `Not permitted to read ${costClass}`,
-          detail: 'Overhead costs need the salaries tier. An administrator can grant it under Settings → Access.'
-        })
-      };
-    }
+    // THE OVERHEAD CLASSES WERE GATED HERE, WHOLE, and the gate is gone with
+    // the classes: RETIRED_COST_CLASSES is refused above, before a permissions
+    // read is even worth doing, because no tier unlocks a report that no longer
+    // exists. Manufacturing stays open to every signed-in account and is
+    // protected by suppression, the way it always was.
 
     const floor = perms.has(tiers, perms.TIER_SALARIES) ? 1 : DEFAULT_MIN_BUCKET;
     const minBucketHeadcount = requestedMin === null

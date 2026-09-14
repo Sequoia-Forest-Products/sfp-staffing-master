@@ -91,7 +91,7 @@ function sandbox() {
 // The container
 // ---------------------------------------------------------------------------
 
-test('Overtime offers exactly the four consolidated views, hours first', () => {
+test('Overtime offers exactly its five views, hours first', () => {
   const ctx = sandbox();
   // Array.from is THIS realm's, deliberately. An array built inside the vm
   // context carries that context's Array.prototype, so deepStrictEqual fails on
@@ -100,13 +100,18 @@ test('Overtime offers exactly the four consolidated views, hours first', () => {
   // here before a strict comparison.
   //
   // DAILY HOURS LEADS, and the order is the order of work: the hours are
-  // imported, then the three views after it report on them. It was a top-level
-  // tab beside Reports for that reason, which is the argument for it being the
+  // imported, then the views after it report on them. It was a top-level tab
+  // beside Reports for that reason, which is the argument for it being the
   // first thing inside.
+  //
+  // SG&A Overtime sits next to the OT Report it shares a week with, and after
+  // it: the production report is the one most readers open. It arrived on
+  // 2026-09-14 as the one thing still tracked about a cost class this app
+  // otherwise stopped analysing.
   assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.key),
-    ['dailyhours', 'preapproved', 'otreport', 'points']);
+    ['dailyhours', 'preapproved', 'otreport', 'sgaot', 'points']);
   assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.label),
-    ['Daily Hours', 'Pre-Approved OT', 'OT Report', 'Points']);
+    ['Daily Hours', 'Pre-Approved OT', 'OT Report', 'SG&A Overtime', 'Points']);
 });
 
 test('every view that reads an endpoint has a load hook', () => {
@@ -487,18 +492,22 @@ test('the per-employee columns still split the two blocks apart', () => {
 // 'overtime' and is live, which is exactly the collision this list has to keep
 // straight. 'dailyhours', 'salaries' and 'economics' retired with the
 // restructure, and 'reports' is the container's own former name.
+// Keys that were once top-level tabs and are not any more. 'overhead' joined
+// them on 2026-09-14 — unlike the others it did not become a sub-view of
+// anything, because the analysis behind it was retired rather than moved.
 const RETIRED_TAB_KEYS =
-  ['points', 'otreport', 'preapproved', 'dailyhours', 'salaries', 'economics', 'reports'];
+  ['points', 'otreport', 'preapproved', 'dailyhours', 'salaries', 'economics', 'reports',
+   'overhead'];
 
 test('no navigation still targets a retired tab key', () => {
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
   for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!app.includes(`data-tab="${key}"`), `app.html still has a ${key} tab button`);
   }
-  // The five that survive, and nothing else.
+  // The four that survive, and nothing else.
   const live = Array.from(app.matchAll(/data-tab="([^"]+)"/g), m => m[1]);
   assert.deepStrictEqual(live.sort(),
-    ['costs', 'employees', 'overhead', 'overtime', 'settings']);
+    ['costs', 'employees', 'overtime', 'settings']);
 
   // goToTab('otreport') would now silently render nothing. goToOvertime() is the
   // supported way in.
@@ -518,11 +527,10 @@ test('no navigation still targets a retired tab key', () => {
   }
 });
 
-test('render dispatches the five live tabs and no retired one', () => {
+test('render dispatches the four live tabs and no retired one', () => {
   const core = fs.readFileSync(path.join(SRC, 'core.js'), 'utf8');
   assert.ok(/state\.tab==='overtime'\)el\.innerHTML=renderOvertime\(\)/.test(core));
   assert.ok(/state\.tab==='costs'\)el\.innerHTML=renderCostsTab\(\)/.test(core));
-  assert.ok(/state\.tab==='overhead'\)el\.innerHTML=renderOverheadTab\(\)/.test(core));
   for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!new RegExp(`state\\.tab==='${key}'`).test(core),
       `core.js still dispatches the retired '${key}' tab`);
@@ -545,4 +553,99 @@ test('overtime.js is in the session manifest', () => {
   assert.ok(__SCRIPT_MODULES.includes('overtime.js'));
   assert.ok(__SCRIPT_MODULES.indexOf('overtime.js') > __SCRIPT_MODULES.indexOf('ot-report.js'),
     'listed after the modules it renders');
+});
+
+// ---------------------------------------------------------------------------
+// SG&A Overtime — the one thing still tracked about a class this app stopped
+// costing (2026-09-14)
+// ---------------------------------------------------------------------------
+//
+// The join is the part worth pinning. ot-report-lib has a NON_PRODUCTION bucket
+// whose value is the literal string 'SG&A', which looks like this view already
+// built — but that bucket is keyed on employees.DEPARTMENT, and 'SG&A' was
+// retired as a department value when the v2 model gave the class five
+// departments of its own. Nobody on the roster holds it. So the filter has to be
+// the COST CLASS, read off the roster, and a test that does not distinguish the
+// two would pass against either.
+
+function sgaSandbox() {
+  const ctx = sandbox();
+  ctx.state.employees = [
+    // Hourly, SG&A, department 'Accounting' — NOT the literal 'SG&A' department.
+    { id: 'g1', name: 'Axeri Ramirez', empNum: '1643', status: 'Active',
+      department: 'Accounting', costClass: 'SG&A', payType: 'Hourly', position: 'Administrative' },
+    // Salaried SG&A: dropped at import, cannot earn an OT hour.
+    { id: 'g2', name: 'Adam Coppini', empNum: '', status: 'Active',
+      department: 'Sales & Marketing', costClass: 'SG&A', payType: 'Salaried' },
+    // Hourly SG&A but inactive.
+    { id: 'g3', name: 'Gone Clerk', empNum: '1644', status: 'Inactive',
+      department: 'Accounting', costClass: 'SG&A', payType: 'Hourly' },
+    // Manufacturing, and the one with the big overtime — a view that showed him
+    // would be reading the wrong axis.
+    { id: 'm1', name: 'Mill Hand', empNum: '0201', status: 'Active',
+      department: 'Production', costClass: 'Manufacturing', payType: 'Hourly' }
+  ];
+  ctx.state.otReport = {
+    weekStart: '2026-09-07', weekEnd: '2026-09-13',
+    employees: [
+      { employeeNumber: '1643', name: 'Axeri Ramirez', department: 'Accounting',
+        totalHours: 43.5, otHours: 3.5, daysWorked: 4 },
+      { employeeNumber: '0201', name: 'Mill Hand', department: 'Production',
+        totalHours: 52, otHours: 12, daysWorked: 5 }
+    ]
+  };
+  ctx.state.otReportWeek = '2026-09-07';
+  ctx.state.otReportWeeks = [{ weekStart: '2026-09-07', weekEnd: '2026-09-13' }];
+  return ctx;
+}
+
+test('SG&A Overtime lists the hourly SG&A roster, by cost class and not department', () => {
+  const ctx = sgaSandbox();
+  // Array.from is THIS realm's, for the reason documented at the top of this
+  // file: an array built inside the vm context carries that context's
+  // Array.prototype and fails deepStrictEqual on prototype identity.
+  const rows = ctx.sgaOtRows();
+  assert.deepStrictEqual(Array.from(rows, r => r.name), ['Axeri Ramirez']);
+  assert.strictEqual(rows[0].otHours, 3.5);
+  assert.strictEqual(rows[0].hours, 43.5);
+  assert.strictEqual(rows[0].department, 'Accounting',
+    'the department is shown — it is the line the cost belongs to — but is not the filter');
+});
+
+test('salaried, inactive and Manufacturing people are all left off', () => {
+  const ctx = sgaSandbox();
+  const names = ctx.sgaOtRows().map(r => r.name);
+  assert.ok(!names.includes('Adam Coppini'), 'salaried staff earn no OT hour and are dropped at import');
+  assert.ok(!names.includes('Gone Clerk'), 'inactive');
+  assert.ok(!names.includes('Mill Hand'), 'Manufacturing belongs on the OT Report, not here');
+});
+
+test('somebody absent from the file this week is a zero, not a gap', () => {
+  // The file carries every employee who clocked in, so absence IS the answer.
+  // Listing them at zero is what lets a reader tell "no overtime" from "not
+  // looked at".
+  const ctx = sgaSandbox();
+  ctx.state.otReport.employees = [];
+  const rows = ctx.sgaOtRows();
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].otHours, 0);
+  assert.strictEqual(rows[0].inFile, false);
+});
+
+test('the view shows hours and never money', () => {
+  // These people have no wage in this system by design, so there is no rate to
+  // multiply by. A dollar sign here would mean somebody had put one back.
+  const ctx = sgaSandbox();
+  const html = ctx.renderSgaOT();
+  assert.match(html, /Axeri Ramirez/);
+  assert.match(html, /3\.50/);
+  assert.ok(!/\$/.test(html), 'no currency anywhere on the page');
+});
+
+test('it shares the OT Report week and issues no request of its own', () => {
+  const ctx = sgaSandbox();
+  const before = ctx.__calls.fetches.length;
+  ctx.renderSgaOT();
+  assert.strictEqual(ctx.__calls.fetches.length, before, 'render fetches nothing');
+  assert.match(ctx.renderSgaOT(), /2026/, 'the week picker is drawn from the report already loaded');
 });

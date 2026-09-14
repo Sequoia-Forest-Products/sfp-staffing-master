@@ -144,19 +144,41 @@ test('an unknown cost class is 400 and names the valid ones', async (t) => {
   const ctx = stub(t);
   const res = await handler(event({ class: 'Overhead' }));
   assert.strictEqual(res.statusCode, 400);
-  assert.match(JSON.parse(res.body).error, /Manufacturing.*Mill Overhead.*SG&A/);
+  assert.match(JSON.parse(res.body).error, /Manufacturing/);
   assert.deepStrictEqual(ctx.calls.index, [], 'validation happens before the database');
 });
 
-test('all three real cost classes are accepted, given the access each needs', async (t) => {
-  // Manufacturing is open to every signed-in account. The two overhead classes
-  // need the salaries tier — see the gate below — so this asserts the classes
-  // are VALID, which is a different question from who may read them.
-  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
-  for (const cls of ['Manufacturing', 'Mill Overhead', 'SG&A']) {
+test('Manufacturing is the one class this endpoint costs, and it is open to everybody', async (t) => {
+  // It was three. SG&A and Mill Overhead were removed on 2026-09-14 along with
+  // the Overhead tab and the pay behind them — see REPORTED_COST_CLASSES in
+  // cost-lib.js. Manufacturing stays open to every signed-in account and is
+  // protected by bucket suppression, not by a tier.
+  withPermissionRows(t, []);
+  const { res, body } = await run(t, { class: 'Manufacturing' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.report.costClass, 'Manufacturing');
+});
+
+test('the retired classes are refused, and say why rather than reading as a typo', async (t) => {
+  // A bare "unknown cost class" for a value that worked last week reads as a
+  // bug and sends somebody looking for one. The refusal names the decision.
+  for (const cls of ['Mill Overhead', 'SG&A']) {
+    withPermissionRows(t, []);
     const { res, body } = await run(t, { class: cls });
-    assert.strictEqual(res.statusCode, 200, cls);
-    assert.strictEqual(body.report.costClass, cls);
+    assert.strictEqual(res.statusCode, 400, cls);
+    assert.match(body.error, new RegExp(`${cls.replace('&', '&')} is no longer costed`));
+    assert.match(body.detail, /still on the\s+roster|still on the roster/);
+  }
+});
+
+test('no tier reopens a retired class', async (t) => {
+  // There is no gate to pass any more: the pay is not held, so there is nothing
+  // behind the class for a grant to unlock. Asserted for the two tiers that
+  // used to matter here and for both together.
+  for (const tiers of [['salaries'], ['admin'], ['salaries', 'admin']]) {
+    withPermissionRows(t, tiers.map(tier => ({ email: 'peter.stroble@sequoiafp.com', tier })));
+    const { res } = await run(t, { class: 'SG&A' });
+    assert.strictEqual(res.statusCode, 400, tiers.join('+'));
   }
 });
 
@@ -171,15 +193,6 @@ test('all three real cost classes are accepted, given the access each needs', as
 // rather than dashed, which is also what makes the Overhead tab's hidden button
 // honest — hiding it while this endpoint answered would protect nobody.
 
-test('the overhead classes are refused without the salaries tier', async (t) => {
-  for (const cls of ['Mill Overhead', 'SG&A']) {
-    withPermissionRows(t, []);
-    const { res, body } = await run(t, { class: cls });
-    assert.strictEqual(res.statusCode, 403, cls);
-    assert.match(body.error, new RegExp(`Not permitted to read ${cls.replace('&', '&')}`));
-    assert.match(body.detail, /salaries tier/);
-  }
-});
 
 test('Manufacturing is NOT refused — it stays open and leans on suppression', async (t) => {
   withPermissionRows(t, []);
@@ -189,21 +202,14 @@ test('Manufacturing is NOT refused — it stays open and leans on suppression', 
     'open to everybody, so the money in a thin bucket is still withheld');
 });
 
-test('the admin tier alone does not open the overhead classes', async (t) => {
-  // Admin grants access; it does not itself read pay. Same rule as the column
-  // registry and the suppression floor.
-  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'admin' }]);
-  const { res } = await run(t, { class: 'SG&A' });
-  assert.strictEqual(res.statusCode, 403);
-});
 
 test('a refused class is refused before the database is touched for hours', async (t) => {
   withPermissionRows(t, []);
   const ctx = stub(t);
   const res = await handler(event({ class: 'SG&A' }));
-  assert.strictEqual(res.statusCode, 403);
+  assert.strictEqual(res.statusCode, 400);
   assert.deepStrictEqual(ctx.calls.index, [],
-    'no daily-hours scan for a class the caller may not read');
+    'no daily-hours scan for a class that is not reported at all');
 });
 
 test('cost class defaults to Manufacturing', async (t) => {
@@ -309,13 +315,13 @@ test('membership is cost class alone — the salaried supervisor is in, the hour
   const groups = body.report.byPositionGroup.map(g => g.key);
   assert.ok(groups.includes('Supervisors'), 'a salaried person belongs in Manufacturing');
 
-  const { body: sga } = await run(t, { class: 'SG&A' });
-  assert.strictEqual(sga.report.headcount, 1, 'the hourly clerk is SG&A, not Manufacturing');
-  // She has no position group and that is CORRECT — the axis is mill-floor
-  // only. This used to assert the opposite, and the Overhead tab listed her
-  // and three colleagues as unclassified.
-  assert.deepStrictEqual(sga.report.bullpen, [],
-    'a null position group is not a finding outside Manufacturing');
+  // The other half of the claim, asserted by ABSENCE now that SG&A has no
+  // report of its own: the hourly clerk is in the roster this endpoint was
+  // given and is in none of its buckets.
+  const names = body.report.byDepartment.map(d => d.key);
+  assert.ok(!names.includes('Accounting'), 'an hourly SG&A person is not in a Manufacturing bucket');
+  assert.deepStrictEqual(body.report.bullpen.filter(p => p.department === 'Accounting'), [],
+    'and she is not a finding either — position group is mill-floor only');
 });
 
 // ---------------------------------------------------------------------------
@@ -342,25 +348,36 @@ test('an unreachable database is a 500, not a silent flattening of every split',
 });
 
 test('allocations split cost across departments and leave hours with the primary', async (t) => {
+  // Asserted on Manufacturing now: the SG&A report this used to use is gone,
+  // and allocations are not an overhead feature — a supervisor split across two
+  // production lines splits the same way Axeri Ramirez used to across three
+  // office departments.
   withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
-  const { body } = await run(t, { class: 'SG&A' }, {
+  const { body } = await run(t, {}, {
     fetchAllocations: async () => ([
-      { employee_id: 'sga1', department: 'Accounting', percent: 34 },
-      { employee_id: 'sga1', department: 'HR', percent: 33 },
-      { employee_id: 'sga1', department: 'Corporate', percent: 33 }
+      { employee_id: 'sal1', department: 'Production', percent: 60 },
+      { employee_id: 'sal1', department: 'Saw Filing', percent: 40 }
     ])
   });
   assert.strictEqual(body.allocations.available, true);
-  assert.strictEqual(body.allocations.count, 3);
-  const depts = body.report.byDepartment.map(d => d.key).sort();
-  assert.deepStrictEqual(depts, ['Accounting', 'Corporate', 'HR']);
-  // Every bucket is one person, and NOTHING IS SUPPRESSED — because the only
-  // readers of an overhead class are the salaries tier, whose floor is 1. That
-  // is the whole trade the class gate buys: the reader who gets in gets a
-  // report rather than a table of dashes.
-  assert.ok(body.report.byDepartment.every(d => !d.suppressed));
-  assert.strictEqual(body.report.hasSuppressedBuckets, false);
+  assert.strictEqual(body.allocations.count, 2);
+
+  const byKey = Object.fromEntries(body.report.byDepartment.map(d => [d.key, d]));
+  assert.ok(byKey['Saw Filing'], 'the allocated-to department appears');
+  // Hours stay whole with the PRIMARY department. Only cost splits — he works
+  // his hours in one place.
+  assert.strictEqual(byKey['Saw Filing'].hours, 0);
+  assert.strictEqual(byKey['Saw Filing'].allocatedFrom, 1);
+  assert.strictEqual(byKey['Saw Filing'].headcount, 0, 'an allocation is not headcount');
+
+  // 105000 / 2080 = 50.48/hr x 40 standard hours = 2019.20, split 60/40.
+  assert.strictEqual(byKey['Saw Filing'].cost, 807.68);
+  assert.strictEqual(byKey['Production'].cost,
+    Math.round((2019.20 - 807.68 + 6 * 22 * 40) * 100) / 100);
+  // The floor is 1 for this reader, so the one-person allocation bucket still
+  // carries its money rather than a dash.
   assert.strictEqual(body.disclosure.suppressionLifted, true);
+  assert.ok(!byKey['Saw Filing'].suppressed);
 });
 
 // ---------------------------------------------------------------------------

@@ -126,10 +126,8 @@ function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
   // global object, so they are exposed explicitly. Function declarations already
   // are properties.
   vm.runInContext(
-    'globalThis.state = state; globalThis.OVERHEAD_CLASSES = OVERHEAD_CLASSES;' +
-    'globalThis.COST_CLASS_MANUFACTURING = COST_CLASS_MANUFACTURING;' +
-    'globalThis.COST_CLASS_MILL_OVERHEAD = COST_CLASS_MILL_OVERHEAD;' +
-    'globalThis.COST_CLASS_SGA = COST_CLASS_SGA;',
+    'globalThis.state = state;' +
+    'globalThis.COST_CLASS_MANUFACTURING = COST_CLASS_MANUFACTURING;',
     ctx, { filename: 'expose-lexicals.js' });
   ctx.__calls = calls;
   return ctx;
@@ -177,19 +175,16 @@ test('the roster load does not fetch the staffing plan — that would 403 for mo
 test('the one gated tab ships HIDDEN, and the ungated ones do not', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
   assert.match(html, /data-tab="costs"[^>]*>Manufacturing Costs</);
-  assert.match(html, /data-tab="overhead"[^>]*>Overhead</);
 
-  // Hidden in the markup and revealed by applyTabVisibility(), rather than the
-  // other way round. A tab that appears and then vanishes has already told
-  // everybody that an overhead page exists and that they are not allowed in it.
-  const overhead = /<button[^>]*data-tab="overhead"[^>]*>/.exec(html);
-  assert.ok(overhead, 'no overhead tab in app.html');
-  assert.match(overhead[0], /\bhidden\b/, 'the overhead tab must ship hidden');
+  // NO TAB SHIPS HIDDEN ANY MORE. Overhead was the only one, and it is gone
+  // rather than hidden — the mechanism that revealed it survives in
+  // permissions.js for the next gated tab, with an empty list.
+  assert.ok(!/<button[^>]*\bhidden\b/.test(html), 'no tab button ships hidden');
 
-  // The other two gated pages are no longer tabs, so there is nothing to hide:
-  // the staffing plan is a sub-view of Manufacturing Costs and the salaried
-  // roster is a sub-view of Overhead.
-  for (const gone of ['salaries', 'economics', 'dailyhours', 'reports']) {
+  // Every gated page is now a sub-view or a field: the staffing plan is a
+  // sub-view of Manufacturing Costs, and annual salary is a field on the
+  // employee profile card.
+  for (const gone of ['salaries', 'economics', 'dailyhours', 'reports', 'overhead']) {
     assert.ok(!new RegExp(`data-tab="${gone}"`).test(html),
       `${gone} is no longer a top-level tab`);
   }
@@ -218,17 +213,6 @@ test('opening Manufacturing Costs loads the Manufacturing cost class, once', asy
   assert.strictEqual(ctx.__calls.fetches.filter(f => f.url.startsWith('/api/cost-report')).length, 1);
 });
 
-test('opening Overhead loads both of its cost classes', async () => {
-  const ctx = sandbox();
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-
-  const asked = ctx.__calls.fetches
-    .filter(f => f.url.startsWith('/api/cost-report'))
-    .map(f => new URLSearchParams(f.url.split('?')[1]).get('class'))
-    .sort();
-  assert.deepStrictEqual(Array.from(asked), ['Mill Overhead', 'SG&A']);
-});
 
 test('burden and MBF/hr go to the server, because the browser cannot apply them', async () => {
   const ctx = sandbox();
@@ -257,14 +241,17 @@ test('changing burden re-asks the server rather than recomputing locally', async
   assert.strictEqual(new URLSearchParams(after.at(-1).url.split('?')[1]).get('burden'), '0.6');
 });
 
-test('a per-class view cannot be filled from another class\'s response', async () => {
+test('a per-class view holds only the class it asked about', async () => {
+  // state.cost is keyed by the class itself so a view cannot ask for one class
+  // and render another's numbers. Two classes were loaded here until the
+  // Overhead tab went; the key is what made that safe and is kept for the same
+  // reason a fourth class would need it.
   const ctx = sandbox();
-  ctx.switchTab('overhead', null);
+  ctx.switchTab('costs', null);
   await new Promise(r => setImmediate(r));
-  assert.ok(ctx.state.cost['Mill Overhead']);
-  assert.ok(ctx.state.cost['SG&A']);
-  assert.strictEqual(ctx.state.cost.Manufacturing, undefined,
-    'Overhead must not populate the Manufacturing view');
+  assert.ok(ctx.state.cost.Manufacturing);
+  assert.deepStrictEqual(Object.keys(ctx.state.cost), ['Manufacturing'],
+    'nothing loads a class the page does not show');
 });
 
 // ---------------------------------------------------------------------------
@@ -356,61 +343,9 @@ test('the membership rule is stated on the page, because it is the surprising pa
   assert.match(html, /not pay type/);
 });
 
-test('Overhead renders both sections and no cost per MBF', async () => {
-  const ctx = sandbox();
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-  const html = ctx.renderOverhead();
-  assert.match(html, /Mill Overhead/);
-  assert.match(html, /SG&A/);
-  assert.ok(!/MBF\/hr/.test(html), 'the MBF control does not belong on an overhead page');
-  assert.match(html, /not production cost/);
-});
 
-test('the whole Overhead TAB is refused without the salaries tier', async () => {
-  // It used to be an ungated tab that drew totals and withheld the breakdown.
-  // That is no longer the shape: /api/cost-report refuses both overhead classes
-  // outright, so a page drawing totals here would be drawing nothing. The tab
-  // says so instead — see renderOverheadTab.
-  const ctx = sandbox();
-  const html = ctx.renderOverheadTab();
-  assert.match(html, /needs the salaries tier/);
-  assert.ok(!html.includes('By department'), 'no breakdown without the tier');
-  assert.ok(!html.includes('Mill Overhead &'), 'not even the sub-nav');
-});
 
-test('Overhead shows both sub-views, and the full breakdown, WITH the tier', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-  const html = ctx.renderOverheadTab();
-  // The sub-nav, and both views in it.
-  assert.match(html, /Mill Overhead &amp; SG&amp;A|Mill Overhead & SG&A/);
-  assert.match(html, /Salaries/);
-  // The breakdown, unconditionally: everybody who can open this tab holds the
-  // tier, so there is no base-tier posture left to hedge about.
-  assert.match(html, /By department/);
-  assert.match(html, /By position group/);
-  assert.ok(!/because you hold the salaries tier/.test(html),
-    'no conditional copy — the tier is a precondition of being here at all');
-});
 
-test('the breakdown follows the SERVER, not the browser', async () => {
-  // A client that thinks it holds the tier while the server disagrees must get
-  // the base-tier page. The disclosure posture in the payload is what decides,
-  // and it is the server's answer — this is the assertion that stops the gate
-  // quietly becoming a client-side one.
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-  // Same tiers in state, but the server said it suppressed.
-  for (const c of ctx.OVERHEAD_CLASSES) {
-    ctx.state.cost[c].disclosure = { minBucketHeadcount: 3, suppressionLifted: false, tiers: [] };
-  }
-  const html = ctx.renderOverhead();
-  assert.ok(!html.includes('By department'),
-    'the payload said suppressed, so no breakdown — whatever the browser believes');
-});
 
 test('Manufacturing keeps both breakdowns and the bullpen', async () => {
   // The same section renderer serves both tabs, so this is the guard that
@@ -479,15 +414,21 @@ test('a cost class too small for a total says so instead of showing dashes', asy
 });
 
 
-test('SG&A survives being put in an HTML attribute', async () => {
-  const ctx = sandbox();
-  ctx.switchTab('overhead', null);
-  await new Promise(r => setImmediate(r));
-  const html = ctx.renderOverhead();
+test('a cost class survives being put in an HTML attribute', async () => {
   // The ampersand has to be an entity inside onchange="...", or the browser is
   // left deciding whether &A begins one. This project has been bitten by an
   // unescaped ampersand in a dropdown value already.
-  assert.match(html, /costRefresh\(\[&quot;Mill Overhead&quot;,&quot;SG&amp;A&quot;\]\)/);
+  //
+  // No page passes 'SG&A' through costArgs today — Manufacturing is the only
+  // class costed — so this asserts the ESCAPING rather than a page that uses it.
+  // The guard has to outlive the page that needed it: the next class with a
+  // character like that in its name will go through the same helper.
+  const ctx = sandbox();
+  assert.strictEqual(ctx.costArgs(['SG&A']), '[&quot;SG&amp;A&quot;]');
+  assert.strictEqual(ctx.costArgs(['Manufacturing']), '[&quot;Manufacturing&quot;]');
+
+  const html = await renderedCosts(ctx);
+  assert.match(html, /costRefresh\(\[&quot;Manufacturing&quot;\]\)/);
 });
 
 // ---------------------------------------------------------------------------
