@@ -22,28 +22,40 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-Four top-level tabs. Two of them are containers with a sub-nav; none is gated whole.
+Five top-level tabs. Three of them are containers with a sub-nav; none is gated whole.
 
 - **Employees tab** — roster with search, filter, sort, the Add form, and the employee profile
   card, SMS reachability column, SMS opt-out toggle, Drive folder linking. **The hourly wage is
   typed here**, on the profile card, at the base tier — see *Where pay is typed* below.
 - **Manufacturing Costs tab** — two sub-views, and the tab itself is open to everyone:
+  - **Staffing** — the budgeted staffing plan, 55 numbered seats with a per-seat rate ceiling and
+    the variance against it. Needs the **salaries** tier, so the sub-nav omits it for everybody
+    else. Was the *Staffing Economics* tab, and briefly the *Staff* view.
   - **Department & Group** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
     department and position group, with burdened cost and cost per MBF. Aggregates only: no
     individual's pay rate is sent to the browser, and a grouping too small to average withholds
     its money rather than publishing somebody's rate as a bucket average.
-  - **Staff** — the budgeted staffing plan, 55 numbered seats with a per-seat rate ceiling and the
-    variance against it. Needs the **salaries** tier, so the sub-nav omits it for everybody else.
-    Was the *Staffing Economics* tab.
-- **Overtime tab** — five sub-views, in the order of the work: **Daily Hours** (manual `.xlsx`
-  payroll upload with preview-before-commit, imported-day history, department re-stamping, and the
-  email pipeline's issue queue), **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend), the
-  weekly **OT Report** (All / Pre-Approved / Net OT, production vs. maintenance day split,
-  department breakdown, manager email), **SG&A Overtime** (hours only — see *SG&A and Mill Overhead
-  are not costed* below), and the **Points Tracker** (attendance points, disciplinary flags). Was
-  the *Reports* tab, with Daily Hours alongside it.
-- **Settings tab** — email settings, taxonomy values, and the admin **Access** section that grants
-  and revokes tiers.
+
+  Staffing leads because the plan comes before the actuals. It is also the gated view, which is
+  what makes leading with it safe: `state.costsView` starts **empty** and resolves to the first
+  view this reader can see, so the salaries tier opens the tab on Staffing and everybody else
+  opens it on Department & Group. A hardcoded default would have opened the tab on the second
+  item for exactly the people who can read the first.
+- **Overtime tab** — two sub-views: the weekly **OT Report** (All / Pre-Approved / Net OT,
+  production vs. maintenance day split, department breakdown, **SG&A overtime**, manager email)
+  and **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend). Was the *Reports* tab. Daily
+  Hours led its sub-nav until it moved to Settings, and the OT Report leads now — it is what the
+  tab is named for.
+- **Points tab** — attendance points and disciplinary flags. A top-level tab again since
+  2026-09-15: points are not overtime, and sat under that tab only because Phase C needed
+  somewhere to put them when it consolidated three tabs into one.
+- **Settings tab** — two sub-views:
+  - **General** — email settings, taxonomy values, and the admin **Access** section that grants
+    and revokes tiers.
+  - **Daily Hours** — the manual `.xlsx` payroll upload with preview-before-commit, imported-day
+    history, department re-stamping, and the email pipeline's issue queue. It is the one screen
+    that puts data *in* rather than reading it out, which is why it is administration rather than
+    a report; it was under Overtime until 2026-09-15.
 - **Cost allocation** — a person's cost can split across departments (Jeff Cook 50/50 Corporate /
   Sales & Marketing; Axeri Ramirez thirds across HR / Corporate / Accounting). Cost only, never
   hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the
@@ -63,11 +75,13 @@ sentence instead of a field, and reclassifying somebody out of Manufacturing cle
 part of that write. `/api/cost-report` refuses `Mill Overhead` and `SG&A` with a 400 that names the
 decision, and no tier reopens them: there is nothing behind the class to unlock.
 
-**The one thing still tracked is SG&A overtime**, on its own view under the Overtime tab. Hours
-only, no dollars — there is no rate to multiply by, which is the point rather than a gap. It reads
-the same weekly report as the OT Report and filters the roster by **cost class**, not department:
+**The one thing still tracked is SG&A overtime**, as a section of the OT Report. Hours only, no
+dollars — there is no rate to multiply by, which is the point rather than a gap. It was a sub-view
+of its own for a day; a tab holding one table is furniture, and as a section it reads as one line
+of the weekly picture. It uses the report already loaded and filters the roster by **cost class**,
+not department:
 `ot-report-lib`'s `NON_PRODUCTION` bucket is keyed on the literal department value `SG&A`, which the
-v2 model retired, so nobody on the roster lands in it. Today the view is Axeri Ramirez alone — the
+v2 model retired, so nobody on the roster lands in it. Today the section is Axeri Ramirez alone — the
 only hourly SG&A employee — and it is written for the class so the next office hire appears without
 anybody remembering to add them.
 
@@ -362,7 +376,7 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 `section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
-The staffing plan behind **Manufacturing Costs → Staff**: 55 numbered seats, each with the employee
+The staffing plan behind **Manufacturing Costs → Staffing**: 55 numbered seats, each with the employee
 assigned to it and a position rate to compare against. On the page the two figures are labelled
 **Current Rate** (what the occupant is actually paid, set on their profile card) and **Position
 Rate** (what the seat is budgeted at, `max_wage`), with **Variance** the first minus the second. `seat` here is NOT a job title —
@@ -814,7 +828,7 @@ Pacific. (**BBSI and Central Servers are one vendor** — BBSI is the PEO, Centr
 their reporting platform and the actual sender, `no-reply@centralservers.com`. Not two
 systems.) A Gmail filter labels it `payroll import` and skips the inbox. An hourly
 scheduled function searches **only that label** over IMAP, parses the attachment, and upserts one
-`daily_hours` row per employee. The OT Report view reads that table; the Daily Hours view is the
+`daily_hours` row per employee. The OT Report reads that table; the Daily Hours view, under Settings, is the
 manual upload path and the permanent fallback.
 
 Four things about it are load-bearing and easy to undo by accident:
@@ -931,7 +945,7 @@ the one thing with two implementations (`buildOtEmailPayload` server-side,
 report and demands they are byte-identical.
 
 **What replaced what.** The automatic send used to be a hook in `commitDailyImport()` in
-`src/js/daily-hours.js` — in the *browser*, after a manual upload on the Daily Hours view. When
+`src/js/daily-hours.js` — in the *browser*, after a manual upload on the Daily Hours view (under Settings). When
 hours moved to the hourly email ingest, that hook stopped being reachable: nothing about a cron
 opens a browser. The checkbox stayed on and the email silently never went out again. It is removed
 rather than kept alongside the schedule, because two automatic senders covering different weeks is
@@ -992,7 +1006,7 @@ suppression, which works because its buckets are deep enough for a threshold to 
 PATCH of one column on one row through `/api/economics`, not the whole-table `PUT` that made the old
 one unsafe. See the `economics` schema section above for what that endpoint will and will not do.
 
-It is no longer a tab of its own: it is **Manufacturing Costs → Staff**, next to the aggregate cost
+It is no longer a tab of its own: it is **Manufacturing Costs → Staffing**, next to the aggregate cost
 report. The two answer different questions about the same class — "what does this cost" and "is the
 person in this seat inside the ceiling budgeted for it" — and the gate moved from the tab to the
 sub-nav, which is filtered rather than disabled so the view is not announced to people who cannot

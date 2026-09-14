@@ -1,5 +1,24 @@
-// settings-tab — the Settings tab: manager recipients, OT budget and clock grace.
-// The load/save of the settings row itself lives in data.js.
+// settings-tab — the Settings tab: a container with two views.
+//
+//   General      manager recipients, OT budget, clock grace, taxonomy values and
+//                the admin Access section. The load/save of the settings row
+//                itself lives in data.js.
+//   Daily Hours  the payroll import — manual .xlsx upload with
+//                preview-before-commit, imported-day history, department
+//                re-stamping and the email pipeline's issue queue. It moved here
+//                from the Overtime tab on 2026-09-15.
+//
+// WHY DAILY HOURS IS SETTINGS AND NOT A REPORT. It is the one screen that puts
+// data IN rather than reading it out: a file arrives, a human checks a preview,
+// and a day is committed or re-stamped. That is administration of the data the
+// Overtime tab reports on. It led the Overtime sub-nav on the argument that it
+// is the first step of the same job, and moving it here follows that argument
+// rather than abandoning it — the step before the work is not the work.
+//
+// Nothing about the view itself changed. renderDailyHours() and its loaders are
+// untouched in daily-hours.js; only the container that draws it moved, which is
+// what keeps the upload path — the part with a commit in it — out of this
+// change entirely.
 //
 // Shares one global scope with the other files in src/js (see core.js).
 
@@ -149,4 +168,60 @@ function renderSettings(){
       </div>
     </div>
   `;
+}
+
+// ------------------------------------------------------------------------
+// the container
+// ------------------------------------------------------------------------
+//
+// Same shape as OVERTIME_VIEWS: a list, each entry owning its own lazy `load`,
+// fired both by the sub-nav switcher and by switchTab() for the view that is
+// already selected. A load hook that lived in switchTab() keyed on a tab name
+// stops firing the moment that tab becomes a sub-view, which is the bug this
+// shape exists to prevent — Daily Hours has now been on both sides of it.
+//
+// NO TIER ON EITHER VIEW, and that is not an oversight. The General page is
+// already self-gating: /api/settings refuses a write from anybody without the
+// admin tier and the page renders read-only for them, while the Access section
+// is absent rather than disabled. Daily Hours is open to everybody signed in,
+// exactly as it was under Overtime — moving a screen must not quietly change
+// who may open it.
+const SETTINGS_VIEWS = [
+  { key: 'general', label: 'General', render: () => renderSettings() },
+  {
+    key: 'dailyhours',
+    label: 'Daily Hours',
+    render: () => renderDailyHours(),
+    load: () => { if (!state.dailyLoaded && !state.dailyLoading) loadDailyDays(); }
+  }
+];
+
+function settingsSubView(key) {
+  return SETTINGS_VIEWS.find(v => v.key === key) || SETTINGS_VIEWS[0];
+}
+
+function switchSettingsView(key) {
+  const view = settingsSubView(key);
+  state.settingsView = view.key;
+  render();
+  if (view.load) view.load();
+}
+
+// Deep link: goToSettings('dailyhours') opens Settings on the import. This is
+// what the OT Report's "Daily Hours" and "Re-stamp departments" buttons call —
+// they used goToOvertime('dailyhours') until the view moved, and a deep link
+// left pointing at a view that no longer exists resolves to the first one in
+// the list, which would have been a silent wrong answer rather than an error.
+function goToSettings(key) {
+  state.settingsView = settingsSubView(key).key;
+  goToTab('settings');
+}
+
+function renderSettingsTab() {
+  const active = settingsSubView(state.settingsView);
+  const nav = SETTINGS_VIEWS.map(v =>
+    `<button class="doc-tab ${v.key === active.key ? 'active' : ''}"
+             onclick="switchSettingsView('${v.key}')">${esc(v.label)}</button>`
+  ).join('');
+  return `<div class="doc-tabs">${nav}</div>${active.render()}`;
 }

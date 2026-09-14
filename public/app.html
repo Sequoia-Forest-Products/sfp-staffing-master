@@ -206,6 +206,13 @@
            first step of the same job — hours are imported, then reported on —
            and it leads the sub-nav for that reason. -->
       <button class="sfp-tab" data-tab="overtime" onclick="switchTab('overtime',this)">Overtime</button>
+      <!-- Points is top-level again as of 2026-09-15. Attendance points and
+           disciplinary flags are not overtime and never were — they sat under
+           that tab because Phase C needed somewhere to put them when it
+           consolidated three top-level tabs. -->
+      <button class="sfp-tab" data-tab="points" onclick="switchTab('points',this)">Points</button>
+      <!-- Settings is a container now: the settings page proper, plus Daily
+           Hours, which is the payroll import rather than a report. -->
       <button class="sfp-tab" data-tab="settings" onclick="switchTab('settings',this)">Settings</button>
     </div>
   </div>

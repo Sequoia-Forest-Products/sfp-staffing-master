@@ -81,7 +81,11 @@ function sandbox() {
   // state and OVERTIME_VIEWS are declared with const, so they live in the context's
   // global LEXICAL scope and are not properties of the global object. Function
   // declarations (renderOvertime, switchOvertimeView, ...) are properties already.
-  vm.runInContext('globalThis.state = state; globalThis.OVERTIME_VIEWS = OVERTIME_VIEWS;',
+  // const declarations live in the context's global LEXICAL scope, not on the
+  // global object, so each view list is exposed explicitly. Function
+  // declarations (overtimeView, settingsSubView, costsSubView) already are.
+  vm.runInContext('globalThis.state = state; globalThis.OVERTIME_VIEWS = OVERTIME_VIEWS;' +
+    'globalThis.SETTINGS_VIEWS = SETTINGS_VIEWS; globalThis.COSTS_VIEWS = COSTS_VIEWS;',
     ctx, { filename: 'expose-lexicals.js' });
   ctx.__calls = calls;
   return ctx;
@@ -91,7 +95,7 @@ function sandbox() {
 // The container
 // ---------------------------------------------------------------------------
 
-test('Overtime offers exactly its five views, hours first', () => {
+test('Overtime offers exactly its two views, the report first', () => {
   const ctx = sandbox();
   // Array.from is THIS realm's, deliberately. An array built inside the vm
   // context carries that context's Array.prototype, so deepStrictEqual fails on
@@ -99,19 +103,18 @@ test('Overtime offers exactly its five views, hours first', () => {
   // the contents match. Anything crossing out of the sandbox has to be rebuilt
   // here before a strict comparison.
   //
-  // DAILY HOURS LEADS, and the order is the order of work: the hours are
-  // imported, then the views after it report on them. It was a top-level tab
-  // beside Reports for that reason, which is the argument for it being the
-  // first thing inside.
+  // IT HAS BEEN FOUR AND FIVE. Daily Hours led on the order of work — hours are
+  // imported, then reported on — and moved to Settings on 2026-09-15 as the
+  // import it is. Points became a top-level tab the same day; it was never
+  // overtime. SG&A Overtime lasted a day as a view and is a SECTION of the OT
+  // Report now.
   //
-  // SG&A Overtime sits next to the OT Report it shares a week with, and after
-  // it: the production report is the one most readers open. It arrived on
-  // 2026-09-14 as the one thing still tracked about a cost class this app
-  // otherwise stopped analysing.
+  // So the report leads: it is what is left of the first argument and it is
+  // what the tab is named for.
   assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.key),
-    ['dailyhours', 'preapproved', 'otreport', 'sgaot', 'points']);
+    ['otreport', 'preapproved']);
   assert.deepStrictEqual(Array.from(ctx.OVERTIME_VIEWS, v => v.label),
-    ['Daily Hours', 'Pre-Approved OT', 'OT Report', 'SG&A Overtime', 'Points']);
+    ['OT Report', 'Pre-Approved OT']);
 });
 
 test('every view that reads an endpoint has a load hook', () => {
@@ -123,12 +126,14 @@ test('every view that reads an endpoint has a load hook', () => {
   // needs data says so", since a view with no hook renders a shell that never
   // fills — which reads as an empty week rather than a bug.
   const ctx = sandbox();
-  assert.strictEqual(ctx.state.overtimeView, 'dailyhours');
-  assert.strictEqual(typeof ctx.overtimeView('dailyhours').load, 'function');
-  assert.strictEqual(typeof ctx.overtimeView('preapproved').load, 'function');
+  assert.strictEqual(ctx.state.overtimeView, 'otreport');
   assert.strictEqual(typeof ctx.overtimeView('otreport').load, 'function');
-  // Points renders from state.points, loaded with the roster. No endpoint, no hook.
-  assert.strictEqual(ctx.overtimeView('points').load, undefined);
+  assert.strictEqual(typeof ctx.overtimeView('preapproved').load, 'function');
+  // Both remaining views read an endpoint, so both have one. The hookless case
+  // left with Points: it renders from state.points, loaded with the roster.
+  assert.strictEqual(typeof ctx.settingsSubView('dailyhours').load, 'function',
+    'Daily Hours kept its hook when it moved to Settings');
+  assert.strictEqual(ctx.settingsSubView('general').load, undefined);
 });
 
 test('a load hook is guarded, so re-opening a view does not re-fetch', () => {
@@ -136,18 +141,25 @@ test('a load hook is guarded, so re-opening a view does not re-fetch', () => {
   // click on the tab strip fires another request.
   const ctx = sandbox();
   const src = fs.readFileSync(path.join(SRC, 'overtime.js'), 'utf8');
-  for (const guard of ['!state.dailyLoaded && !state.dailyLoading',
-                       '!state.preLoaded && !state.preLoading',
+  for (const guard of ['!state.preLoaded && !state.preLoading',
                        '!state.otReport && !state.otReportLoading']) {
     assert.ok(src.includes(guard), `load hook is missing the guard: ${guard}`);
   }
+  // Daily Hours took its guard with it to Settings.
+  const settingsSrc = fs.readFileSync(path.join(SRC, 'settings-tab.js'), 'utf8');
+  assert.ok(settingsSrc.includes('!state.dailyLoaded && !state.dailyLoading'),
+    'the Daily Hours hook lost its guard in the move');
   void ctx;
 });
 
 test('an unknown view falls back to the first rather than rendering nothing', () => {
   const ctx = sandbox();
-  assert.strictEqual(ctx.overtimeView('nonsense').key, 'dailyhours');
-  assert.strictEqual(ctx.overtimeView(undefined).key, 'dailyhours');
+  assert.strictEqual(ctx.overtimeView('nonsense').key, 'otreport');
+  assert.strictEqual(ctx.overtimeView(undefined).key, 'otreport');
+  // Including the two keys that USED to resolve here. A deep link left pointing
+  // at a moved view must not quietly land on the first one in the list.
+  assert.strictEqual(ctx.overtimeView('dailyhours').key, 'otreport');
+  assert.strictEqual(ctx.overtimeView('points').key, 'otreport');
 });
 
 test('the container adds no reporting logic of its own', () => {
@@ -155,7 +167,7 @@ test('the container adds no reporting logic of its own', () => {
   // used. If this file starts computing anything, the OT report has two
   // implementations.
   const src = fs.readFileSync(path.join(SRC, 'overtime.js'), 'utf8');
-  for (const fn of ['renderDailyHours()', 'renderPreApproved()', 'renderOTReport()', 'renderPoints()']) {
+  for (const fn of ['renderPreApproved()', 'renderOTReport()']) {
     assert.ok(src.includes(fn), `overtime.js should delegate to ${fn}`);
   }
   // No arithmetic, no data access, no fetches.
@@ -322,7 +334,7 @@ function otBlock(over = {}) {
   return Object.assign({ hours: 0, otHours: 0, otDollars: 0, earnings: 0, headcount: 0 }, over);
 }
 
-function withOtReport(ctx) {
+function withOtReport(ctx, over = {}) {
   ctx.state.otReport = {
     weekStart: '2026-08-24', weekEnd: '2026-08-30',
     summary: {
@@ -348,9 +360,20 @@ function withOtReport(ctx) {
       unassignedRows: 0, workedRateMissing: [], nonProductionWithHours: []
     }
   };
+  Object.assign(ctx.state.otReport, over);
   ctx.state.otReportWeeks = [{ weekStart: '2026-08-24', weekEnd: '2026-08-30', days: 7, totalHours: 100 }];
   ctx.state.otReportWeek = '2026-08-24';
   return ctx.renderOTReport();
+}
+
+// The SG&A section of the rendered report, sliced out by its own heading so an
+// assertion about it cannot accidentally be satisfied — or broken — by the rest
+// of the page, which is full of dollars by design.
+function sgaSection(html) {
+  const start = html.indexOf('SG&amp;A overtime');
+  assert.ok(start > -1, 'the report has no SG&A section');
+  const next = html.indexOf('section-head', start + 1);
+  return html.slice(start, next > -1 ? next : undefined);
 }
 
 test('the OT report no longer calls Fri-Sun unscheduled', () => {
@@ -494,20 +517,27 @@ test('the per-employee columns still split the two blocks apart', () => {
 // restructure, and 'reports' is the container's own former name.
 // Keys that were once top-level tabs and are not any more. 'overhead' joined
 // them on 2026-09-14 — unlike the others it did not become a sub-view of
-// anything, because the analysis behind it was retired rather than moved.
+// anything, because the analysis behind it was retired rather than moved. So
+// did 'sgaot', which was a sub-view for a day before becoming a section of the
+// OT Report.
+//
+// 'points' CAME BACK on 2026-09-15 and is a live tab again: attendance points
+// and disciplinary flags are not overtime, and they sat under that tab only
+// because Phase C needed somewhere to put them. A key can move in both
+// directions, so this list is the current answer rather than a history.
 const RETIRED_TAB_KEYS =
-  ['points', 'otreport', 'preapproved', 'dailyhours', 'salaries', 'economics', 'reports',
-   'overhead'];
+  ['otreport', 'preapproved', 'dailyhours', 'salaries', 'economics', 'reports',
+   'overhead', 'sgaot'];
 
 test('no navigation still targets a retired tab key', () => {
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.html'), 'utf8');
   for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!app.includes(`data-tab="${key}"`), `app.html still has a ${key} tab button`);
   }
-  // The four that survive, and nothing else.
+  // The five that survive, and nothing else.
   const live = Array.from(app.matchAll(/data-tab="([^"]+)"/g), m => m[1]);
   assert.deepStrictEqual(live.sort(),
-    ['costs', 'employees', 'overtime', 'settings']);
+    ['costs', 'employees', 'overtime', 'points', 'settings']);
 
   // goToTab('otreport') would now silently render nothing. goToOvertime() is the
   // supported way in.
@@ -527,10 +557,14 @@ test('no navigation still targets a retired tab key', () => {
   }
 });
 
-test('render dispatches the four live tabs and no retired one', () => {
+test('render dispatches the five live tabs and no retired one', () => {
   const core = fs.readFileSync(path.join(SRC, 'core.js'), 'utf8');
   assert.ok(/state\.tab==='overtime'\)el\.innerHTML=renderOvertime\(\)/.test(core));
   assert.ok(/state\.tab==='costs'\)el\.innerHTML=renderCostsTab\(\)/.test(core));
+  assert.ok(/state\.tab==='points'\)el\.innerHTML=renderPoints\(\)/.test(core),
+    'Points is a top-level tab again and needs its own dispatch');
+  assert.ok(/state\.tab==='settings'\)el\.innerHTML=renderSettingsTab\(\)/.test(core),
+    'Settings is a container now — it must draw its sub-nav, not the page directly');
   for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!new RegExp(`state\\.tab==='${key}'`).test(core),
       `core.js still dispatches the retired '${key}' tab`);
@@ -542,9 +576,31 @@ test('goToOvertime opens the Overtime tab on the requested view', () => {
   const switched = [];
   ctx.goToTab = (t) => switched.push(t);
 
-  ctx.goToOvertime('points');
-  assert.strictEqual(ctx.state.overtimeView, 'points');
+  ctx.goToOvertime('preapproved');
+  assert.strictEqual(ctx.state.overtimeView, 'preapproved');
   assert.deepStrictEqual(switched, ['overtime']);
+});
+
+test('goToSettings opens Settings on the requested view', () => {
+  // The other half of the same deep link. The OT Report's "Daily Hours" and
+  // "Re-stamp departments" buttons call this; they called goToOvertime until
+  // the view moved.
+  const ctx = sandbox();
+  const switched = [];
+  ctx.goToTab = (t) => switched.push(t);
+
+  ctx.goToSettings('dailyhours');
+  assert.strictEqual(ctx.state.settingsView, 'dailyhours');
+  assert.deepStrictEqual(switched, ['settings']);
+});
+
+test('the OT Report reaches Daily Hours at its new home, not its old one', () => {
+  const src = fs.readFileSync(path.join(SRC, 'ot-report.js'), 'utf8');
+  assert.ok(src.includes("goToSettings('dailyhours')"), 'the deep link was not repointed');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+  assert.ok(!code.includes("goToOvertime('dailyhours')"),
+    'a call still points at the view Overtime no longer has');
 });
 
 test('overtime.js is in the session manifest', () => {
@@ -632,20 +688,134 @@ test('somebody absent from the file this week is a zero, not a gap', () => {
   assert.strictEqual(rows[0].inFile, false);
 });
 
-test('the view shows hours and never money', () => {
+test('the SG&A section shows hours and never money', () => {
   // These people have no wage in this system by design, so there is no rate to
-  // multiply by. A dollar sign here would mean somebody had put one back.
+  // multiply by. A dollar sign in THIS section would mean somebody had put one
+  // back — the rest of the report is money throughout, which is why the
+  // assertion is scoped to the slice.
   const ctx = sgaSandbox();
-  const html = ctx.renderSgaOT();
-  assert.match(html, /Axeri Ramirez/);
-  assert.match(html, /3\.50/);
-  assert.ok(!/\$/.test(html), 'no currency anywhere on the page');
+  const html = withOtReport(ctx, {
+    employees: [{ employeeNumber: '1643', name: 'Axeri Ramirez', department: 'Accounting',
+                  totalHours: 43.5, otHours: 3.5, daysWorked: 4 }]
+  });
+  const section = sgaSection(html);
+  assert.match(section, /Axeri Ramirez/);
+  assert.match(section, /3\.50/);
+  assert.ok(!/\$/.test(section), 'no currency in the SG&A section');
+  assert.match(section, /Hours only/, 'and it says why');
 });
 
-test('it shares the OT Report week and issues no request of its own', () => {
+test('the SG&A section is part of the report, not a second request', () => {
+  // It was a sub-view of its own for a day and read the same report; now it is
+  // a section of it. Either way the guarantee is that opening the report costs
+  // one fetch — the roster join happens in the browser.
   const ctx = sgaSandbox();
   const before = ctx.__calls.fetches.length;
-  ctx.renderSgaOT();
+  withOtReport(ctx, {
+    employees: [{ employeeNumber: '1643', name: 'Axeri Ramirez', department: 'Accounting',
+                  totalHours: 43.5, otHours: 3.5, daysWorked: 4 }]
+  });
   assert.strictEqual(ctx.__calls.fetches.length, before, 'render fetches nothing');
-  assert.match(ctx.renderSgaOT(), /2026/, 'the week picker is drawn from the report already loaded');
+});
+
+test('the SG&A hours are kept out of the department table they are not in', () => {
+  // The section sits under "By department" and could be misread as one more
+  // department. It says so in words; this pins that the figures are separate —
+  // Axeri's 3.5 OT hours are not in any department row.
+  const ctx = sgaSandbox();
+  const html = withOtReport(ctx, {
+    departments: [{ department: 'Production', week: otBlock({ otHours: 12, otDollars: 400, earnings: 5000 }),
+                    scheduled: otBlock({ hours: 88 }), weekend: otBlock(),
+                    preApprovedHours: 0, preApprovedDollars: 0, netOtHours: 12, netOtDollars: 400 }],
+    employees: [{ employeeNumber: '1643', name: 'Axeri Ramirez', department: 'Accounting',
+                  totalHours: 43.5, otHours: 3.5, daysWorked: 4 }]
+  });
+  const deptTable = html.slice(html.indexOf('By department'), html.indexOf('SG&amp;A overtime'));
+  assert.ok(!/Axeri Ramirez|Accounting/.test(deptTable),
+    'an SG&A person appeared in the production department table');
+  assert.match(sgaSection(html), /NOT in the department table/);
+});
+
+// ---------------------------------------------------------------------------
+// Settings is a container now (2026-09-15)
+// ---------------------------------------------------------------------------
+
+test('Settings offers General and Daily Hours, in that order', () => {
+  const ctx = sandbox();
+  assert.deepStrictEqual(Array.from(ctx.SETTINGS_VIEWS, v => v.key), ['general', 'dailyhours']);
+  assert.deepStrictEqual(Array.from(ctx.SETTINGS_VIEWS, v => v.label), ['General', 'Daily Hours']);
+  assert.strictEqual(ctx.state.settingsView, 'general', 'the settings page proper is the default');
+});
+
+test('the Settings container delegates and computes nothing', () => {
+  // Daily Hours moved as a container change only: renderDailyHours() and its
+  // loaders are untouched in daily-hours.js. If settings-tab.js starts doing
+  // anything with an upload, the import has two implementations.
+  const src = fs.readFileSync(path.join(SRC, 'settings-tab.js'), 'utf8');
+  assert.ok(src.includes('renderDailyHours()'), 'settings-tab.js should delegate to renderDailyHours()');
+  assert.ok(!/state\.dailyPreview|commitDaily|uploadDaily/.test(src),
+    'the import path must stay in daily-hours.js');
+});
+
+test('opening Settings on Daily Hours fires its load, like any sub-view', () => {
+  // The bug this shape exists to prevent: a load hook keyed on a tab name in
+  // switchTab() stops firing the moment that tab becomes a sub-view. Daily
+  // Hours has now been on both sides of that, so it is worth pinning twice.
+  const ctx = sandbox();
+  let loaded = 0;
+  ctx.loadDailyDays = () => { loaded++; };
+  ctx.render = () => {};
+
+  ctx.switchSettingsView('dailyhours');
+  assert.strictEqual(ctx.state.settingsView, 'dailyhours');
+  assert.strictEqual(loaded, 1, 'the import must load when its view is opened');
+
+  ctx.state.dailyLoaded = true;
+  ctx.switchSettingsView('dailyhours');
+  assert.strictEqual(loaded, 1, 'an already-loaded list must not reload on every click');
+});
+
+test('switchTab fires the load for the Settings view already selected', () => {
+  // The deep-link path, and the one that breaks silently: goToSettings sets the
+  // view and then switches tabs, so switchTab has to fire the hook too.
+  const ctx = sandbox();
+  let loaded = 0;
+  ctx.loadDailyDays = () => { loaded++; };
+  ctx.render = () => {};
+
+  ctx.state.settingsView = 'dailyhours';
+  ctx.switchTab('settings', null);
+  assert.strictEqual(loaded, 1, 'the view renders its shell and never fills without this');
+});
+
+// ---------------------------------------------------------------------------
+// Manufacturing Costs — Staffing leads (2026-09-15)
+// ---------------------------------------------------------------------------
+
+test('Staffing is first, and named what it is called on screen', () => {
+  const ctx = sandbox();
+  assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.key), ['staffing', 'deptgroup']);
+  assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.label),
+    ['Staffing', 'Department & Group']);
+  // The key moved with the label. A view whose internal name disagrees with the
+  // one on screen is a view somebody will eventually search for and not find.
+  const src = fs.readFileSync(path.join(SRC, 'costs.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+  assert.ok(!/'staff'/.test(src), "the old 'staff' key is still in costs.js");
+});
+
+test('the landing view follows the reader tier, because the first view is gated', () => {
+  // state.costsView starts EMPTY and resolves at render time. Hardcoding a
+  // default would open the tab on the SECOND item for exactly the people who
+  // can read the first — and on a refusal for everybody else if it named the
+  // first.
+  const base = sandbox();
+  assert.strictEqual(base.state.costsView, '', 'the default names no view');
+  assert.strictEqual(base.costsSubView(base.state.costsView).key, 'deptgroup',
+    'without the tier, Staffing is not in the sub-nav at all');
+
+  const salaried = sandbox();
+  salaried.state.perms.tiers = ['hourly_wages', 'salaries'];
+  assert.strictEqual(salaried.costsSubView(salaried.state.costsView).key, 'staffing',
+    'with the tier, the tab opens on the view that leads it');
 });

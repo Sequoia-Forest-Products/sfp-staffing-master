@@ -54,15 +54,23 @@ let state = {
   // `editing`: the card is read-only until Edit sets `editing` as well, and
   // saveEdit() clearing `editing` is what drops it back to read-only.
   profile:null,
-  // Which sub-view the Overtime tab is showing. Defaults to Daily Hours: it
-  // leads the sub-nav because it is the first step of the job, and it loads on
-  // first open the way it did as a top-level tab.
-  overtimeView:'dailyhours',
-  // Which sub-view Manufacturing Costs is showing. 'deptgroup' is the aggregate
-  // report every signed-in account may read, so it is the default — 'staff'
-  // needs the salaries tier and defaulting to it would open the tab on a
-  // refusal for most of the roster.
-  costsView:'deptgroup',
+  // Which sub-view the Overtime tab is showing. Defaults to the OT Report: it
+  // leads the sub-nav now that Daily Hours has moved to Settings, and it is the
+  // report the tab is named for.
+  overtimeView:'otreport',
+  // Which sub-view the Settings tab is showing. 'general' is the settings page
+  // proper; Daily Hours is the payroll import, which moved here on 2026-09-15.
+  settingsView:'general',
+  // Which sub-view Manufacturing Costs is showing. EMPTY means "whichever this
+  // reader's tier puts first", which costsSubView() resolves at render time:
+  // Staffing for the salaries tier, Department & Group for everybody else.
+  //
+  // It used to name 'deptgroup' outright, because the gated view was second and
+  // defaulting to it would have opened the tab on a refusal for most of the
+  // roster. Staffing leads now, so a hardcoded default would open the tab on
+  // the SECOND item for exactly the people who can read the first. Resolving
+  // instead of naming is what lets the order change without either mistake.
+  costsView:'',
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
@@ -83,7 +91,7 @@ let state = {
   // screen is gone: annual salary is typed on the employee's own profile card
   // now, in the same edit mode as the hourly rate, so the draft lives in
   // state.editing with every other field and one Save commits one person.
-  // Manufacturing Costs → Staff. Loaded on first open like the cost reports, not on every
+  // Manufacturing Costs → Staffing. Loaded on first open like the cost reports, not on every
   // page load: /api/data refuses the table to most of the roster, so fetching it
   // eagerly would 403 for almost everybody on every boot.
   economics:[], econLoaded:false, econLoading:false, econError:'', econNote:'',
@@ -721,6 +729,10 @@ function switchTab(tab,el){
     const view=overtimeView(state.overtimeView);
     if(view.load) view.load();
   }
+  if(tab==='settings'){
+    const view=settingsSubView(state.settingsView);
+    if(view.load) view.load();
+  }
   if(tab==='costs'){
     const view=costsSubView(state.costsView);
     if(view.load) view.load();
@@ -731,18 +743,23 @@ function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  // FOUR TABS, and two of them are containers. 'preapproved', 'otreport',
-  // 'points', 'dailyhours' and 'sgaot' are sub-views of Overtime; 'economics'
-  // is the Staff view of Manufacturing Costs. Their render functions are
-  // unchanged and are called from the container's renderer, which draws the
-  // sub-nav above them.
+  // FIVE TABS, and three of them are containers. 'otreport' and 'preapproved'
+  // are sub-views of Overtime; 'dailyhours' is a sub-view of Settings;
+  // 'economics' is the Staffing view of Manufacturing Costs. Their render
+  // functions are unchanged and are called from the container's renderer, which
+  // draws the sub-nav above them.
   //
-  // 'overhead' was the fifth and is gone — see the note in public/app.html. A
-  // stale state.tab of 'overhead' renders nothing at all, which is why
+  // Points is a TOP-LEVEL tab again as of 2026-09-15 — attendance points and
+  // disciplinary flags are not overtime, and sat under it only because Phase C
+  // needed somewhere to put them.
+  //
+  // 'overhead' was a tab and is gone — see the note in public/app.html. A stale
+  // state.tab of 'overhead' renders nothing at all, which is why
   // applyTabVisibility() bounces it to Employees.
   else if(state.tab==='costs')el.innerHTML=renderCostsTab();
+  else if(state.tab==='points')el.innerHTML=renderPoints();
   else if(state.tab==='overtime')el.innerHTML=renderOvertime();
-  else if(state.tab==='settings')el.innerHTML=renderSettings();
+  else if(state.tab==='settings')el.innerHTML=renderSettingsTab();
 }
 
 
