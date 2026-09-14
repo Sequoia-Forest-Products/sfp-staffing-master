@@ -35,18 +35,20 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
   - **Department & Group** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
     department and position group, with burdened cost and cost per MBF. Aggregates only: no
     individual's pay rate is sent to the browser, and a grouping too small to average withholds
-    its money rather than publishing somebody's rate as a bucket average.
+    its money rather than publishing somebody's rate as a bucket average. Reports a **week or a
+    date range** — see *Periods and the weekly scaling rule* below.
 
   Staffing Economics leads because the plan comes before the actuals. It is also the gated view, which is
   what makes leading with it safe: `state.costsView` starts **empty** and resolves to the first
   view this reader can see, so the salaries tier opens the tab on Staffing and everybody else
   opens it on Department & Group. A hardcoded default would have opened the tab on the second
   item for exactly the people who can read the first.
-- **Overtime tab** — two sub-views: the weekly **OT Report** (All / Pre-Approved / Net OT,
+- **Overtime tab** — two sub-views: the **OT Report** (All / Pre-Approved / Net OT,
   production vs. maintenance day split, department breakdown, **SG&A overtime**, manager email)
-  and **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend). Was the *Reports* tab. Daily
-  Hours led its sub-nav until it moved to Settings, and the OT Report leads now — it is what the
-  tab is named for.
+  and **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend). The OT Report covers a week or
+  a **date range**; the Monday manager email is always the previous whole Mon–Sun and never takes
+  a range. Was the *Reports* tab. Daily Hours led its sub-nav until it moved to Settings, and the
+  OT Report leads now — it is what the tab is named for.
 - **Points tab** — attendance points and disciplinary flags. A top-level tab again since
   2026-09-15: points are not overtime, and sat under that tab only because Phase C needed
   somewhere to put them when it consolidated three tabs into one.
@@ -57,6 +59,36 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
     history, department re-stamping, and the email pipeline's issue queue. It is the one screen
     that puts data *in* rather than reading it out, which is why it is administration rather than
     a report; it was under Overtime until 2026-09-15.
+### Periods and the weekly scaling rule
+
+Both reports take **either** a Mon–Sun week (the dropdown, and the default) **or** a from/to date
+range. The range wins when both are sent; picking a week clears the range; one date without the
+other is refused rather than guessed at, by `parseRange` in `netlify/functions/period-lib.js`.
+
+The interesting part is that several quantities inside those reports are defined **per week**, and
+a range has to scale them:
+
+| Report | Per-week quantity |
+|--------|-------------------|
+| Department & Group | a salaried person is costed on a standard week — the payroll file reports them as zeros, so the period is what prices them |
+| OT Report | the standing pre-approved allowance **and** the timeclock grace, both subtracted to give **Net OT** |
+
+**A period is worth (scheduled Mon–Thu days in it ÷ 4) weeks.** The mill runs a 4×10, so a week's
+worth of anything is four scheduled days. Counting calendar days ÷ 7 was the obvious alternative
+and is wrong in a way that matters: a Mon–Thu range is a full working week here, and ÷ 7 would call
+it 4/7 of one — handing out 4/7 of an allowance the mill grants for the whole week, and overstating
+Net OT by the difference.
+
+**A single Mon–Sun week comes to exactly 1.0**, because Fri–Sun carry no scheduled production. That
+is what makes the change safe to adopt: every weekly figure either report has ever produced is
+unchanged to the penny, and `tests/period-lib.test.js` opens with that as its acceptance test. A
+three-week range accrues three weeks of allowance and costs Eduardo Rivera three standard weeks; a
+two-day range accrues half of one.
+
+Both reports state the period and the multiplier on screen when it is not a single week, so a
+bigger Net OT reads as a longer period rather than a worse one. The scaling **never touches hours
+worked** — those come from the payroll file and are already whatever they are across the span.
+
 - **Cost allocation** — a person's cost can split across departments (Jeff Cook 50/50 Corporate /
   Sales & Marketing; Axeri Ramirez thirds across HR / Corporate / Accounting). Cost only, never
   hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the

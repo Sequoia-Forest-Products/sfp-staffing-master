@@ -13,6 +13,7 @@
 const db = require('./db');
 const payrollDb = require('./payroll-db');
 const { weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS } = require('./ot-report-lib');
+const { datesBetween, parseRange } = require('./period-lib');
 const { verifySession, getCookies } = require('./session-lib');
 const {
   fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
@@ -138,15 +139,24 @@ async function loadWeekWindow(today) {
   };
 }
 
-async function buildWeekReport({ weekStart, today, weekWindow }) {
-  const dates = weekDates(weekStart);
+// A PERIOD, not necessarily a week. `weekStart` still drives the common case and
+// still snaps to its Monday; `from`/`to` report an arbitrary range instead.
+//
+// Everything below was already written against `dates` rather than against
+// seven-ness, so the generalisation is the first two lines. What is NOT generic
+// is the pre-approved and grace allowance scaling, and that lives in
+// ot-report-lib where the allowances are — see `weeks` in buildReport.
+async function buildWeekReport({ weekStart, from = null, to = null, today, weekWindow }) {
+  const dates = (from && to) ? datesBetween(from, to) : weekDates(weekStart);
+  const periodFrom = dates[0];
+  const periodTo   = dates[dates.length - 1];
 
   // The seven days being reported are always fetched in full and on their
   // own. They are what every number is built from, so they get every column
   // and their own bounded query — ~60 people across 7 days, small enough that
   // no row cap can reach it — rather than being sifted out of the
   // deliberately narrow window scan.
-  const dailyRows = await payrollDb.fetchDailyHours(dates[0], dates[6]) || [];
+  const dailyRows = await payrollDb.fetchDailyHours(periodFrom, periodTo) || [];
 
   // ...and then cross-checked against the window scan, which counted the same
   // rows a second, cheaper way. If the detail fetch came back with fewer rows
@@ -154,8 +164,16 @@ async function buildWeekReport({ weekStart, today, weekWindow }) {
   // every total is understated. Only meaningful when the index is itself
   // complete and the week sits inside the window; otherwise there is nothing to
   // compare against and the answer is an honest null.
-  const indexedWeek = weekWindow.weeks.find(w => w.weekStart === weekStart) || null;
-  const weekRowsExpected = (!weekWindow.truncated && weekStart >= weekWindow.from && dates[6] <= weekWindow.to)
+  //
+  // ONLY FOR A WHOLE WEEK. The index counts rows per Mon-Sun week, so it can
+  // only answer "how many rows should this week have" — an arbitrary range has
+  // no entry to compare against, and inventing one by summing the weeks it
+  // overlaps would compare a range against more days than it contains and
+  // report a shortfall on every partial week. A null is the honest answer.
+  const isWholeWeek = !from && !to;
+  const indexedWeek = isWholeWeek ? (weekWindow.weeks.find(w => w.weekStart === weekStart) || null) : null;
+  const weekRowsExpected = (isWholeWeek && !weekWindow.truncated
+      && weekStart >= weekWindow.from && periodTo <= weekWindow.to)
     ? (indexedWeek ? indexedWeek.rows : 0)
     : null;
   const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
@@ -175,6 +193,8 @@ async function buildWeekReport({ weekStart, today, weekWindow }) {
 
   const report = buildReport({
     weekStart,
+    from: periodFrom,
+    to: periodTo,
     dailyRows,
     preApprovedRows: standing.rows,
     employees: employees || [],
@@ -220,6 +240,15 @@ exports.handler = async (event) => {
 
     // Validate ?week= before touching the database, so a typo costs nothing.
     const requested = String(params.week || '').trim();
+    // A DATE RANGE, or a week. The range wins when both are given — it is the
+    // more specific request. The WEEKLY EMAIL never comes through here with a
+    // range: ot-weekly-email-lib resolves the previous Mon-Sun itself and asks
+    // for that week, which is the whole reason the week path stays.
+    const range = parseRange(params.from, params.to);
+    if (range.error) {
+      return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: range.error }) };
+    }
+
     let requestedWeek = null;
     if (requested) {
       try {
@@ -241,7 +270,7 @@ exports.handler = async (event) => {
       || (availableWeeks.length ? availableWeeks[0].weekStart : weekStartFor(today));
 
     const { report, preApprovedSource, dataWindow } =
-      await buildWeekReport({ weekStart, today, weekWindow });
+      await buildWeekReport({ weekStart, from: range.from, to: range.to, today, weekWindow });
 
     return {
       statusCode: 200, headers,

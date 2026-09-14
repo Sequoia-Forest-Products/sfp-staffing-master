@@ -2090,3 +2090,111 @@ test('an unreachable database does NOT fall back — it fails', async () => {
   });
   assert.strictEqual(res.statusCode, 500);
 });
+
+// ---------------------------------------------------------------------------
+// DATE RANGES (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// The report accepts a from/to range as well as a week. The arithmetic that
+// matters is the two WEEKLY allowances — the standing pre-approved entitlement
+// and the timeclock grace — because Net OT is overtime worked minus those. The
+// worked side grows with the range on its own, from the payroll file; if the
+// allowances did not grow with it, Net OT would be overstated on every
+// multi-week report, quietly, on the figure managers act on.
+
+const RANGE_EMPLOYEES = [
+  { id: 'e1', name: 'Ana Reyes', employee_number: '0201', status: 'Active',
+    department: 'Production', pay_type: 'Hourly', wage: '20.00' }
+];
+
+// One 10-hour day in each of three consecutive weeks, all Mondays.
+const THREE_WEEK_ROWS = ['2026-09-07', '2026-09-14', '2026-09-21'].map(work_date => ({
+  work_date, employee_number: '0201', first_name: 'Ana', last_name: 'Reyes',
+  department: 'Production', regular_hours: 10, ot_hours: 0, total_hours: 10,
+  is_scheduled_day: true
+}));
+
+test('a from/to range covering one week equals the weekStart path exactly', () => {
+  // THE ACCEPTANCE TEST. Every figure this report has ever produced for a week
+  // has to be unchanged now that it takes a range, so the two paths must agree
+  // on a week to the penny.
+  const common = {
+    dailyRows: THREE_WEEK_ROWS.slice(0, 1),
+    preApprovedRows: [{ employee_id: 'e1', ot_type: 'Pre-Shift', hours: 2 }],
+    employees: RANGE_EMPLOYEES,
+    graceHoursPerEmployee: 0.5
+  };
+  const byWeek  = buildReport({ weekStart: '2026-09-07', ...common });
+  const byRange = buildReport({ from: '2026-09-07', to: '2026-09-13', ...common });
+
+  assert.strictEqual(byRange.weeks, 1);
+  assert.deepStrictEqual(byRange.summary, byWeek.summary);
+  assert.deepStrictEqual(byRange.preApproved.standing, byWeek.preApproved.standing);
+  assert.deepStrictEqual(byRange.preApproved.grace, byWeek.preApproved.grace);
+  assert.strictEqual(byRange.weekStart, byWeek.weekStart);
+  assert.strictEqual(byRange.weekEnd, byWeek.weekEnd);
+});
+
+test('three weeks accrue three weeks of standing allowance and grace', () => {
+  const r = buildReport({
+    from: '2026-09-07', to: '2026-09-27',
+    dailyRows: THREE_WEEK_ROWS,
+    preApprovedRows: [{ employee_id: 'e1', ot_type: 'Pre-Shift', hours: 2 }],
+    employees: RANGE_EMPLOYEES,
+    graceHoursPerEmployee: 0.5
+  });
+
+  assert.strictEqual(r.weeks, 3);
+  assert.strictEqual(r.dayCount, 21);
+  // 2 hrs/week standing x 3 weeks; 0.5 hrs/person/week x 1 person x 3 weeks.
+  assert.strictEqual(r.preApproved.standing.hours, 6);
+  assert.strictEqual(r.preApproved.grace.hours, 1.5);
+  assert.strictEqual(r.summary.preApprovedHours, 7.5);
+  // The worked side came from the file and is simply all three days.
+  assert.strictEqual(r.summary.totalHours, 30);
+});
+
+test('a Mon-Thu range is a whole week of allowance, not four sevenths', () => {
+  // The reason the scaling counts scheduled production days rather than
+  // calendar days. The mill's week IS Mon-Thu.
+  const r = buildReport({
+    from: '2026-09-07', to: '2026-09-10',
+    dailyRows: THREE_WEEK_ROWS.slice(0, 1),
+    preApprovedRows: [{ employee_id: 'e1', ot_type: 'Pre-Shift', hours: 2 }],
+    employees: RANGE_EMPLOYEES,
+    graceHoursPerEmployee: 0.5
+  });
+  assert.strictEqual(r.weeks, 1);
+  assert.strictEqual(r.preApproved.standing.hours, 2);
+  assert.strictEqual(r.preApproved.grace.hours, 0.5);
+});
+
+test('a half week accrues half an allowance rather than rounding', () => {
+  const r = buildReport({
+    from: '2026-09-07', to: '2026-09-08',
+    dailyRows: THREE_WEEK_ROWS.slice(0, 1),
+    preApprovedRows: [{ employee_id: 'e1', ot_type: 'Pre-Shift', hours: 2 }],
+    employees: RANGE_EMPLOYEES,
+    graceHoursPerEmployee: 0.5
+  });
+  assert.strictEqual(r.weeks, 0.5);
+  assert.strictEqual(r.preApproved.standing.hours, 1);
+  assert.strictEqual(r.preApproved.grace.hours, 0.25);
+});
+
+test('the per-day breakdown spans the whole range', () => {
+  const r = buildReport({
+    from: '2026-09-07', to: '2026-09-27',
+    dailyRows: THREE_WEEK_ROWS, employees: RANGE_EMPLOYEES
+  });
+  assert.strictEqual(r.days.length, 21);
+  assert.strictEqual(r.days[0].date, '2026-09-07');
+  assert.strictEqual(r.days[20].date, '2026-09-27');
+});
+
+test('an empty period is refused rather than reported as nothing', () => {
+  // A reversed range produces no dates. Reporting it as an empty week would be
+  // a page of zeros that looks like a quiet week.
+  assert.throws(() => buildReport({ from: '2026-09-13', to: '2026-09-07', employees: RANGE_EMPLOYEES }),
+    /no dates in the period/);
+});

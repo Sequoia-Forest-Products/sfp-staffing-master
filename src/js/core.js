@@ -73,6 +73,15 @@ let state = {
   costsView:'',
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
+  // THE DATE RANGE on each of the two reports, or '' for "use the week".
+  //
+  // Both reports still take a week — the dropdown is the common case and the
+  // weekly manager email depends on the week path existing — so the range is an
+  // ALTERNATIVE rather than a replacement. Empty means the week dropdown is
+  // driving; both set means the range is. One of the two set is a half-finished
+  // edit and drives nothing, which is why Apply checks for both.
+  costFrom:'', costTo:'',
+  otFrom:'', otTo:'',
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
   // Whether the settings row is reachable, and whether what is on screen is
   // only in this browser. Both start false and are set by loadEmailSettings /
@@ -372,6 +381,46 @@ function isScheduledDate(s){const d=isoDow(s);return d>=1&&d<=4;}
 function isoToday(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function isoShift(s,days){const p=dateParts(s);if(!p)return s;const d=new Date(p[0],p[1]-1,p[2]+days);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function fmtStamp(ts){if(!ts)return '—';const d=new Date(ts);return isNaN(d.getTime())?String(ts):d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+// THE DATE-RANGE CONTROL, shared by the two reports that offer one.
+//
+// One markup and one behaviour, because two hand-rolled copies of a from/to
+// pair is two chances to disagree about what an incomplete range means — and
+// the answer matters: one date without the other is not a period, and the
+// server refuses it rather than guessing a single day.
+//
+// The handlers are passed as NAMES rather than closures. These are inline on*
+// attributes in a concatenated classic script, so they are resolved by name off
+// the global scope at click time; a closure would have nowhere to live.
+//
+// Neither input fires a load on change. A half-typed range must not issue a
+// request, and re-rendering mid-edit would take the focus out of the field —
+// so Apply is what commits, and `active` decides whether Clear is offered.
+function rangeControl({from, to, active, set, apply, clear}){
+  const box='font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 7px;width:132px';
+  return `<div class="cost-ctrl" style="gap:4px">
+    <label>${active?'Dates':'or dates'}</label>
+    <input type="date" style="${box}" value="${esc(from||'')}" onchange="${set}('from',this.value)">
+    <span style="color:var(--muted)">–</span>
+    <input type="date" style="${box}" value="${esc(to||'')}" onchange="${set}('to',this.value)">
+    <button class="btn btn-outline btn-sm" onclick="${apply}">Apply</button>
+    ${active?`<button class="btn btn-outline btn-sm" onclick="${clear}" title="Back to reporting by week">Clear</button>`:''}
+  </div>`;
+}
+
+// What the report is actually covering, for the line that states it. Reads the
+// SERVER's answer rather than the controls: an incomplete range falls back to
+// the week, and the page must say what was reported, not what was asked.
+function periodLabel(period, fallbackStart, fallbackEnd){
+  if(period && period.from && period.to){
+    if(!period.isRange) return fmtDate(period.from)+' – '+fmtDate(period.to);
+    const d=period.days||0;
+    return fmtDate(period.from)+' – '+fmtDate(period.to)+
+      ' · '+d+' day'+(d===1?'':'s');
+  }
+  if(!fallbackStart) return '—';
+  return fmtDate(fallbackStart)+' – '+fmtDate(fallbackEnd||fallbackStart);
+}
+
 function fmtHrs(n){return (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function fmtCount(n){return n==null?'—':Number(n).toLocaleString('en-US');}
 

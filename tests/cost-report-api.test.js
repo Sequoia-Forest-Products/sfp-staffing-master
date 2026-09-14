@@ -553,3 +553,77 @@ test('a permissions read that fails suppresses rather than publishes', async (t)
 function res_body_has(body, n) {
   return JSON.stringify(body).includes(String(n));
 }
+
+// ---------------------------------------------------------------------------
+// DATE RANGES (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// The salaried standard week is the figure a range has to scale: a salaried
+// person is costed on standard hours rather than the zeros the payroll file
+// reports for them, so the period's length is part of their cost in a way it is
+// not for anybody hourly.
+
+test('a range reports the period it was given, and says it is a range', async (t) => {
+  const { body } = await run(t, { from: '2026-09-07', to: '2026-09-27' });
+  assert.strictEqual(body.period.from, '2026-09-07');
+  assert.strictEqual(body.period.to, '2026-09-27');
+  assert.strictEqual(body.period.isRange, true);
+  assert.strictEqual(body.period.days, 21);
+  // Three weeks of Mon-Thu tens.
+  assert.strictEqual(body.period.standardHours, 120);
+});
+
+test('a week reports one standard week, and is not a range', async (t) => {
+  const { body } = await run(t);
+  assert.strictEqual(body.period.isRange, false);
+  assert.strictEqual(body.period.standardHours, 40,
+    'the weekly report must be untouched by the range machinery');
+});
+
+test('the salaried person is costed on the period, not on a flat week', async (t) => {
+  // Eduardo Rivera, $105,000 => 50.48/hr. One week is 40 hrs; three weeks 120.
+  // Leaving this at 40 would understate him by two thirds on a monthly report,
+  // with every hourly figure around him correctly scaled — wrong in a way that
+  // looks right.
+  withPermissionRows(t, [{ email: 'peter.stroble@sequoiafp.com', tier: 'salaries' }]);
+  const { body: week } = await run(t);
+  const { body: month } = await run(t, { from: '2026-09-07', to: '2026-09-27' });
+
+  const salariedWeek = week.report.byPositionGroup.find(g => g.key === 'Supervisors');
+  const salariedMonth = month.report.byPositionGroup.find(g => g.key === 'Supervisors');
+  assert.strictEqual(salariedWeek.hours, 40);
+  assert.strictEqual(salariedMonth.hours, 120);
+  assert.strictEqual(Math.round(salariedMonth.cost / salariedWeek.cost), 3);
+});
+
+test('a half-open range is refused — one date is not a period', async (t) => {
+  const ctx = stub(t);
+  const res = await handler(event({ from: '2026-09-07' }));
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(JSON.parse(res.body).error, /Both from and to/);
+  assert.deepStrictEqual(ctx.calls.index, [], 'validation happens before the database');
+});
+
+test('a backwards range is refused, and says so plainly', async (t) => {
+  stub(t);
+  const res = await handler(event({ from: '2026-09-27', to: '2026-09-07' }));
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(JSON.parse(res.body).error, /ends before it starts/);
+});
+
+test('an absurd range is refused rather than asked of the database', async (t) => {
+  const ctx = stub(t);
+  const res = await handler(event({ from: '2026-09-07', to: '2062-09-07' }));
+  assert.strictEqual(res.statusCode, 400);
+  assert.match(JSON.parse(res.body).error, /most this report will read/);
+  assert.deepStrictEqual(ctx.calls.index, []);
+});
+
+test('a range has no row-count cross-check, because the index counts weeks', async (t) => {
+  // The window index counts rows per Mon-Sun week, so it has nothing to say
+  // about an arbitrary span. Comparing one against the weeks it overlaps would
+  // report a shortfall on every partial week; null is the honest answer.
+  const { body } = await run(t, { from: '2026-09-08', to: '2026-09-10' });
+  assert.strictEqual(body.dataWindow.weekRowsExpected, null);
+  assert.strictEqual(body.dataWindow.weekDetailTruncated, false);
+});

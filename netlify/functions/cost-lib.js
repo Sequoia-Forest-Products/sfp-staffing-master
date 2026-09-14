@@ -21,10 +21,12 @@
 // that are useless without a name attached.
 
 const { effectiveHourlyRate, isSalaried, SALARY_HOURS_PER_YEAR } = require('./wage-sync');
+const { STANDARD_WEEKLY_HOURS } = require('./period-lib');
 
-// The mill runs a Mon-Thu 4x10, so a standard week is 40 hours. Used only for
-// salaried people; hourly people are costed on the hours they actually worked.
-const STANDARD_WEEKLY_HOURS = 40;
+// STANDARD_WEEKLY_HOURS is the mill's Mon-Thu 4x10 = 40, and it now comes from
+// period-lib because the same figure scales the OT report's weekly allowances.
+// Used only for salaried people; hourly people are costed on the hours they
+// actually worked.
 
 // The taxonomy. Still three values, because employees.cost_class still holds
 // all three and the roster still assigns them — see src/js/core.js.
@@ -92,19 +94,30 @@ function splitToCents(total, weights, primaryIndex) {
 
 // Hours a person is costed on.
 //
-// Hourly: what they actually worked. Salaried: a standard week, because BBSI
-// reports salaried people as all zeros — rate x actual hours would be zero and
-// they would contribute nothing, which is the bug that left Eduardo Rivera out
-// of manufacturing cost entirely.
-function costedHours(employee, actualHours) {
-  return isSalaried(employee) ? STANDARD_WEEKLY_HOURS : num(actualHours);
+// Hourly: what they actually worked. Salaried: the STANDARD HOURS OF THE PERIOD,
+// because BBSI reports salaried people as all zeros — rate x actual hours would
+// be zero and they would contribute nothing, which is the bug that left Eduardo
+// Rivera out of manufacturing cost entirely.
+//
+// `standardHours` is what makes this work over a date range rather than one
+// week. It defaults to STANDARD_WEEKLY_HOURS so a caller that knows nothing
+// about periods gets exactly the old behaviour, and period-lib returns exactly
+// that for a single Mon-Sun week — so the default is the one-week case rather
+// than a fallback that quietly differs from it.
+//
+// A THREE-WEEK RANGE COSTS A SALARIED PERSON THREE WEEKS. Leaving this at a flat
+// 40 would have understated Eduardo's cost by two thirds on a monthly report,
+// with every other figure on the page correctly scaled around it — the kind of
+// wrong that looks right.
+function costedHours(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS) {
+  return isSalaried(employee) ? num(standardHours) : num(actualHours);
 }
 
 // One person's cost, or an explained gap. Never a substituted zero: a person
 // with no usable rate is a data problem worth seeing, not somebody who is free.
-function personCost(employee, actualHours) {
+function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS) {
   const { rate, source } = effectiveHourlyRate(employee);
-  const hours = costedHours(employee, actualHours);
+  const hours = costedHours(employee, actualHours, standardHours);
 
   if (rate === null) {
     // ONE CAUSE EACH, and they used to share a sentence.
@@ -290,7 +303,11 @@ function buildCostReport({
   burden = 0,
   mbfPerHour = 0,
   allocations = [],
-  minBucketHeadcount = DEFAULT_MIN_BUCKET
+  minBucketHeadcount = DEFAULT_MIN_BUCKET,
+  // The standard hours a salaried person is costed on across this report's
+  // period. Defaults to one week, which is what every caller meant before the
+  // reports accepted a date range.
+  standardHours = STANDARD_WEEKLY_HOURS
 } = {}) {
   const hoursByEmployeeNumber = new Map();
   for (const row of dailyRows) {
@@ -323,7 +340,7 @@ function buildCostReport({
   for (const emp of members) {
     const name = textOf(emp.name);
     const empNum = textOf(emp.employee_number != null ? emp.employee_number : emp.empNum);
-    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0);
+    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0, standardHours);
     const person = { ...priced, name };
 
     const primaryDept = textOf(emp.department) || UNASSIGNED_DEPARTMENT;
@@ -425,6 +442,10 @@ function buildCostReport({
     burden: num(burden),
     mbfPerHour: num(mbfPerHour),
     standardWeeklyHours: STANDARD_WEEKLY_HOURS,
+    // What a salaried person was actually costed on for THIS period. Equal to
+    // standardWeeklyHours for a one-week report; the page says which it used, so
+    // a reader can check the scaling rather than take it on trust.
+    standardHours: num(standardHours),
     headcount: members.length,
     byDepartment: departments,
     byPositionGroup: positionGroups,

@@ -6,17 +6,50 @@
 // ============================================================
 // OT REPORT — weekly view over /api/payroll-report
 // ============================================================
+// A RANGE WINS OVER THE WEEK, matching the endpoint and the cost report.
+function otRangeActive(){
+  return !!(String(state.otFrom||'').trim() && String(state.otTo||'').trim());
+}
+
+function otSetRangePart(which, value){
+  if(which==='from') state.otFrom=value; else state.otTo=value;
+  // Deliberately no reload and no render — see rangeControl() in core.js.
+}
+
+function otApplyRange(){
+  if(!otRangeActive()){
+    toast('Enter both a from and a to date — one on its own is not a period','error');
+    return;
+  }
+  loadOTReport('');
+}
+
+function otClearRange(){
+  state.otFrom=''; state.otTo='';
+  loadOTReport(state.otReportWeek||'');
+}
+
 async function loadOTReport(week){
   state.otReportLoading=true; state.otReportError=''; render();
   try{
-    const res=await fetch('/api/payroll-report'+(week?('?week='+encodeURIComponent(week)):''));
+    const qs=new URLSearchParams();
+    if(otRangeActive()){
+      qs.set('from',String(state.otFrom).trim());
+      qs.set('to',String(state.otTo).trim());
+    }
+    else if(week) qs.set('week',week);
+    const res=await fetch('/api/payroll-report'+(qs.toString()?('?'+qs.toString()):''));
     if(res.status===401){location.href='/';return;}
     let json=null;
     try{json=await res.json();}catch(e){json=null;}
     if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
     state.otReport=json.report||null;
     state.otReportWeeks=json.availableWeeks||[];
-    state.otReportWeek=(json.report&&json.report.weekStart)||week||'';
+    // The week the dropdown should show. A RANGE MUST NOT OVERWRITE IT: the
+    // report's weekStart is the range's first date when a range was asked for,
+    // and storing that would leave the dropdown pointing at a week nobody chose
+    // and Clear returning to it.
+    if(!otRangeActive()) state.otReportWeek=(json.report&&json.report.weekStart)||week||'';
     // The endpoint scans a bounded window and says so rather than returning a
     // short answer that looks whole; the page has to repeat that out loud.
     state.otReportTruncated=json.truncated===true;
@@ -252,6 +285,29 @@ function sgaOtRows(){
   }).sort((a,b)=>b.otHours-a.otHours||b.hours-a.hours||a.name.localeCompare(b.name));
 }
 
+// WHAT PERIOD THIS IS, and — when it is not one week — what that did to the
+// allowances.
+//
+// The pre-approved entitlement and the clock grace are WEEKLY, so a range
+// accrues them once per scheduled week. Net OT is overtime worked minus those,
+// so a reader comparing a three-week report against a weekly one needs to know
+// the allowance moved with it; stating the multiplier is what stops the bigger
+// Net OT reading as a worse three weeks.
+function otPeriodNote(r){
+  const weeks=Number(r.weeks);
+  const oneWeek=!(isFinite(weeks)) || Math.abs(weeks-1)<0.001;
+  const span=`${fmtDate(r.weekStart)} through ${fmtDate(r.weekEnd)}`;
+  if(oneWeek && (r.dayCount==null || r.dayCount===7)){
+    return `<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week of ${span}</div>`;
+  }
+  return `<div class="ot-note" style="margin-bottom:12px"><strong>${span}</strong> —
+    ${r.dayCount} day${r.dayCount===1?'':'s'}, worth <strong>${weeks}</strong> scheduled
+    week${Math.abs(weeks-1)<0.001?'':'s'} of production (Mon–Thu).
+    The pre-approved allowance and the timeclock grace are weekly, so both are counted
+    ${weeks}&times; here — Net OT is overtime worked minus that, and comparing this against a
+    single week means comparing against ${weeks}&times; the allowance too.</div>`;
+}
+
 function renderOTReport(){
   const weeks=state.otReportWeeks||[];
   const mgrs=(state.emailSettings.managers||[]).length;
@@ -260,12 +316,16 @@ function renderOTReport(){
   const picker=`
     <div class="ot-bar">
       <label class="ot-bar-label">Work week (Mon–Sun)</label>
-      <select onchange="loadOTReport(this.value)">
+      <select onchange="state.otFrom='';state.otTo='';loadOTReport(this.value)">
         ${weeks.length?weeks.map(w=>`<option value="${w.weekStart}" ${w.weekStart===state.otReportWeek?'selected':''}>${fmtDate(w.weekStart)} – ${fmtDate(w.weekEnd)} · ${w.days} days · ${fmtHrs(w.totalHours)} hrs</option>`).join(''):'<option value="">No week has data yet</option>'}
       </select>
       <button class="btn btn-outline btn-sm" onclick="loadOTReport(state.otReportWeek)">Refresh</button>
       ${emailBtn}
       <button class="btn btn-outline btn-sm" onclick="goToSettings('dailyhours')">Daily Hours</button>
+      ${rangeControl({
+        from: state.otFrom, to: state.otTo, active: otRangeActive(),
+        set: 'otSetRangePart', apply: 'otApplyRange()', clear: 'otClearRange()'
+      })}
       <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
     </div>`;
 
@@ -654,6 +714,6 @@ function renderOTReport(){
     </div>`;
 
   return otReportStyle+picker+trunc+`
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week of ${fmtDate(r.weekStart)} through ${fmtDate(r.weekEnd)}</div>
+    ${otPeriodNote(r)}
     ${cards}${standingNote}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
 }
