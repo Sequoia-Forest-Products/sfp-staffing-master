@@ -185,6 +185,73 @@ const otReportStyle=`<style>
   .sortable{cursor:pointer;user-select:none}
 </style>`;
 
+// ---------------------------------------------------------------------------
+// SG&A OVERTIME
+// ---------------------------------------------------------------------------
+//
+// The one thing still tracked about a cost class this app otherwise stopped
+// analysing on 2026-09-14. It is a section of THIS report rather than a view of
+// its own — it was briefly a sub-tab — because it is one line of a weekly
+// overtime picture and a tab for one line is furniture.
+//
+// HOURS ONLY, NO DOLLARS, and that is the point rather than a gap to fill
+// later. These people have no wage in this system by design, so there is no
+// rate to multiply by. If a dollar figure is ever wanted here, the question to
+// answer first is whether SG&A is being analysed again.
+//
+// COST CLASS, NOT DEPARTMENT, and that distinction is the whole reason this is
+// not three lines long. ot-report-lib has a NON_PRODUCTION bucket whose value
+// is the literal string 'SG&A', and report.issues.nonProductionWithHours lists
+// whoever lands in it — which looks like this section already built. But that
+// bucket is keyed on employees.DEPARTMENT, and 'SG&A' was retired as a
+// department value when the v2 model gave the class five departments of its
+// own. Nobody on the roster holds it. Axeri Ramirez is department 'Accounting',
+// cost class 'SG&A', so she has never appeared in that bucket and never will.
+//
+// So the filter is the cost class, read off the roster and joined to the report
+// on employee number — what the payroll file identifies people by. The
+// department is shown beside each person because it is the line the cost
+// actually belongs to.
+function sgaOtRows(){
+  const report = state.otReport;
+  if(!report) return [];
+
+  // Built from the ROSTER, not from the report: somebody with no hours this
+  // week still belongs in the list, as a zero, so a reader can tell "no
+  // overtime" from "not looked at".
+  const byNumber = new Map();
+  for(const e of (state.employees||[])){
+    if(String(e.costClass||'').trim()!=='SG&A') continue;
+    if(!payActive(e)) continue;
+    // Salaried office staff are dropped at import and cannot earn an OT hour.
+    // Listing them as permanent zeros would bury the one person who can.
+    if(isSalaried(e)) continue;
+    const num=String(e.empNum||'').trim();
+    if(num) byNumber.set(num,e);
+  }
+
+  const reported = new Map();
+  for(const r of (report.employees||[])){
+    const num=String(r.employeeNumber||'').trim();
+    if(num&&byNumber.has(num)) reported.set(num,r);
+  }
+
+  return [...byNumber.entries()].map(([num,e])=>{
+    const r=reported.get(num)||null;
+    return {
+      empNum:num,
+      name:e.name||(r&&r.name)||'',
+      department:e.department||'\u2014',
+      // Absent from the file is zero hours and NOT missing data: the file
+      // carries everybody who clocked in, so absence is the answer.
+      hours:r?r.totalHours:0,
+      otHours:r?r.otHours:0,
+      daysWorked:r?r.daysWorked:0,
+      inFile:!!r
+    };
+  }).sort((a,b)=>b.otHours-a.otHours||b.hours-a.hours||a.name.localeCompare(b.name));
+}
+
 function renderOTReport(){
   const weeks=state.otReportWeeks||[];
   const mgrs=(state.emailSettings.managers||[]).length;
@@ -198,7 +265,7 @@ function renderOTReport(){
       </select>
       <button class="btn btn-outline btn-sm" onclick="loadOTReport(state.otReportWeek)">Refresh</button>
       ${emailBtn}
-      <button class="btn btn-outline btn-sm" onclick="goToOvertime('dailyhours')">Daily Hours</button>
+      <button class="btn btn-outline btn-sm" onclick="goToSettings('dailyhours')">Daily Hours</button>
       <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
     </div>`;
 
@@ -339,6 +406,47 @@ function renderOTReport(){
       </table>
     </div>
     ${reconBlock}`;
+
+  // 4b. SG&A overtime — the office, which is not one of the departments above.
+  //
+  // Placed here because a reader who has just finished the department table is
+  // asking exactly the question this answers: is that everybody? It is not —
+  // these people are in the file and in no production department.
+  const sgaRows=sgaOtRows();
+  const sgaTotalOt=sgaRows.reduce((t,x)=>t+Number(x.otHours||0),0);
+  const sgaTotalHrs=sgaRows.reduce((t,x)=>t+Number(x.hours||0),0);
+  const sgaBlock=`
+    <div class="section-head"><span>SG&amp;A overtime</span></div>
+    <div class="ot-note"><strong>Hours only — SG&amp;A carries no pay in this app.</strong>
+      Everyone in the SG&amp;A cost class who can earn an overtime hour is listed, including at zero:
+      an empty row means no overtime, not no data. Salaried office staff are not listed — the payroll
+      file drops them and they earn no OT hour. These hours are NOT in the department table above or
+      in any figure on this page; SG&amp;A is not a production department.</div>
+    ${sgaRows.length?`
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Name</th><th>Department</th>
+          <th class="num">Days</th><th class="num">Hours</th><th class="num">Overtime</th>
+        </tr></thead>
+        <tbody>
+          ${sgaRows.map(x=>`<tr>
+            <td style="font-weight:600">${esc(x.name)}${x.empNum?` <span style="color:var(--muted);font-size:11px">#${esc(x.empNum)}</span>`:''}</td>
+            <td>${esc(x.department)}</td>
+            <td class="num">${x.inFile?x.daysWorked:'\u2014'}</td>
+            <td class="num">${fmtHrs(x.hours)}</td>
+            <td class="num" style="font-weight:${Number(x.otHours)>0?'800':'400'};color:${Number(x.otHours)>0?'var(--brick)':'var(--muted)'}">${fmtHrs(x.otHours)}</td>
+          </tr>`).join('')}
+        </tbody>
+        <tfoot><tr>
+          <td colspan="3" style="font-weight:700;padding:10px 12px">${sgaRows.length} ${sgaRows.length===1?'person':'people'}</td>
+          <td class="num" style="font-weight:700">${fmtHrs(sgaTotalHrs)}</td>
+          <td class="num" style="font-weight:800">${fmtHrs(sgaTotalOt)}</td>
+        </tr></tfoot>
+      </table>
+    </div>`:`
+    <div class="ot-panel"><div class="ot-ok">Nobody on the roster is both hourly and in the SG&amp;A cost class,
+      so there is no SG&amp;A overtime to track. Cost class and pay type are set on the Employees tab.</div></div>`}`;
 
   // 5. Per-day breakdown Mon->Sun, filterable by department.
   const dayRows=days.map(d=>{
@@ -512,7 +620,7 @@ function renderOTReport(){
   if(iss.unassignedRows) issueBits.push(`<div class="ot-warn"><strong>${iss.unassignedRows} row(s) carry no department.</strong> ${(iss.unassignedEmployees||[]).map(esc).join(', ')}
     <div style="font-size:11px;margin-top:4px">Set the department on the employee, then re-stamp the affected dates from the Daily Hours tab — the department on a daily row is a snapshot taken at import.</div>
     <div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="goToTab('employees')">Set department on the Employees tab</button>
-    <button class="btn btn-outline btn-sm" onclick="goToOvertime('dailyhours')">Re-stamp departments</button></div></div>`);
+    <button class="btn btn-outline btn-sm" onclick="goToSettings('dailyhours')">Re-stamp departments</button></div></div>`);
   if((iss.flagged||[]).length) issueBits.push(`<div class="ot-flag"><strong>${iss.flagged.length} flagged row(s):</strong>
     <div style="margin-top:6px">${iss.flagged.map(f=>`<span class="ot-chip">${fmtDateShort(f.workDate)} · ${esc(f.name||('#'+f.employeeNumber))} · ${(f.flags||[]).map(esc).join(', ')}</span>`).join('')}</div></div>`);
   if((pre.unmatchedNames||[]).length) issueBits.push(`<div class="ot-warn"><strong>Pre-approved OT names that match no employee:</strong> ${pre.unmatchedNames.map(esc).join(', ')}</div>`);
@@ -547,5 +655,5 @@ function renderOTReport(){
 
   return otReportStyle+picker+trunc+`
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week of ${fmtDate(r.weekStart)} through ${fmtDate(r.weekEnd)}</div>
-    ${cards}${standingNote}${splitBlock}${deptBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
+    ${cards}${standingNote}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
 }

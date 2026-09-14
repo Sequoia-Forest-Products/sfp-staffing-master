@@ -1,50 +1,46 @@
 // overtime — the Overtime tab, which is a container and nothing more.
 //
-// It consolidates four tabs that were top-level until Phase C and Phase E —
-// Daily Hours, Pre-Approved Overtime, the OT Report and Points — plus SG&A
-// Overtime, which was never a tab: it arrived on 2026-09-14 as the one thing
-// still tracked about a cost class this app otherwise stopped analysing.
+// TWO VIEWS NOW, and it has been four and five. What left, and why, is the
+// shape of the tab:
 //
-// Each renders through its own function — renderDailyHours(),
-// renderPreApproved(), renderOTReport(), renderSgaOT(), renderPoints() — and
-// this file adds no reporting logic of its own. That is deliberate: the OT report carries the scheduled/weekend
-// split, department Net OT, completeness tracking and the truncation banner,
-// and the way to not regress any of that is to not touch it.
+//   Daily Hours   moved to Settings on 2026-09-15. It is the IMPORT — a file
+//                 arrives and is committed — which is administration of the
+//                 data this tab reports on, not a report. It led this sub-nav
+//                 while it lived here, on the argument that it is the first
+//                 step of the same job; putting it under Settings takes that
+//                 argument to its conclusion.
+//   Points        became a top-level tab the same day. Attendance points and
+//                 disciplinary flags are not overtime and never were; they sat
+//                 here because Phase C needed somewhere to put them.
+//   SG&A Overtime lasted a day as a view and is now a SECTION of the OT
+//                 Report, where it reads as one line of a weekly picture
+//                 instead of a tab holding one table.
 //
-// IT WAS CALLED 'Reports', and the rename is not cosmetic. Four of the five
-// views are overtime and the fifth is the hours those four are computed from,
-// so "Reports" named the shape of the container rather than its subject and
-// left no room for a report about anything else. The state key, the file and
-// every function moved with the label — a tab whose internal name disagrees
-// with the one on screen is a tab somebody will eventually search for and not
-// find.
+// THE OT REPORT LEADS, which is new. Daily Hours led on the order of work —
+// hours are imported, then reported on — and with the import gone the report is
+// both the first thing and the thing the tab is named for.
 //
-// DAILY HOURS LEADS, and that is the order of work rather than of importance:
-// the hours are imported here, then reported on by the views after it.
-// It was a top-level tab next to Reports for exactly that reason, which is the
-// argument for it being the first thing inside instead.
+// Each view renders through its own function — renderOTReport(),
+// renderPreApproved() — and this file adds no reporting logic of its own. That
+// is deliberate: the OT report carries the scheduled/weekend split, department
+// Net OT, completeness tracking and the truncation banner, and the way to not
+// regress any of that is to not touch it.
+//
+// IT WAS CALLED 'Reports', and the rename is not cosmetic: every view in it is
+// overtime, so "Reports" named the shape of the container rather than its
+// subject and left no room for a report about anything else. The state key, the
+// file and every function moved with the label — a tab whose internal name
+// disagrees with the one on screen is a tab somebody will eventually search for
+// and not find.
 //
 // Shares one global scope with the other files in src/js (see core.js).
 
 // The sub-views, in the order they appear. `load` runs the first time a view is
 // opened and is what preserves the lazy-load each of these had as a top-level
-// tab: switchTab() used to call loadOTReport() when you opened 'otreport' and
-// loadDailyDays() when you opened 'dailyhours', and those hooks have to move
-// here — and be fired from switchTab() for the already-selected view — or the
-// view silently never loads.
+// tab: switchTab() used to call loadOTReport() when you opened 'otreport', and
+// that hook has to live here — and be fired from switchTab() for the
+// already-selected view — or the view silently never loads.
 const OVERTIME_VIEWS = [
-  {
-    key: 'dailyhours',
-    label: 'Daily Hours',
-    render: () => renderDailyHours(),
-    load: () => { if (!state.dailyLoaded && !state.dailyLoading) loadDailyDays(); }
-  },
-  {
-    key: 'preapproved',
-    label: 'Pre-Approved OT',
-    render: () => renderPreApproved(),
-    load: () => { if (!state.preLoaded && !state.preLoading) loadPreApproved(); }
-  },
   {
     key: 'otreport',
     label: 'OT Report',
@@ -52,20 +48,11 @@ const OVERTIME_VIEWS = [
     load: () => { if (!state.otReport && !state.otReportLoading) loadOTReport(state.otReportWeek); }
   },
   {
-    key: 'sgaot',
-    label: 'SG&A Overtime',
-    // Reads the SAME report as the view above it and issues no request of its
-    // own, so its `load` is the OT Report's — opening either view loads the
-    // week for both, and they can never show different weeks.
-    //
-    // It is here rather than in the OT Report because that report is about the
-    // mill floor: departments, the scheduled/weekend split, Net OT against a
-    // pre-approved allowance. Office overtime answers a different question for
-    // a different reader. See the header of sga-ot.js.
-    render: () => renderSgaOT(),
-    load: () => { if (!state.otReport && !state.otReportLoading) loadOTReport(state.otReportWeek); }
-  },
-  { key: 'points', label: 'Points', render: () => renderPoints() }
+    key: 'preapproved',
+    label: 'Pre-Approved OT',
+    render: () => renderPreApproved(),
+    load: () => { if (!state.preLoaded && !state.preLoading) loadPreApproved(); }
+  }
 ];
 
 function overtimeView(key) {
@@ -80,9 +67,10 @@ function switchOvertimeView(key) {
 }
 
 // Deep link from elsewhere in the app: goToOvertime('otreport') opens the
-// Overtime tab on that view. goToTab('otreport') and goToTab('dailyhours') no
-// longer resolve to anything, so anything that used to jump straight to one of
-// these views has to come through here.
+// Overtime tab on that view. goToTab('otreport') and goToTab('preapproved') do
+// not resolve to anything, so anything jumping straight to one of these has to
+// come through here. Daily Hours is no longer one of them — it is under
+// Settings now, reached by goToSettings('dailyhours').
 function goToOvertime(key) {
   state.overtimeView = overtimeView(key).key;
   goToTab('overtime');

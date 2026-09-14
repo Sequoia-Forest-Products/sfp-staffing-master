@@ -387,23 +387,40 @@ function renderCosts(){
 // same reason REPORT_VIEWS did: a lazy-load hook that lives in switchTab() keyed
 // on a tab name stops firing the moment that tab becomes a sub-view.
 
+// STAFFING LEADS, and the order is the order of the question: the plan comes
+// before the actuals. "How many seats did we budget, and is the person in each
+// one inside its rate ceiling" is asked first; "what did the class actually
+// cost last week" is the answer measured against it.
+//
+// It is also the GATED view, which is what makes leading with it safe rather
+// than awkward: costsSubView() resolves to the first VISIBLE view, so a reader
+// without the salaries tier never sees Staffing at all and lands on Department
+// & Group. state.costsView therefore starts empty rather than naming a view —
+// see core.js. Hardcoding a default would have opened the tab on the second
+// item for the very people who can read the first.
 const COSTS_VIEWS = [
+  {
+    key: 'staffing',
+    label: 'Staffing',
+    // Formerly the Staffing Economics tab, and briefly 'Staff'. It answers a
+    // different question from the cost report beside it — "is the person in
+    // this seat inside the rate ceiling budgeted for it", not "what does this
+    // class cost" — which is why both survive as views of one tab rather than
+    // one replacing the other.
+    //
+    // The KEY moved with the label, from 'staff' to 'staffing'. A view whose
+    // internal name disagrees with the one on screen is a view somebody will
+    // eventually search for and not find — the same rule that renamed the
+    // Reports tab to Overtime, applied one level down.
+    tier: TIER_SALARIES,
+    render: () => renderEconomics(),
+    load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }
+  },
   {
     key: 'deptgroup',
     label: 'Department & Group',
     render: () => renderCosts(),
     load: () => loadCostsOnce([COST_CLASS_MANUFACTURING])
-  },
-  {
-    key: 'staff',
-    label: 'Staff',
-    // Formerly the Staffing Economics tab. It answers a different question from
-    // the cost report beside it — "is the person in this seat inside the rate
-    // ceiling budgeted for it", not "what does this class cost" — which is why
-    // both survive as views of one tab rather than one replacing the other.
-    tier: TIER_SALARIES,
-    render: () => renderEconomics(),
-    load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }
   }
 ];
 
@@ -415,9 +432,11 @@ function visibleViews(views) {
 }
 
 // Resolution falls back to the first VISIBLE view, not the first listed one.
-// That is what makes a stale state key safe: somebody left on 'staff' when
+// That is what makes a stale state key safe: somebody left on 'staffing' when
 // their grant is revoked in another window resolves to 'deptgroup' rather than
-// to a view they can no longer read.
+// to a view they can no longer read. It is also what makes an EMPTY key work,
+// which is the ordinary case — state.costsView starts empty and resolves to
+// whichever view this reader's tier puts first.
 function costsSubView(key) {
   const open = visibleViews(COSTS_VIEWS);
   return open.find(v => v.key === key) || open[0];
@@ -430,8 +449,8 @@ function switchCostsView(key) {
   if (view.load) view.load();
 }
 
-// Deep link: goToCostsView('staff') opens Manufacturing Costs on the staffing
-// plan. Used by nothing today and kept alongside goToOvertime() so that the
+// Deep link: goToCostsView('staffing') opens Manufacturing Costs on the
+// staffing plan. Used by nothing today and kept alongside goToOvertime() so that the
 // next thing wanting to jump into a sub-view has the shape to follow.
 function goToCostsView(key) {
   state.costsView = costsSubView(key).key;
