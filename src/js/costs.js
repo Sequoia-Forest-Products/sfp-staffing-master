@@ -26,7 +26,7 @@ const COST_CLASS_MANUFACTURING = 'Manufacturing';
 
 function emptyCostView(){
   return {report:null, weeks:[], week:'', loading:false, error:'',
-          truncated:false, window:null, allocations:null, loaded:false,
+          truncated:false, window:null, allocations:null, loaded:false, period:null,
           // Phase D. The suppression posture the server applied to THIS view.
           // null until a load lands, and null reads as 'suppressed', which is
           // the safe direction for a field that decides whether a breakdown is
@@ -48,6 +48,12 @@ function costView(costClass){
 function costBurden(){const v=Number(state.burden);return isFinite(v)&&v>=0?v:0;}
 function costMbf(){const v=Number(state.mhr);return isFinite(v)&&v>=0?v:0;}
 
+// A RANGE WINS OVER THE WEEK, matching the endpoint. Both are sent only when the
+// range is incomplete, in which case the week is what is actually reported.
+function costRangeActive(){
+  return !!(String(state.costFrom||'').trim() && String(state.costTo||'').trim());
+}
+
 async function loadCostReport(costClass, week){
   const view=costView(costClass);
   view.loading=true; view.error=''; render();
@@ -57,7 +63,11 @@ async function loadCostReport(costClass, week){
       burden:String(costBurden()),
       mbfPerHour:String(costMbf())
     });
-    if(week) qs.set('week',week);
+    if(costRangeActive()){
+      qs.set('from',String(state.costFrom).trim());
+      qs.set('to',String(state.costTo).trim());
+    }
+    else if(week) qs.set('week',week);
     const res=await fetch('/api/cost-report?'+qs.toString());
     if(res.status===401){location.href='/';return;}
     let json=null;
@@ -72,6 +82,10 @@ async function loadCostReport(costClass, week){
     view.truncated=json.truncated===true;
     view.window=json.dataWindow||null;
     view.allocations=json.allocations||null;
+    // What the server actually reported on, which is not always what was asked
+    // for — an empty range falls back to the week. The page states the period
+    // from this rather than from the controls, so the two cannot disagree.
+    view.period=json.period||null;
     // The suppression posture the SERVER applied, reported so the page can say
     // why a figure is missing and stop offering a breakdown it would only draw
     // as dashes. Reading it is not a permission check — the money is already
@@ -299,14 +313,40 @@ function costControls(view, classes, opts){
         : '<option value="">No week has data yet</option>'}
     </select>
     <div class="cost-ctrl"><label>Burden</label><input type="number" value="${(costBurden()*100).toFixed(0)}" min="0" max="500" step="1" onchange="costSetBurden(${cls},this.value)"> %</div>
+    ${rangeControl({
+      from: state.costFrom, to: state.costTo, active: costRangeActive(),
+      set: 'costSetRangePart', apply: `costApplyRange(${cls})`, clear: `costClearRange(${cls})`
+    })}
     ${opts&&opts.showMbf?`<div class="cost-ctrl"><label>MBF/hr</label><input type="number" value="${costMbf()}" min="0" step="0.5" onchange="costSetMbf(${cls},this.value)"></div>`:''}
     <button class="btn btn-outline btn-sm" onclick="costRefresh(${cls})">Refresh</button>
     <div class="cost-bar-note">Aggregates only. Individual pay rates are never sent to the browser.</div>
   </div>`;
 }
 
+// Picking a week CLEARS the range, because the two cannot both drive and a
+// dropdown that silently did nothing would be the worse of the two failures.
 function costSetWeek(classes, week){
+  state.costFrom=''; state.costTo='';
   for(const c of classes) loadCostReport(c, week);
+}
+
+function costSetRangePart(which, value){
+  if(which==='from') state.costFrom=value; else state.costTo=value;
+  // No reload and no render: a half-typed range must not fire a request, and
+  // re-rendering would take the focus out of the date input mid-edit.
+}
+
+function costApplyRange(classes){
+  if(!costRangeActive()){
+    toast('Enter both a from and a to date — one on its own is not a period','error');
+    return;
+  }
+  for(const c of classes) loadCostReport(c, '');
+}
+
+function costClearRange(classes){
+  state.costFrom=''; state.costTo='';
+  for(const c of classes) loadCostReport(c, costView(c).week||'');
 }
 function costSetBurden(classes, pct){
   const v=Number(pct);
@@ -321,6 +361,32 @@ function costSetMbf(classes, v){
 function costRefresh(classes){
   for(const c of classes) loadCostReport(c, costView(c).week||'');
 }
+
+// WHAT PERIOD THIS IS, and what it did to the salaried people.
+//
+// A salaried person is costed on standard hours rather than the zeros the
+// payroll file reports for them, so the period's length is part of their cost in
+// a way it is not for anybody hourly. Over three weeks Eduardo Rivera is costed
+// on three standard weeks; saying so is what stops the bigger figure reading as
+// a rate change.
+//
+// Silent for a single week, which is every report this tab produced before it
+// took a range — a banner on the ordinary case teaches people to skim past it.
+function costPeriodNote(view){
+  const p=view.period;
+  if(!p||!p.isRange) return '';
+  const weeks=STANDARD_WEEKLY_HOURS_CLIENT ? (p.standardHours/STANDARD_WEEKLY_HOURS_CLIENT) : 0;
+  return `<div class="cost-note"><strong>${fmtDate(p.from)} – ${fmtDate(p.to)}</strong> —
+    ${p.days} day${p.days===1?'':'s'}, ${p.standardHours} standard hours of production
+    (Mon–Thu, ten-hour days). Hourly people are costed on the hours they actually worked in that
+    span; salaried people on those ${p.standardHours} hours, which is ${round1(weeks)}&times; a
+    standard week — the payroll file reports them as zeros, so the period is what prices them.</div>`;
+}
+
+// Mirrors STANDARD_WEEKLY_HOURS in netlify/functions/period-lib.js. Used only to
+// state the multiplier on screen; nothing is computed from it.
+const STANDARD_WEEKLY_HOURS_CLIENT = 40;
+function round1(n){return Math.round(Number(n)*10)/10;}
 
 // One cost class, rendered whole.
 function costSection(costClass, classes, opts){
@@ -344,7 +410,8 @@ function costSection(costClass, classes, opts){
   // The rule is right and it lives in cost-lib, which builds the array:
   // position group is mill-floor only, so its absence is a finding for
   // Manufacturing and the correct answer for everybody else.
-  const head = costTruncationNote(view)
+  const head = costPeriodNote(view)
+    + costTruncationNote(view)
     + costAllocationNote(view)
     + costStatCards(r, opts)
     + costTotalsNote(r)
@@ -401,17 +468,18 @@ function renderCosts(){
 const COSTS_VIEWS = [
   {
     key: 'staffing',
-    label: 'Staffing',
-    // Formerly the Staffing Economics tab, and briefly 'Staff'. It answers a
-    // different question from the cost report beside it — "is the person in
-    // this seat inside the rate ceiling budgeted for it", not "what does this
-    // class cost" — which is why both survive as views of one tab rather than
-    // one replacing the other.
+    label: 'Staffing Economics',
+    // The Staffing Economics tab, back under its own name. It was 'Staff' for
+    // a release and 'Staffing' for a day; the full name is what everybody here
+    // has always called it, and it says what the view is for in a way neither
+    // short form did. It answers a different question from the cost report
+    // beside it — "is the person in this seat inside the rate ceiling budgeted
+    // for it", not "what does this class cost" — which is why both survive as
+    // views of one tab rather than one replacing the other.
     //
-    // The KEY moved with the label, from 'staff' to 'staffing'. A view whose
-    // internal name disagrees with the one on screen is a view somebody will
-    // eventually search for and not find — the same rule that renamed the
-    // Reports tab to Overtime, applied one level down.
+    // The KEY stays 'staffing': it is the distinctive word of the label, so
+    // searching either finds the other. What the key must never be is a word
+    // that appears nowhere on screen, which is what 'staff' had become.
     tier: TIER_SALARIES,
     render: () => renderEconomics(),
     load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }

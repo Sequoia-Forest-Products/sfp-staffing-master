@@ -59,6 +59,10 @@ function sandbox() {
       querySelectorAll: () => []
     },
     setTimeout: (fn) => { void fn; return 0; },
+    // A real browser global, and the report loaders build their query strings
+    // with it. Without it the load throws inside its own try/catch and the test
+    // sees no request rather than a failure.
+    URLSearchParams,
     // bootstrap.js runs at load and reads stored email settings. Without this the
     // rejection surfaces inside whichever test happens to run first, which is a
     // confusing way to find out a browser global is missing.
@@ -88,8 +92,15 @@ function sandbox() {
     'globalThis.SETTINGS_VIEWS = SETTINGS_VIEWS; globalThis.COSTS_VIEWS = COSTS_VIEWS;',
     ctx, { filename: 'expose-lexicals.js' });
   ctx.__calls = calls;
+  // Toasts, recorded rather than swallowed: whether a refusal is REPORTED is
+  // half of what the range control has to get right.
+  ctx.__toasts = [];
+  vm.runInContext('toast = (msg, type) => { globalThis.__toasts.push({ msg, type }); };',
+    ctx, { filename: 'stub-toast.js' });
   return ctx;
 }
+
+const lastToast = (ctx) => ctx.__toasts[ctx.__toasts.length - 1] || {};
 
 // ---------------------------------------------------------------------------
 // The container
@@ -792,13 +803,14 @@ test('switchTab fires the load for the Settings view already selected', () => {
 // Manufacturing Costs — Staffing leads (2026-09-15)
 // ---------------------------------------------------------------------------
 
-test('Staffing is first, and named what it is called on screen', () => {
+test('Staffing Economics is first, and named what it is called on screen', () => {
   const ctx = sandbox();
   assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.key), ['staffing', 'deptgroup']);
   assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.label),
-    ['Staffing', 'Department & Group']);
-  // The key moved with the label. A view whose internal name disagrees with the
-  // one on screen is a view somebody will eventually search for and not find.
+    ['Staffing Economics', 'Department & Group']);
+  // The key is the distinctive word of the label, so searching either finds the
+  // other. What it must never be is a word appearing nowhere on screen, which
+  // is what 'staff' had become.
   const src = fs.readFileSync(path.join(SRC, 'costs.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
   assert.ok(!/'staff'/.test(src), "the old 'staff' key is still in costs.js");
@@ -818,4 +830,107 @@ test('the landing view follows the reader tier, because the first view is gated'
   salaried.state.perms.tiers = ['hourly_wages', 'salaries'];
   assert.strictEqual(salaried.costsSubView(salaried.state.costsView).key, 'staffing',
     'with the tier, the tab opens on the view that leads it');
+});
+
+// ---------------------------------------------------------------------------
+// The date range control (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// Both reports keep the week dropdown and gain a range. The two cannot both
+// drive, so the rules are: a range wins when complete, picking a week clears
+// the range, and an incomplete range drives nothing at all.
+
+test('the OT report sends a range when one is set, and a week otherwise', async () => {
+  const ctx = sandbox();
+  ctx.render = () => {};
+
+  await ctx.loadOTReport('2026-08-24');
+  let url = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/payroll-report')).pop().url;
+  assert.match(url, /week=2026-08-24/);
+  assert.ok(!/from=/.test(url), 'no range was set');
+
+  ctx.state.otFrom = '2026-09-07';
+  ctx.state.otTo = '2026-09-27';
+  await ctx.loadOTReport('2026-08-24');
+  url = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/payroll-report')).pop().url;
+  assert.match(url, /from=2026-09-07/);
+  assert.match(url, /to=2026-09-27/);
+  assert.ok(!/week=/.test(url), 'the range wins, so no week is sent alongside it');
+});
+
+test('an incomplete range drives nothing and says why', async () => {
+  // One date without the other is not a period. Firing the request would let
+  // the server fall back to a week and produce a plausible wrong answer.
+  const ctx = sandbox();
+  ctx.render = () => {};
+  const before = ctx.__calls.fetches.length;
+
+  ctx.state.otFrom = '2026-09-07';
+  ctx.state.otTo = '';
+  ctx.otApplyRange();
+
+  assert.strictEqual(ctx.__calls.fetches.length, before, 'a half-typed range fired a request');
+  assert.strictEqual(lastToast(ctx).type, 'error');
+  assert.match(lastToast(ctx).msg, /both a from and a to/i);
+});
+
+test('typing a date does not fire a request on its own', async () => {
+  // Every keystroke in a date field would otherwise be a report load, and a
+  // re-render mid-edit takes the focus out of the input.
+  const ctx = sandbox();
+  ctx.render = () => {};
+  const before = ctx.__calls.fetches.length;
+
+  ctx.otSetRangePart('from', '2026-09-07');
+  ctx.otSetRangePart('to', '2026-09-27');
+
+  assert.strictEqual(ctx.__calls.fetches.length, before);
+  assert.strictEqual(ctx.state.otFrom, '2026-09-07');
+  assert.strictEqual(ctx.state.otTo, '2026-09-27');
+});
+
+test('clearing the range goes back to the week that was showing', async () => {
+  const ctx = sandbox();
+  ctx.render = () => {};
+  ctx.state.otReportWeek = '2026-08-24';
+  ctx.state.otFrom = '2026-09-07';
+  ctx.state.otTo = '2026-09-27';
+
+  await ctx.otClearRange();
+
+  assert.strictEqual(ctx.state.otFrom, '');
+  const url = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/payroll-report')).pop().url;
+  assert.match(url, /week=2026-08-24/, 'Clear has to return to the week, not to the newest one');
+});
+
+test('a range does not overwrite the week the dropdown is showing', async () => {
+  // The report's weekStart is the range's first date when a range was asked
+  // for. Storing that would leave the dropdown pointing at a week nobody chose
+  // and Clear returning to it.
+  const ctx = sandbox();
+  ctx.render = () => {};
+  ctx.state.otReportWeek = '2026-08-24';
+  ctx.state.otFrom = '2026-09-07';
+  ctx.state.otTo = '2026-09-27';
+
+  await ctx.loadOTReport('');
+  assert.strictEqual(ctx.state.otReportWeek, '2026-08-24');
+});
+
+test('the cost report follows the same rules', async () => {
+  const ctx = sandbox();
+  ctx.render = () => {};
+
+  ctx.state.costFrom = '2026-09-07';
+  ctx.state.costTo = '2026-09-27';
+  await ctx.loadCostReport('Manufacturing', '2026-08-24');
+  const url = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/cost-report')).pop().url;
+  assert.match(url, /from=2026-09-07/);
+  assert.ok(!/week=/.test(url));
+
+  // Picking a week clears the range — a dropdown that silently did nothing
+  // would be the worse of the two failures.
+  ctx.costSetWeek(['Manufacturing'], '2026-08-24');
+  assert.strictEqual(ctx.state.costFrom, '');
+  assert.strictEqual(ctx.state.costTo, '');
 });

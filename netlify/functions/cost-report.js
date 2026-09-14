@@ -55,6 +55,7 @@ const {
   fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
 } = require('./week-index-lib');
 const { buildCostReport, REPORTED_COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
+const { parseRange, standardHoursFor } = require('./period-lib');
 
 // The cost classes this endpoint used to serve behind the salaries tier, and
 // now refuses outright. Kept as a named list rather than deleted so the refusal
@@ -164,6 +165,14 @@ exports.handler = async (event) => {
   // never from anything in the query string.
   const requestedMin = parseDecimal(params.minBucket, { min: 1, max: 100, fallback: null });
 
+  // A DATE RANGE, or a week. The range wins when both are given — it is the
+  // more specific request, and refusing the combination would only punish a UI
+  // that sent a stale week alongside a deliberate range.
+  const range = parseRange(params.from, params.to);
+  if (range.error) {
+    return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: range.error }) };
+  }
+
   const requestedWeek = String(params.week || '').trim();
   let snappedWeek = null;
   if (requestedWeek) {
@@ -209,8 +218,20 @@ exports.handler = async (event) => {
       || (availableWeeks.length ? availableWeeks[0].weekStart : weekStartFor(today));
     const dates = weekDates(weekStart);
 
+    // The period actually reported: the range when one was asked for, otherwise
+    // the week. Everything below reads periodFrom/periodTo, so the week is just
+    // the default range rather than a separate code path.
+    const periodFrom = range.from || dates[0];
+    const periodTo   = range.to   || dates[6];
+
+    // What a salaried person is costed on across this period. Exactly
+    // STANDARD_WEEKLY_HOURS for a single Mon-Sun week — period-lib counts
+    // scheduled Mon-Thu days — so a weekly report is unchanged, and a
+    // three-week range costs them three weeks instead of one.
+    const standardHours = standardHoursFor(periodFrom, periodTo);
+
     const [dailyRows, employees, allocations] = await Promise.all([
-      payrollDb.fetchDailyHours(dates[0], dates[6]),
+      payrollDb.fetchDailyHours(periodFrom, periodTo),
       payrollDb.fetchEmployees(),
       loadAllocations()
     ]);
@@ -218,8 +239,15 @@ exports.handler = async (event) => {
     // Cross-check the detail fetch against the window scan, which counted the
     // same rows a cheaper way. Fewer rows than the index says exist means
     // something dropped rows and every hours figure below is understated.
-    const indexedWeek = availableWeeks.find(w => w.weekStart === weekStart) || null;
-    const weekRowsExpected = (!weekIndex.truncated && weekStart >= windowFrom && dates[6] <= windowTo)
+    //
+    // ONLY FOR A WHOLE WEEK. The index counts rows per Mon-Sun week, so it has
+    // nothing to say about an arbitrary range; comparing one against the weeks
+    // it overlaps would report a shortfall on every partial week. Null is the
+    // honest answer.
+    const isWholeWeek = !range.from;
+    const indexedWeek = isWholeWeek ? (availableWeeks.find(w => w.weekStart === weekStart) || null) : null;
+    const weekRowsExpected = (isWholeWeek && !weekIndex.truncated
+        && weekStart >= windowFrom && periodTo <= windowTo)
       ? (indexedWeek ? indexedWeek.rows : 0)
       : null;
     const rowsFetched = (dailyRows || []).length;
@@ -232,7 +260,8 @@ exports.handler = async (event) => {
       burden,
       mbfPerHour,
       allocations: allocations.rows,
-      minBucketHeadcount
+      minBucketHeadcount,
+      standardHours
     });
 
     return {
@@ -249,7 +278,17 @@ exports.handler = async (event) => {
           tiers: Array.from(tiers)
         },
         availableWeeks,
-        week: { start: weekStart, end: dates[6], dates },
+        // `week` is the Mon-Sun week when one was reported and the range
+        // otherwise, so a caller reading .start/.end gets the period either way.
+        // `period` says which of the two it was, and what the salaried scaling
+        // came to, so the page can show its working.
+        week: { start: periodFrom, end: periodTo, dates },
+        period: {
+          from: periodFrom, to: periodTo,
+          isRange: !!range.from,
+          days: range.days || dates.length,
+          standardHours
+        },
         truncated: weekIndex.truncated || weekDetailTruncated,
         dataWindow: {
           from: windowFrom,

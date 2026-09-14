@@ -189,6 +189,10 @@ function mondayMs(ms) {
 
 // Monday of the ISO week containing dateStr. A Sunday belongs to the week that
 // started six days earlier, not to the one starting the next day.
+// datesBetween and the week-equivalent rule come from period-lib, shared with
+// the cost report so the two cannot disagree about what a period is worth.
+const { datesBetween, weekEquivalent: periodWeeks } = require('./period-lib');
+
 function weekStartFor(dateStr) {
   const ms = dateToUTC(dateStr);
   if (ms === null) throw new Error(`weekStartFor: not a YYYY-MM-DD date: ${JSON.stringify(String(dateStr))}`);
@@ -390,7 +394,12 @@ function displayName(row) {
 // ============================================================
 
 function buildReport({
+  // The period. EITHER a weekStart (any date inside the wanted Mon-Sun week,
+  // snapped to its Monday — the original and still the common case) OR an
+  // explicit from/to range. A range wins when both are given.
   weekStart,
+  from = null,
+  to = null,
   dailyRows = [],
   // The standing allowance. Phase C keys these on employees.id
   // (`preapproved_ot`); before that migration they arrive keyed on `name`
@@ -405,10 +414,30 @@ function buildReport({
   graceHoursPerEmployee = null
 } = {}) {
   const standingRows = preApprovedRows === null ? (overtimeRows || []) : (preApprovedRows || []);
-  const dates    = weekDates(weekStart);
+  // Every loop below iterates `dates`, which is why a range costs so little
+  // here: the per-day work, the department buckets and the completeness check
+  // never cared how many days there were.
+  const dates    = (from && to) ? datesBetween(from, to) : weekDates(weekStart);
+  if (!dates.length) {
+    throw new Error(`buildReport: no dates in the period (${JSON.stringify({ weekStart, from, to })})`);
+  }
   const dateSet  = new Set(dates);
   const monday   = dates[0];
-  const sunday   = dates[6];
+  const sunday   = dates[dates.length - 1];
+
+  // HOW MANY WEEKS THIS PERIOD IS WORTH, for the two allowances that are defined
+  // per week: the standing pre-approved entitlement and the timeclock grace.
+  //
+  // Exactly 1 for a single Mon-Sun week — period-lib counts scheduled Mon-Thu
+  // production days, and Fri-Sun contribute none — so every figure this report
+  // has ever produced for a week is unchanged to the penny.
+  //
+  // IT SCALES THE ALLOWANCES, NOT THE HOURS WORKED. Hours worked come from the
+  // payroll file and are already whatever they are across the range. Net OT is
+  // worked minus allowed, so leaving the allowances at one week's worth while
+  // the worked side grew would overstate Net OT by the difference — quietly,
+  // and on the headline figure managers act on.
+  const weeks = periodWeeks(monday, sunday);
 
   const configuredGrace  = toGraceHours(graceHoursPerEmployee);
   const gracePerEmployee = configuredGrace === null ? DEFAULT_GRACE_HOURS : configuredGrace;
@@ -644,7 +673,10 @@ function buildReport({
       continue;
     }
 
-    const hours     = num(raw.hours);
+    // The stored allowance is WEEKLY — the pre-approved table has no week
+    // dimension at all, which is why the same figure applies to every week — so
+    // over a multi-week period it accrues once per week.
+    const hours     = round2(num(raw.hours) * weeks);
     const number    = rosterEmp ? normalizeEmpNumber(rosterEmp.employee_number) : '';
     // Resolved through the roster first, exactly as the daily rows are, so a
     // person with no employee_number lands on the same key from both sides. A
@@ -796,7 +828,9 @@ function buildReport({
       const rateSource = rate ? 'employees.wage' : 'none';
       graceByRateSource[rateSource]++;
 
-      const hours   = gracePerEmployee;
+      // Per employee PER WEEK, so it accrues once per week of the period for
+      // the same reason the standing allowance does.
+      const hours   = round2(gracePerEmployee * weeks);
       const dollars = rate ? round2(hours * rate * PRE_APPROVED_MULTIPLIER) : 0;
 
       if (rateSource === 'none') {
@@ -1222,8 +1256,17 @@ function buildReport({
   };
 
   return {
+    // Named weekStart/weekEnd since before the report accepted a range, and kept
+    // because every caller and every test reads them. They are the PERIOD's
+    // first and last date — identical to the Monday and Sunday for a one-week
+    // report, which is what they have always been.
     weekStart: monday,
     weekEnd: sunday,
+    // What the period is worth in weeks, and how many days it spans. Reported so
+    // a reader can check the allowance scaling rather than take it on trust: the
+    // pre-approved and grace figures below are these weeks' worth.
+    weeks: round2(weeks),
+    dayCount: dates.length,
     summary,
     split,
     departments,

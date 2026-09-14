@@ -420,3 +420,26 @@ test('the week label matches the one the OT Report tab prints', () => {
   assert.strictEqual(otWeekRangeLabel('2025-12-29', '2026-01-04'), 'Mon Dec 29 – Sun Jan 4, 2026');
   assert.strictEqual(otWeekRangeLabel('', ''), '—');
 });
+
+// ---------------------------------------------------------------------------
+// THE MONDAY EMAIL IS ALWAYS THE PREVIOUS MON-SUN (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// Both reports gained a date range on the tabs. The scheduled email did NOT and
+// must not: it resolves the previous whole week itself, and a range reaching it
+// would mean managers receiving a period nobody chose. This asserts the call
+// shape rather than the output, because that is where the mistake would be.
+
+test('the weekly email asks for a week, never a range', async () => {
+  const { deps } = harness();
+  const seen = [];
+  const inner = deps.buildWeekReport;
+  deps.buildWeekReport = async (args) => { seen.push(args); return inner(args); };
+
+  await runWeeklyOtEmail({ now: FIRES_AT, deps });
+
+  assert.strictEqual(seen.length, 1);
+  assert.ok(seen[0].weekStart, 'it has to name the week it resolved');
+  assert.strictEqual(seen[0].from, undefined, 'a range must never reach the scheduled email');
+  assert.strictEqual(seen[0].to, undefined);
+});
