@@ -410,11 +410,29 @@ an unfilled seat is a real and useful row. `max_wage` is the rate ceiling for **
 `section` groups seats for reporting. Merging the two columns would lose the unfilled seats and the
 per-seat ceiling. Renamed by `SCHEMA_ECONOMICS_SEAT.sql`.
 
-The staffing plan behind **Manufacturing Costs → Staffing**: 55 numbered seats, each with the employee
-assigned to it and a position rate to compare against. On the page the two figures are labelled
-**Current Rate** (what the occupant is actually paid, set on their profile card) and **Position
-Rate** (what the seat is budgeted at, `max_wage`), with **Variance** the first minus the second. `seat` here is NOT a job title —
-`employees.position` is, loaded from the classification worksheet.
+The staffing plan behind **Manufacturing Costs → Staffing Economics**: 55 numbered seats, each with
+the employee assigned to it and a position rate to compare against. On the page the two figures are
+labelled **Current Rate** (what the occupant is actually paid, set on their profile card) and
+**Position Rate** (what the seat is budgeted at, `max_wage`), with **Variance** the first minus the
+second. `seat` here is NOT a job title — `employees.position` is, loaded from the classification
+worksheet.
+
+**A salaried occupant's Current Rate is imputed**, marked `imputed` on the row, and is
+`annual_salary ÷ 2080` — the same figure Manufacturing Costs prices them at and the same divisor
+shown beside the salary on their profile card. It counts in the wage pool and in the variance like
+any other rate.
+
+They used to contribute nothing at all here, on the argument that a salaried person has no hourly
+rate to contribute. That was right while nothing else priced them; it stopped being right when the
+costing report began pricing them at exactly this figure. A plan showing a dash for the one seat the
+cost report prices was not protecting anything — it was hiding a rate from the page whose whole job
+is comparing rates against ceilings. Today that is Eduardo Rivera in seat 1, imputing to $50.48
+against a $50.00 ceiling.
+
+A salaried person with **no** salary on file still contributes nothing, and so does one whose salary
+is zero or unparseable — a gap to fill, never a seat priced at nothing. That mirrors
+`effectiveHourlyRate()` on the server, which runs `annual_salary` through `normalizeRate()` and is
+null for anything at or below zero.
 
 **Phase C deleted the tab; Phase D brought it back, gated.** It was deleted because it
 rendered every seat's holder next to their hourly rate and a ceiling, and with no permissions system

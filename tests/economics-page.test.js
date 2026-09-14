@@ -239,14 +239,19 @@ test('a vacant seat is a real row, not a gap', async () => {
   assert.match(html, /1 vacant/);
 });
 
-test('a salaried occupant contributes no rate, even with a stale one in the column', async () => {
+test('a salaried occupant with NO salary on file contributes no rate', async () => {
   const ctx = await loaded();
-  // Sal Aried sits in Utility 2 and still carries 29.75 in employees.wage. That
-  // is not their rate: pay_type is the fact, and a salaried person has no hourly
-  // rate to contribute. Reading the leftover would put 29.75 into the wage pool
-  // and print a +5.75 variance against Utility 2's 24.00 ceiling — both
-  // inventions, and both of the kind nobody would question on a printed page.
-  assert.strictEqual(ctx.econWageFor('Sal Aried'), null);
+  // Sal Aried sits in Utility 2 with no annual_salary and still carries 29.75 in
+  // employees.wage. That leftover is not their rate: pay_type is the fact.
+  // Reading it would put 29.75 into the wage pool and print a +5.75 variance
+  // against Utility 2's 24.00 ceiling — both inventions, and both of the kind
+  // nobody would question on a printed page.
+  //
+  // BY ID. This asserted econWageFor('Sal Aried') — a NAME, which the lookup has
+  // never accepted, so it returned null for any string at all and the test
+  // passed without touching the guard it names.
+  assert.strictEqual(ctx.econWageFor('s1'), null);
+  assert.strictEqual(ctx.econRateFor('s1').source, null);
   const html = ctx.renderEconomics();
   // Priced seats: Ana and Bo only. Three of five are unpriced.
   assert.match(html, /2 of 5 seats priced/);
@@ -804,4 +809,62 @@ test('a seat with nothing recorded says that, rather than rendering blank', asyn
   const ctx = await loaded({ historyRows: [] });
   await ctx.econToggleHistory('e1');
   assert.match(ctx.renderEconomics(), /Nothing recorded for this seat/);
+});
+
+
+// ---------------------------------------------------------------------------
+// THE IMPUTED RATE (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// A salaried occupant used to contribute nothing here at all. That was right
+// when nothing else priced them either; it stopped being right when
+// Manufacturing Costs began pricing them at annual_salary / 2080. A plan that
+// showed a dash for the one seat the cost report prices was hiding a rate from
+// the page whose whole job is comparing rates against ceilings.
+
+// Sal Aried, now with a salary: 104,000 / 2080 = exactly 50.00/hr, chosen so the
+// arithmetic is checkable by eye against Utility 2's 24.00 ceiling.
+const withSalary = (ctx, annual = 104000) => {
+  ctx.state.employees = ctx.state.employees.map(
+    e => (e.id === 's1' ? { ...e, annualSalary: annual } : e));
+  return ctx;
+};
+
+test('a salaried occupant WITH a salary imputes annual / 2080', async () => {
+  const ctx = withSalary(await loaded());
+  const priced = ctx.econRateFor('s1');
+  assert.strictEqual(priced.rate, 50);
+  assert.strictEqual(priced.source, 'salary', 'the page has to know it was derived');
+  // And the stale 29.75 in employees.wage is STILL not what was used.
+  assert.notStrictEqual(priced.rate, 29.75);
+});
+
+test('the imputed rate is marked on the page, not passed off as an hourly one', async () => {
+  const ctx = withSalary(await loaded());
+  const html = ctx.renderEconomics();
+  assert.match(html, /econ-imputed/, 'an imputed rate has to say so');
+  assert.match(html, /2,080/, 'and name the divisor');
+  assert.ok(!html.includes('29.75'), 'the stale column rate is still nowhere');
+});
+
+test('the imputed rate counts in the pool and against the seat ceiling', async () => {
+  // The point of populating it. Utility 2 is budgeted at 24.00 and its occupant
+  // imputes to 50.00, which is 26.00 over — a finding that was invisible while
+  // the seat showed a dash.
+  const ctx = withSalary(await loaded());
+  const html = ctx.renderEconomics();
+
+  assert.match(html, /3 of 5 seats priced/, 'the salaried seat is priced now, not skipped');
+  // 36.00 + 33.25 + 50.00
+  assert.match(html, /\$119\.25/);
+  assert.match(html, /\+\$26\.00/, 'over the ceiling, and shown as over');
+});
+
+test('a salary of zero or nonsense is no rate, not a rate of zero', async () => {
+  // Same posture as every other pay figure in this app: a missing or unusable
+  // number is a gap to report, never a person who is free.
+  for (const bad of [0, '', null, 'abc']) {
+    const ctx = withSalary(await loaded(), bad);
+    assert.strictEqual(ctx.econRateFor('s1').rate, null, `annualSalary ${JSON.stringify(bad)}`);
+  }
 });
