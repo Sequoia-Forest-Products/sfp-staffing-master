@@ -74,6 +74,15 @@ let state = {
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
+  // Whether the settings row is reachable, and whether what is on screen is
+  // only in this browser. Both start false and are set by loadEmailSettings /
+  // saveEmailSettings — see the note above saveEmailSettings in data.js.
+  //
+  // These exist because public.settings did not, for months, while the Settings
+  // tab rendered its defaults and reported saves as successful. A page that
+  // cannot save must say so where somebody will read it, which is the page —
+  // not a toast that vanishes, and not only the console.
+  settingsUnavailable:false, settingsUnavailableReason:'', settingsLocalOnly:false,
   otEmailSending:false,
   dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null, dailyDupAck:false, dailyLastImport:null,
   dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,

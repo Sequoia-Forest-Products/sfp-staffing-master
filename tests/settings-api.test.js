@@ -281,3 +281,52 @@ test('an unsupported method is refused, with a session and without', async () =>
     assert.strictEqual(authed.statusCode, 405, `${method} with a session`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// A READ THAT FAILED IS NOT AN EMPTY TABLE (2026-09-15)
+// ---------------------------------------------------------------------------
+//
+// public.settings was never created. This handler caught the missing-table
+// error and answered {data: null} with a 200 — a comment reading "Table might
+// not exist yet - return empty" — so the Settings tab rendered its defaults and
+// looked healthy while nothing could be saved and the Monday manager OT email
+// refused to send for want of a recipient list. For months. The distinction
+// below is the whole fix: the page can now tell "no row yet" from "the read
+// failed", and say which.
+
+test('an unreadable settings table answers with unavailable, not silence', async () => {
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('user_permissions')) return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+    return {
+      ok: false, status: 404,
+      json: async () => ({}),
+      text: async () => JSON.stringify({ code: 'PGRST205',
+        message: "Could not find the table 'public.settings' in the schema cache" })
+    };
+  };
+
+  const res = await call('GET', { query: { key: 'emailSettings' }, headers: { cookie: cookie() } });
+  const body = JSON.parse(res.body);
+
+  // Still a 200 with data: null — a settings read that fails must not take the
+  // page down, and a caller that only reads .data behaves exactly as before.
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(body.data, null);
+  // What is new, and what the page needs.
+  assert.strictEqual(body.unavailable, true);
+  assert.match(body.reason, /public\.settings/,
+    'the reason has to name the table, because that is what identifies the fix');
+});
+
+test('a table that simply has no row is NOT reported as unavailable', async () => {
+  // The healthy first-run state. Raising the alarm here would teach everybody
+  // to ignore the banner.
+  stubFetch([]);
+  const res = await call('GET', { query: { key: 'nothing-here' }, headers: { cookie: cookie() } });
+  const body = JSON.parse(res.body);
+
+  assert.strictEqual(res.statusCode, 404);
+  assert.strictEqual(body.data, null);
+  assert.strictEqual(body.unavailable, undefined, 'an absent row is not a broken read');
+});

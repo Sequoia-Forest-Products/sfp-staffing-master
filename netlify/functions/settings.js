@@ -76,8 +76,29 @@ exports.handler = async (event) => {
         }
         return { statusCode: 404, headers, body: JSON.stringify({ data: null }) };
       } catch (err) {
-        // Table might not exist yet - return empty
-        return { statusCode: 200, headers, body: JSON.stringify({ data: null }) };
+        // THE READ FAILED, AND SAYING SO IS THE WHOLE POINT OF THIS BRANCH.
+        //
+        // It used to answer {data: null} with a 200 and a comment reading
+        // "Table might not exist yet - return empty". That was written as a
+        // deploy-before-migration convenience and it worked exactly as
+        // intended — which is the problem. public.settings was never created at
+        // all, and for months this branch answered every read with a cheerful
+        // 200: the Settings tab rendered its defaults, looked entirely healthy,
+        // and nothing anywhere said the table was missing. The only surface
+        // that ever complained was the Monday OT email refusing to send, and it
+        // took somebody reading that alert to find it.
+        //
+        // Still a 200 with data: null, because a settings read that fails must
+        // not take the page down — the roster and every report are fine without
+        // it. What changes is that the answer now distinguishes "no row yet"
+        // (data: null, and nothing else) from "the read itself failed"
+        // (unavailable: true), so the page can say which. A caller that only
+        // reads .data behaves exactly as before.
+        console.error('Settings read failed:', err.message);
+        return {
+          statusCode: 200, headers,
+          body: JSON.stringify({ data: null, unavailable: true, reason: err.message })
+        };
       }
     }
 
