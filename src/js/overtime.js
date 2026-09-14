@@ -1,15 +1,18 @@
 // overtime — the Overtime tab, which is a container and nothing more.
 //
-// It consolidates four tabs that were top-level until Phase C and Phase E:
-// Daily Hours, Pre-Approved Overtime, the OT Report, and Points. Each renders
-// through its own function — renderDailyHours(), renderPreApproved(),
-// renderOTReport(), renderPoints() — and this file adds no reporting logic of
-// its own. That is deliberate: the OT report carries the scheduled/weekend
+// It consolidates four tabs that were top-level until Phase C and Phase E —
+// Daily Hours, Pre-Approved Overtime, the OT Report and Points — plus SG&A
+// Overtime, which was never a tab: it arrived on 2026-09-14 as the one thing
+// still tracked about a cost class this app otherwise stopped analysing.
+//
+// Each renders through its own function — renderDailyHours(),
+// renderPreApproved(), renderOTReport(), renderSgaOT(), renderPoints() — and
+// this file adds no reporting logic of its own. That is deliberate: the OT report carries the scheduled/weekend
 // split, department Net OT, completeness tracking and the truncation banner,
 // and the way to not regress any of that is to not touch it.
 //
-// IT WAS CALLED 'Reports', and the rename is not cosmetic. Three of the four
-// views are overtime and the fourth is the hours those three are computed from,
+// IT WAS CALLED 'Reports', and the rename is not cosmetic. Four of the five
+// views are overtime and the fifth is the hours those four are computed from,
 // so "Reports" named the shape of the container rather than its subject and
 // left no room for a report about anything else. The state key, the file and
 // every function moved with the label — a tab whose internal name disagrees
@@ -17,7 +20,7 @@
 // find.
 //
 // DAILY HOURS LEADS, and that is the order of work rather than of importance:
-// the hours are imported here, then reported on by the three views after it.
+// the hours are imported here, then reported on by the views after it.
 // It was a top-level tab next to Reports for exactly that reason, which is the
 // argument for it being the first thing inside instead.
 //
@@ -48,6 +51,20 @@ const OVERTIME_VIEWS = [
     render: () => renderOTReport(),
     load: () => { if (!state.otReport && !state.otReportLoading) loadOTReport(state.otReportWeek); }
   },
+  {
+    key: 'sgaot',
+    label: 'SG&A Overtime',
+    // Reads the SAME report as the view above it and issues no request of its
+    // own, so its `load` is the OT Report's — opening either view loads the
+    // week for both, and they can never show different weeks.
+    //
+    // It is here rather than in the OT Report because that report is about the
+    // mill floor: departments, the scheduled/weekend split, Net OT against a
+    // pre-approved allowance. Office overtime answers a different question for
+    // a different reader. See the header of sga-ot.js.
+    render: () => renderSgaOT(),
+    load: () => { if (!state.otReport && !state.otReportLoading) loadOTReport(state.otReportWeek); }
+  },
   { key: 'points', label: 'Points', render: () => renderPoints() }
 ];
 
@@ -65,7 +82,7 @@ function switchOvertimeView(key) {
 // Deep link from elsewhere in the app: goToOvertime('otreport') opens the
 // Overtime tab on that view. goToTab('otreport') and goToTab('dailyhours') no
 // longer resolve to anything, so anything that used to jump straight to one of
-// these four has to come through here.
+// these views has to come through here.
 function goToOvertime(key) {
   state.overtimeView = overtimeView(key).key;
   goToTab('overtime');

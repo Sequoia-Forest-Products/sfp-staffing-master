@@ -93,11 +93,28 @@ const grant = (email, tier) => ({ email, tier });
 // leaking annual_salary. A wage edit against it is refused on those grounds
 // before anything about permissions is reached, so the wage tests need somebody
 // hourly to be about what they claim to be.
+//
+// cost_class is Manufacturing here and SG&A on EMPLOYEE_ROW above, which is a
+// second thing this fixture has to be right about since 2026-09-14: pay is only
+// held for Manufacturing, and a rate edit against any other class is refused
+// before pay type or employee number is even looked at. See tests/wage-edit.js
+// for that rule on its own.
 const HOURLY_ROW = {
   ...EMPLOYEE_ROW,
   id: 'h1', name: 'Bo Tran', employee_number: '0101',
   pay_type: 'Hourly', wage: '24.50', annual_salary: null,
-  department: 'Production', position: 'Sawyer'
+  cost_class: 'Manufacturing', department: 'Production', position: 'Sawyer'
+};
+
+// A salaried person the app still costs. EMPLOYEE_ROW above is SG&A, which
+// since 2026-09-14 carries no pay at all — so it is the right fixture for a
+// READ test about leaking a salary, and the wrong one for any WRITE test about
+// what a tier permits: the cost class refuses those before a tier is consulted.
+const SALARIED_ROW = {
+  ...EMPLOYEE_ROW,
+  id: 'm1', name: 'Eduardo Rivera', employee_number: '7522',
+  pay_type: 'Salaried', wage: null, annual_salary: 105000,
+  cost_class: 'Manufacturing', department: 'Production', position: 'Production Lead'
 };
 
 // ---------------------------------------------------------------------------
@@ -296,7 +313,10 @@ test('a wage that cannot be recorded is refused, and nothing is written', async 
   // Each of these is a different mistake with a different remedy, so each gets
   // its own sentence rather than one generic rejection.
   const cases = [
-    { employee: EMPLOYEE_ROW,                          wage: '30.00', match: /salaried/i },
+    { employee: SALARIED_ROW,                          wage: '30.00', match: /salaried/i },
+    // The cost-class refusal, which is checked before all of them: there is no
+    // rate to record rather than a rate that cannot be recorded.
+    { employee: EMPLOYEE_ROW,                          wage: '30.00', match: /SG&A/ },
     { employee: { ...HOURLY_ROW, employee_number: '' }, wage: '30.00', match: /employee number/i },
     { employee: HOURLY_ROW,                            wage: '',      match: /cannot be cleared/i },
     { employee: HOURLY_ROW,                            wage: '0',     match: /not an hourly rate/i },
@@ -336,12 +356,71 @@ test('a refusal is a REFUSAL, not a silent drop of the offending column', async 
 });
 
 test('a user WITH the tier can write annual_salary, and only that column goes', async () => {
-  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)] });
-  const res = await patch('ryley@sequoiafp.com', { annual_salary: 260000, name: 'Ryley Stanley' });
-  assert.strictEqual(res.statusCode, 200);
+  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)], employee: SALARIED_ROW });
+  const res = await patch('ryley@sequoiafp.com', { annual_salary: 260000, name: 'Eduardo Rivera' }, 'm1');
+  assert.strictEqual(res.statusCode, 200, res.body);
 
   const write = calls.find(c => c.method === 'PATCH');
-  assert.deepStrictEqual(write.body, { annual_salary: 260000, name: 'Ryley Stanley' });
+  assert.deepStrictEqual(write.body, { annual_salary: 260000, name: 'Eduardo Rivera' });
+});
+
+// ---------------------------------------------------------------------------
+// THE COST-CLASS SCOPE — a different question from the tier, asked after it
+// ---------------------------------------------------------------------------
+//
+// The tier decides WHO may write a salary. pay-scope-lib decides whether the
+// column applies to this PERSON at all. Holding the grant does not create a
+// salary for somebody the app does not cost.
+
+test('the salaries tier cannot set a salary on somebody outside Manufacturing', async () => {
+  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)] });   // EMPLOYEE_ROW is SG&A
+  const res = await patch('ryley@sequoiafp.com', { annual_salary: 260000 });
+
+  assert.strictEqual(res.statusCode, 409);
+  assert.match(JSON.parse(res.body).error, /SG&A/);
+  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0,
+    'nothing may reach the database');
+});
+
+test('reclassifying somebody out of Manufacturing clears their pay, at the base tier', async () => {
+  // The app's rule, not the caller's, so it is applied AFTER the tier gate: a
+  // supervisor with no salaries grant must be able to move somebody to SG&A,
+  // and requiring them to send annual_salary: null to do it would 403 them for
+  // obeying the rule.
+  const calls = stub({ grants: [], employee: SALARIED_ROW });
+  const res = await patch('nobody@sequoiafp.com', { cost_class: 'SG&A' }, 'm1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { cost_class: 'SG&A', annual_salary: null });
+});
+
+test('a rate may be set on somebody being moved INTO Manufacturing by the same write', async () => {
+  // Scoped against the class the write LANDS in. Judging it by the stored class
+  // would refuse this and accept the reverse, which is the wrong way round in
+  // both directions.
+  const calls = stub({ grants: [], employee: { ...EMPLOYEE_ROW, id: 'x1', pay_type: 'Hourly',
+                                               wage: null, annual_salary: null } });
+  const res = await patch('nobody@sequoiafp.com',
+    { cost_class: 'Manufacturing', wage: '26.00' }, 'x1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { cost_class: 'Manufacturing', wage: '26.00' });
+});
+
+test('a write response never carries a column the caller may not read', async () => {
+  // db.js sends Prefer: return=representation, so PostgREST answers a PATCH
+  // with the whole row. The GET path is projected from the caller's tiers; this
+  // one was not, so a base-tier account could read any salary by PATCHing a
+  // phone number to its current value. Found 2026-09-14.
+  stub({ grants: [], employee: SALARIED_ROW });
+  const res = await patch('nobody@sequoiafp.com', { phone: '555-0100' }, 'm1');
+
+  assert.strictEqual(res.statusCode, 200);
+  const returned = JSON.parse(res.body).data;
+  const rows = Array.isArray(returned) ? returned : [returned];
+  for (const row of rows) assert.ok(!('annual_salary' in row), 'the salary came back on a write');
 });
 
 test('an ordinary profile save is unaffected', async () => {

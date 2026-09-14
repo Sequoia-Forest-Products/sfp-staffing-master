@@ -33,8 +33,9 @@ function parseSettingsValue(v){
 let state = {
   tab:'employees', employees:[],
   // One entry per cost class, created on demand by costView(). Keyed by the
-  // class itself so the Manufacturing Costs and Overhead tabs cannot render each
-  // other's numbers.
+  // class itself so a view cannot ask for one class and render another's
+  // numbers. Manufacturing is the only class costed since 2026-09-14; the map
+  // is kept because the key is what makes that impossible to get wrong.
   cost:{},
   points:[],
   // Pre-approved OT comes from /api/preapproved-ot now, keyed on employees.id.
@@ -62,9 +63,6 @@ let state = {
   // needs the salaries tier and defaulting to it would open the tab on a
   // refusal for most of the roster.
   costsView:'deptgroup',
-  // Which sub-view Overhead is showing. The whole tab needs the salaries tier,
-  // so unlike costsView there is no ungated default to fall back to.
-  overheadView:'costs',
   sortCol:'name', sortDir:'asc',
   burden:0.44, mhr:15.0,
   emailSettings:{...EMAIL_SETTINGS_DEFAULTS},
@@ -81,17 +79,10 @@ let state = {
   // answers, so an unloaded state can never look like access. defaultPerms() is in
   // permissions.js, which is loaded after this file — hence the literal here.
   perms:{tiers:['hourly_wages'],isAdmin:false,grants:null,email:'',loaded:false,loading:false,error:'',busy:false},
-  // Overhead → Salaries. ONE person at a time.
-  //
-  // This used to be two maps of drafts keyed by employee id — every row on the
-  // page an open input, one Save committing all of them. That shape made a
-  // mis-click on somebody else's row indistinguishable from an intended edit,
-  // and it meant a single Save could move several people's pay at once.
-  //
-  // Now the list is read-only and a click opens one person's screen. `id` is
-  // whose screen is open, or null for the list. There is exactly one draft
-  // because there is exactly one field being edited.
-  pay:{id:null, draft:'', saving:false, error:''},
+  // state.pay WAS HERE — the Overhead → Salaries screen's one-person draft. The
+  // screen is gone: annual salary is typed on the employee's own profile card
+  // now, in the same edit mode as the hourly rate, so the draft lives in
+  // state.editing with every other field and one Save commits one person.
   // Manufacturing Costs → Staff. Loaded on first open like the cost reports, not on every
   // page load: /api/data refuses the table to most of the roster, so fetching it
   // eagerly would 403 for almost everybody on every boot.
@@ -107,7 +98,7 @@ let state = {
   // Position-rate drafts, keyed by seat id. Held so a re-render mid-edit cannot
   // swallow what was typed into a ceiling, and cleared once the server answers.
   // Keyed by seat rather than a single draft because every row is editable at
-  // once here — unlike Overhead → Salaries, where one screen edits one person.
+  // once here — unlike the profile card, where one screen edits one person.
   econMaxDrafts:{},
   // Seat history, read on demand: 55 seats' change logs on every page load
   // would be most of a table nobody asked to see. `econHistoryOpen` is the seat
@@ -176,15 +167,20 @@ const PAY_TYPES=['Hourly','Salaried'];
 function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 
 // ------------------------------------------------------------------------
-// PAY, TYPED IN: the rules both editing surfaces share
+// PAY, TYPED IN: the rules the editing surface shares
 // ------------------------------------------------------------------------
 //
-// They live HERE, in core, because compensation is now typed in two places and
-// each owns one column: an hourly rate on the employee's profile card
-// (employees.js, base tier) and an annual salary under Overhead → Salaries
-// (salaries.js, the salaries tier). They were one page and these helpers were
-// private to it; splitting the page is not a reason to have two answers to
-// "what counts as a rate".
+// They live HERE, in core, because compensation is typed in one place and two
+// columns — an hourly rate at the base tier and an annual salary behind the
+// salaries tier, both on the employee's profile card (employees.js). They were
+// a separate page twice over (Salaries & Wages, then Overhead → Salaries) and
+// these helpers were private to it each time; moving the fields is not a reason
+// to have two answers to "what counts as a rate".
+//
+// A THIRD RULE NOW GOVERNS BOTH COLUMNS, and it is not about tiers: only the
+// Manufacturing cost class carries pay at all. It is enforced server-side in
+// netlify/functions/pay-scope-lib.js and mirrored by employeeCarriesPay() below,
+// which is what decides whether either field is drawn.
 //
 // A MIRROR OF THE SERVER, NOT A SECOND SET OF RULES.
 // netlify/functions/wage-edit-lib.js decides what an edit means and refuses
@@ -197,6 +193,27 @@ function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 // flagged — this only warns before the click, so a mistyped 2450 for 24.50 is
 // visible while it can still be fixed.
 const WAGE_FLAG_PCT = 20;
+
+// ------------------------------------------------------------------------
+// WHICH PEOPLE CARRY PAY AT ALL
+// ------------------------------------------------------------------------
+//
+// The client mirror of netlify/functions/pay-scope-lib.js, and the same three
+// lines rather than a different reading of them. Compensation is held for the
+// Manufacturing cost class and for nobody else, decided 2026-09-14 when SG&A
+// and Mill Overhead stopped being analysed in this app.
+//
+// A blank cost class does NOT carry pay — a new arrival auto-created by the
+// BBSI import is unclassified, and classify-then-pay is the order the setup
+// task queues the work in.
+//
+// This decides what is DRAWN. The server decides what is written, and refuses
+// the same thing for the same reason; if the two ever disagree, the refusal
+// arrives as a sentence from wage-edit-lib or data.js and the server wins.
+const COSTED_COST_CLASS='Manufacturing';
+function employeeCarriesPay(e){
+  return String((e&&(e.costClass!=null?e.costClass:e.cost_class))||'').trim()===COSTED_COST_CLASS;
+}
 
 // Active only. A blank status reads as active, matching isActive() in
 // ot-report-lib.js and wage-sync.js: the roster is the thing being listed, and
@@ -708,26 +725,22 @@ function switchTab(tab,el){
     const view=costsSubView(state.costsView);
     if(view.load) view.load();
   }
-  if(tab==='overhead'){
-    const view=overheadSubView(state.overheadView);
-    if(view.load) view.load();
-  }
 }
 
 function render(){
   const el=document.getElementById('tabContent');
   if(state.loading){el.innerHTML='<div class="loading-state">Loading…</div>';return;}
   if(state.tab==='employees')el.innerHTML=renderEmployees();
-  // FIVE TABS, and three of them are containers. 'preapproved', 'otreport',
-  // 'points' and 'dailyhours' are sub-views of Overtime; 'economics' is the
-  // Staff view of Manufacturing Costs; 'salaries' is the Salaries view of
-  // Overhead. Their render functions are unchanged and are called from the
-  // container's renderer, which draws the sub-nav above them.
+  // FOUR TABS, and two of them are containers. 'preapproved', 'otreport',
+  // 'points', 'dailyhours' and 'sgaot' are sub-views of Overtime; 'economics'
+  // is the Staff view of Manufacturing Costs. Their render functions are
+  // unchanged and are called from the container's renderer, which draws the
+  // sub-nav above them.
+  //
+  // 'overhead' was the fifth and is gone — see the note in public/app.html. A
+  // stale state.tab of 'overhead' renders nothing at all, which is why
+  // applyTabVisibility() bounces it to Employees.
   else if(state.tab==='costs')el.innerHTML=renderCostsTab();
-  // renderOverheadTab() refuses to draw without the tier as well — the hidden
-  // tab button is a courtesy, not the gate, and a deep link or a hand-typed
-  // switchTab() in the console has to land somewhere honest.
-  else if(state.tab==='overhead')el.innerHTML=renderOverheadTab();
   else if(state.tab==='overtime')el.innerHTML=renderOvertime();
   else if(state.tab==='settings')el.innerHTML=renderSettings();
 }

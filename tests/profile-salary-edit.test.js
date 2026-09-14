@@ -1,10 +1,16 @@
-// The Salaries view under Overhead, and the Access section that grants entry
-// to it.
+// The annual-salary field on the employee profile card, and the Access section
+// that grants entry to it.
 //
-// IT WAS THE 'Salaries & Wages' TAB and it held both pay columns. The hourly
-// half moved to the employee profile card — see profile-wage-edit.test.js,
-// which carries every rule that came with it — and the salaried half is this,
-// one view of a tab that the salaries tier gates whole.
+// IT WAS A PAGE, TWICE. 'Salaries & Wages' held both pay columns; it was split,
+// the hourly half landing on the profile card and the salaried half becoming
+// Overhead → Salaries; that tab was removed on 2026-09-14 and the salary came
+// back to the card beside the rate. So this file covers a FIELD now, not a
+// screen, and the list-page assertions that came with the screen are gone with
+// it — what survived is every rule about who may see the figure, what a save
+// sends, and the fact that a refusal is reported rather than swallowed.
+//
+// The hourly rate's own rules live in profile-wage-edit.test.js, and the
+// cost-class scope that governs both columns is asserted in both files.
 //
 // The UI gate is COSMETIC and these tests are written knowing that: the server
 // builds its projection from the caller's tiers, so annual_salary is absent
@@ -29,25 +35,32 @@ const { __SCRIPT_MODULES } = require('../netlify/functions/session.js');
 // Every fixture carries an explicit status, because the page filters on it and
 // a fixture that left it out would exercise the blank-reads-as-active fallback
 // in every test rather than the ordinary path.
+// cost_class is part of every fixture: since 2026-09-14 pay is only held for
+// Manufacturing, so a fixture without one would get no pay field at all and
+// every assertion below would be testing that message instead of its own.
 const SALARIED = [
   { id: 's1', name: 'Eduardo Rivera', payType: 'Salaried', wage: '', annualSalary: 105000,
-    position: 'Plant Superintendent', department: 'Production', empNum: '0101', status: 'Active' },
-  { id: 's2', name: 'Jeff Cook', payType: 'Salaried', wage: '', annualSalary: 250000,
-    position: 'CEO', department: 'Corporate', empNum: '', status: 'Active' },
+    position: 'Production Lead', department: 'Production', empNum: '0101', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 's3', name: 'No Salary Yet', payType: 'Salaried', wage: '', annualSalary: null,
-    position: 'Controller', department: 'Accounting', empNum: '', status: 'Active' },
+    position: 'Shift Supervisor', department: 'Production', empNum: '0104', status: 'Active',
+    costClass: 'Manufacturing' },
   // Inactive, and carrying a real salary — so a test that finds this figure on
-  // the page is finding a leak, not an empty row.
+  // a page is finding a leak, not an empty row.
   { id: 's4', name: 'Gone Salaried', payType: 'Salaried', wage: '', annualSalary: 90000,
-    position: 'Former', department: 'Corporate', empNum: '', status: 'Inactive' }
+    position: 'Former', department: 'Production', empNum: '', status: 'Inactive',
+    costClass: 'Manufacturing' }
 ];
 const HOURLY = [
   { id: 'h1', name: 'Ana Reyes', payType: 'Hourly', wage: 22, annualSalary: null,
-    position: 'Puller', department: 'Production', empNum: '0201', status: 'Active' },
+    position: 'Puller', department: 'Production', empNum: '0201', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 'h2', name: 'No Rate', payType: 'Hourly', wage: '', annualSalary: null,
-    position: 'Utility', department: 'Production', empNum: '0202', status: 'Active' },
+    position: 'Utility', department: 'Production', empNum: '0202', status: 'Active',
+    costClass: 'Manufacturing' },
   { id: 'h3', name: 'Gone Hourly', payType: 'Hourly', wage: '18.00', annualSalary: null,
-    position: 'Former', department: 'Production', empNum: '0203', status: 'Inactive' }
+    position: 'Former', department: 'Production', empNum: '0203', status: 'Inactive',
+    costClass: 'Manufacturing' }
 ];
 
 function fakeEl(id) {
@@ -132,277 +145,200 @@ const writes = (ctx) => ctx.__calls.filter(c => c.method !== 'GET');
 const person = (ctx, id) => ctx.state.employees.find(e => String(e.id) === id);
 
 // ---------------------------------------------------------------------------
-// who is on the page
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// who is on the page
+// the card, in edit mode, on one person
 // ---------------------------------------------------------------------------
 
-test('only ACTIVE salaried employees are listed, and the omission is stated', () => {
-  const ctx = withTier('salaries');
-  const html = ctx.renderSalariedPay();
-  assert.ok(html.includes('Eduardo Rivera'));
-  assert.ok(!html.includes('Gone Salaried'), 'an inactive person is not listed');
-  // And the figure they carry is not on the page either — a terminated
-  // person's pay is history, and a leak of it is still a leak.
-  assert.ok(!/90000|90,000/.test(html));
-  assert.match(html, /1 inactive salaried person is not listed/);
-});
+function editCard(ctx, id) {
+  const idx = ctx.state.employees.findIndex(e => String(e.id) === id);
+  ctx.state.profile = { idx };
+  ctx.startProfileEdit();
+  return ctx.renderProfile();
+}
 
-test('hourly people are not on this page at all', () => {
-  // The split. Their rates are typed on their own profile card, at the base
-  // tier, and a page that listed them would be re-creating the surface that
-  // made a supervisor open the company salary list to fix one number.
-  const ctx = withTier('salaries');
-  const html = ctx.renderSalariedPay();
-  assert.ok(!html.includes('Ana Reyes'), 'an hourly person is not listed');
-  assert.ok(!html.includes('No Rate'));
-  assert.match(html, /profile card/, 'and the page says where they are instead');
-});
+function readCard(ctx, id) {
+  const idx = ctx.state.employees.findIndex(e => String(e.id) === id);
+  ctx.state.profile = { idx };
+  ctx.state.editing = null;
+  return ctx.renderProfile();
+}
 
-test('a blank status reads as active rather than hiding a real person', () => {
-  const ctx = withTier('salaries');
-  person(ctx, 's1').status = '';
-  assert.ok(ctx.renderSalariedPay().includes('Eduardo Rivera'));
-});
-
-test('an inactive person cannot be opened by id', () => {
-  // The list is not the gate: openPay is reachable from a row rendered before a
-  // status changed, and from the console.
-  const ctx = withTier('salaries');
-  ctx.openPay('s4');
-  assert.strictEqual(ctx.state.pay.id, null);
-  assert.match(lastToast(ctx).msg, /not active/);
-  assert.strictEqual(lastToast(ctx).type, 'error');
-});
-
-test('an hourly person cannot be opened here, and is told where to go', () => {
-  const ctx = withTier('salaries');
-  ctx.openPay('h1');
-  assert.strictEqual(ctx.state.pay.id, null);
-  assert.match(lastToast(ctx).msg, /hourly/i);
-  assert.match(lastToast(ctx).msg, /profile card/);
-});
+const patches = (ctx) => ctx.__calls.filter(c => c.method === 'PATCH');
 
 // ---------------------------------------------------------------------------
-// the gate
+// who may see the figure
 // ---------------------------------------------------------------------------
-//
-// The page itself carries NO tier check any more: renderOverheadTab() refuses
-// the whole Overhead tab without the salaries tier, so a reader who reaches
-// renderSalariedPay holds it. A second check here would be a second answer to
-// the same question. What these assert is that the tab-level refusal is real
-// and that no figure escapes it.
 
-test('the whole tab is refused without the tier, and no salary is in the HTML', () => {
+test('without the tier a salary never appears in the HTML, read or edit', () => {
+  // The load-bearing one. The fixture carries a salary the server would not
+  // have sent, so a figure appearing here is a leak rather than an empty field.
   const ctx = sandbox({ tiers: ['hourly_wages'] });
-  const html = ctx.renderOverheadTab();
-  assert.match(html, /needs the salaries tier/i);
-  // The load-bearing assertion in this file: a figure the caller may not see
-  // never reaches the rendered page.
-  for (const figure of ['105000', '105,000', '250000', '250,000', '90000']) {
-    assert.ok(!html.includes(figure), `${figure} must not be in the HTML`);
+  for (const html of [readCard(ctx, 's1'), editCard(ctx, 's1')]) {
+    assert.ok(!/105000|105,000/.test(html));
+    assert.ok(!/salaryDraftSet/.test(html), 'and no input that would post one');
+    assert.match(html, /salaries tier/, 'it says what is missing rather than nothing');
   }
-  assert.ok(!html.includes('Eduardo Rivera'), 'nor the names beside them');
 });
 
 test('the admin tier alone does not open it', () => {
   // Admin grants access; it does not itself read pay. Same rule as the column
-  // registry and the suppression floor.
-  const ctx = withTier('admin');
-  assert.match(ctx.renderOverheadTab(), /needs the salaries tier/i);
+  // registry on the server.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'] });
+  assert.ok(!/105000|105,000/.test(readCard(ctx, 's1')));
 });
 
-test('without the tier a salaried person cannot be opened by id either', () => {
-  const ctx = sandbox({ tiers: ['hourly_wages'] });
-  ctx.openPay('s1');
-  assert.strictEqual(ctx.state.pay.id, null);
-  assert.match(lastToast(ctx).msg, /salaries tier/);
-});
-
-// ---------------------------------------------------------------------------
-// the list is read-only
-// ---------------------------------------------------------------------------
-
-test('the list has no inputs at all — a row opens a screen instead', () => {
-  // The shape this page was rebuilt into. A table of open inputs made a
-  // mis-click indistinguishable from an edit, and one Save moved several
-  // people's pay at once.
+test('with the tier the figure and its hourly equivalent both show', () => {
   const ctx = withTier('salaries');
-  const html = ctx.renderSalariedPay();
-  assert.ok(!/<input/.test(html), 'the list must contain no input elements');
-  assert.match(html, /onclick="openPay\('s1'\)"/);
-  assert.match(html, /Click a row to change/);
+  const html = readCard(ctx, 's1');
+  assert.match(html, /\$105,000/);
+  // 105000 / 2080 = 50.48. Shown because it is what the costing report divides
+  // by — this page and that report cannot then disagree about what a salary
+  // means.
+  assert.match(html, /50\.48/);
 });
 
-test('people with nothing on file are surfaced rather than shown as zero', () => {
+test('somebody with no salary on file is surfaced, not shown as zero', () => {
   const ctx = withTier('salaries');
-  const html = ctx.renderSalariedPay();
+  const html = readCard(ctx, 's3');
   assert.match(html, /none on file/);
-  assert.match(html, /1 person has no salary on file/);
-  // And the total says what it excludes, so it cannot be read as the whole
-  // payroll.
-  assert.match(html, /excluding 1 with none/);
+  assert.ok(!/\$0/.test(html), 'a missing salary is not a salary of nothing');
 });
 
 // ---------------------------------------------------------------------------
-// the detail screen
+// the field
 // ---------------------------------------------------------------------------
-
-test('opening a row shows that person and nobody else', () => {
-  const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  const html = ctx.renderSalariedPay();
-  assert.ok(html.includes('Eduardo Rivera'));
-  assert.ok(!html.includes('Jeff Cook'), 'the other rows are not on the detail screen');
-  assert.ok(!/250000|250,000/.test(html));
-});
 
 test('the field starts at what is stored, not blank', () => {
+  // Correcting 105,000 to 110,000 should not mean retyping the part that is
+  // already right.
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  assert.strictEqual(ctx.state.pay.draft, '105000');
-  assert.match(ctx.renderSalariedPay(), /value="105000"/);
+  assert.match(editCard(ctx, 's1'), /value="105000"/);
 });
 
-test('the hourly equivalent is shown, and is the divisor the reports use', () => {
+test('the hourly equivalent updates from the draft, and names the divisor', () => {
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  const html = ctx.renderSalariedPay();
-  assert.match(html, /Annual salary/);
-  // 105000 / 2080 = 50.48. Shown so this page and the costing reports cannot
-  // disagree about what a salary means.
-  assert.match(html, /50\.48/);
-  assert.match(html, /2,080/);
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = '124800';
+  assert.match(ctx.profileSalaryNote(person(ctx, 's1')), /60\.00/);   // 124800 / 2080
 });
 
-test('Save is disabled until something actually changes', () => {
+test('an unparseable salary is called out before the click', () => {
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  assert.ok(/onclick="savePay\(\)" disabled/.test(ctx.renderSalariedPay()));
-  ctx.paySet('110000');
-  assert.ok(!/onclick="savePay\(\)" disabled/.test(ctx.renderSalariedPay()));
-});
-
-test('retyping the same value in a different format is not a change', () => {
-  const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('$105,000');
-  assert.strictEqual(ctx.payDirty(), false);
-});
-
-test('Cancel leaves without writing, and drops the draft', async () => {
-  const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('999999');
-  ctx.closePay();
-  assert.strictEqual(ctx.state.pay.id, null);
-  assert.strictEqual(ctx.state.pay.draft, '');
-  assert.deepStrictEqual(writes(ctx), []);
-  assert.strictEqual(person(ctx, 's1').annualSalary, 105000);
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = 'one hundred thousand';
+  assert.match(ctx.profileSalaryNote(person(ctx, 's1')), /Not a number/);
 });
 
 // ---------------------------------------------------------------------------
-// saving
+// what the save sends
 // ---------------------------------------------------------------------------
 
-test('a salary save sends only annual_salary', async () => {
+test('a save that does not touch pay sends NO salary at all', async () => {
+  // The same objection the wage field had to answer: a card that saves every
+  // field at once must not rewrite somebody's pay as a side effect of a phone
+  // number.
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('112500');
-  await ctx.savePay();
+  editCard(ctx, 's1');
+  ctx.state.editing.phone = '555-0100';
+  await ctx.saveEdit();
 
-  const w = writes(ctx);
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
   assert.strictEqual(w.length, 1);
-  assert.strictEqual(w[0].method, 'PATCH');
-  assert.match(w[0].url, /table=employees&id=s1/);
-  assert.deepStrictEqual(w[0].body, { annual_salary: 112500 });
-  assert.strictEqual(person(ctx, 's1').annualSalary, 112500);
+  assert.ok(!('annual_salary' in w[0].body));
+  assert.strictEqual(w[0].body.phone, '555-0100');
+});
+
+test('retyping the same salary sends nothing either', async () => {
+  const ctx = withTier('salaries');
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = '105000';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.ok(!('annual_salary' in w[0].body));
+});
+
+test('a real change sends annual_salary as a number', async () => {
+  const ctx = withTier('salaries');
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = '112000';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w[0].body.annual_salary, 112000);
 });
 
 test('clearing a salary writes null — a real instruction, not a mistake', async () => {
-  // Unlike an hourly rate, a salary CAN be cleared: nothing records salary
-  // history, so there is no row that would have to say a figure went away.
+  // Allowed here and refused for the hourly rate, which is not an
+  // inconsistency: wage_history.rate is NOT NULL so a removed RATE cannot be
+  // recorded at all, and annual_salary has no history table to lie to. The
+  // costing report reports a missing salary by name rather than costing that
+  // person at zero.
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('');
-  await ctx.savePay();
-  assert.deepStrictEqual(writes(ctx)[0].body, { annual_salary: null });
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = '';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w[0].body.annual_salary, null);
 });
 
-test('a negative salary is refused as unparseable rather than stored', async () => {
+test('a salary that is not a number refuses the save and never says saved', async () => {
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('-5');
-  await ctx.savePay();
-  assert.deepStrictEqual(writes(ctx), []);
-  assert.match(ctx.state.pay.error, /not a number/);
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = 'abc';
+  await ctx.saveEdit();
+
+  assert.strictEqual(patches(ctx).length, 0, 'nothing reached the database');
+  assert.strictEqual(lastToast(ctx).type, 'error');
+  assert.match(lastToast(ctx).msg, /not an annual salary/);
+  // It says "nothing was saved", which is the opposite claim — what must never
+  // happen is a SUCCESS toast for a save that did not land.
+  assert.match(lastToast(ctx).msg, /nothing was saved/);
+  assert.ok(!ctx.__toasts.some(t => t.type === 'success'));
 });
 
-test("a 403 mid-save says the tier is gone, not 'status 403'", async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'],
-    responder: (u, m) => (m === 'PATCH' ? { status: 403, body: { ok: false, error: 'forbidden' } } : null) });
-  ctx.openPay('s1');
-  ctx.paySet('120000');
-  await ctx.savePay();
-  assert.match(ctx.state.pay.error, /no longer permitted to edit salaries/);
-  assert.ok(!/403/.test(ctx.state.pay.error));
+test('a reader without the tier cannot post a salary even by editing state', async () => {
+  // The client gate is cosmetic and this asserts the cosmetic part only — the
+  // server refuses the column outright. What matters here is that a draft left
+  // in state by some other path does not ride along on an ordinary save.
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  editCard(ctx, 's1');
+  ctx.state.editing.annualSalary = '999999';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.ok(!('annual_salary' in w[0].body));
 });
 
-test('a failed save NEVER says saved', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'],
-    responder: (u, m) => (m === 'PATCH' ? { status: 500, body: { ok: false, error: 'boom' } } : null) });
-  ctx.openPay('s1');
-  ctx.paySet('120000');
-  await ctx.savePay();
-
-  assert.ok(!ctx.__toasts.some(t => /saved/i.test(t.msg)), 'no success toast on a failure');
-  // The screen stays open on the typed value, and the stored copy is untouched.
-  assert.strictEqual(ctx.state.pay.id, 's1');
-  assert.strictEqual(person(ctx, 's1').annualSalary, 105000);
-});
-
-test('an unchanged save writes nothing and says so', async () => {
+test('an inactive person\'s salary is still editable, and still theirs', async () => {
+  // The list page used to exclude them, because a terminated person's pay is
+  // history and a list of open inputs invited a mis-click. A card is opened
+  // deliberately, on one person, so the exclusion has nothing left to protect —
+  // and refusing the edit would leave a wrong figure uncorrectable.
   const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  await ctx.savePay();
-  assert.deepStrictEqual(writes(ctx), []);
-  assert.match(lastToast(ctx).msg, /Nothing has changed/);
-});
-
-test('one save moves one person, and cannot reach a second', async () => {
-  // The failure the one-at-a-time shape exists to prevent: a Save bar that
-  // committed every draft on the page at once.
-  const ctx = withTier('salaries');
-  ctx.openPay('s1');
-  ctx.paySet('130000');
-  await ctx.savePay();
-
-  const w = writes(ctx);
-  assert.strictEqual(w.length, 1);
-  assert.match(w[0].url, /id=s1/);
-  assert.strictEqual(person(ctx, 's2').annualSalary, 250000, 'nobody else moved');
+  const html = editCard(ctx, 's4');
+  assert.match(html, /salaryDraftSet/);
 });
 
 // ---------------------------------------------------------------------------
 // tier plumbing
 // ---------------------------------------------------------------------------
 
-test('loadPermissions resolves the tier and reveals the gated tab', async () => {
+test('loadPermissions resolves the tier', async () => {
+  // It used to reveal a tab as well. There is no gated tab any more — the
+  // salary is a field, and the staffing plan is a sub-view — so what the tier
+  // unlocks is asserted where it is drawn, above.
   const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
   await ctx.loadPermissions();
   assert.ok(ctx.canSeeSalaries());
-  assert.strictEqual(ctx.__el('tab:overhead').hidden, false);
 });
 
-test('a permissions request that fails leaves the base tier and hides Overhead', async () => {
+test('a permissions request that fails leaves the base tier, and says so', async () => {
   const ctx = sandbox({ responder: (u) => u.startsWith('/api/permissions')
     ? { status: 500, body: { ok: false, error: 'boom' } } : null });
   await ctx.loadPermissions();
   assert.deepStrictEqual(Array.from(ctx.state.perms.tiers), ['hourly_wages']);
   assert.strictEqual(ctx.state.perms.isAdmin, false);
-  assert.strictEqual(ctx.__el('tab:overhead').hidden, true);
   assert.match(ctx.state.perms.error, /boom/);
+  // Failing closed is right; failing closed SILENTLY is not — the error has a
+  // surface on Settings.
+  assert.match(ctx.renderPermsError(), /boom/);
 });
 
 test('a tier this build does not recognise unlocks nothing', async () => {
@@ -412,8 +348,11 @@ test('a tier this build does not recognise unlocks nothing', async () => {
   assert.ok(!ctx.canSeeSalaries());
 });
 
-test('losing the tier while looking at Overhead bounces off it', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages'] });
+test('a session left on the retired Overhead tab bounces off it', async () => {
+  // A page open across the 2026-09-14 deploy. render() has no branch for that
+  // key any more, so without the bounce the content would stay as it was with
+  // nothing explaining why.
+  const ctx = withTier('salaries');
   ctx.state.tab = 'overhead';
   ctx.applyTabVisibility();
   assert.strictEqual(ctx.state.tab, 'employees');

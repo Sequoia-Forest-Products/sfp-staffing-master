@@ -22,7 +22,7 @@ HR management web app for Sequoia Forest Products. Manages employees across depa
 
 ## Features
 
-Five top-level tabs. Three of them are containers with a sub-nav; one of them is gated whole.
+Four top-level tabs. Two of them are containers with a sub-nav; none is gated whole.
 
 - **Employees tab** — roster with search, filter, sort, the Add form, and the employee profile
   card, SMS reachability column, SMS opt-out toggle, Drive folder linking. **The hourly wage is
@@ -35,19 +35,13 @@ Five top-level tabs. Three of them are containers with a sub-nav; one of them is
   - **Staff** — the budgeted staffing plan, 55 numbered seats with a per-seat rate ceiling and the
     variance against it. Needs the **salaries** tier, so the sub-nav omits it for everybody else.
     Was the *Staffing Economics* tab.
-- **Overhead tab** — **needs the salaries tier, whole**. Two sub-views:
-  - **Mill Overhead & SG&A** — the same cost report for those two classes, with the full department
-    breakdown. Suppression is lifted throughout, because these buckets are one and two people deep
-    and there is no threshold that both protects them and leaves a report. That is why the tab is
-    gated instead of dashed out; `/api/cost-report` refuses both classes without the tier.
-  - **Salaries** — the salaried roster and the only place `annual_salary` is set. Was the salaried
-    half of the *Salaries & Wages* tab.
-- **Overtime tab** — four sub-views, in the order of the work: **Daily Hours** (manual `.xlsx`
+- **Overtime tab** — five sub-views, in the order of the work: **Daily Hours** (manual `.xlsx`
   payroll upload with preview-before-commit, imported-day history, department re-stamping, and the
   email pipeline's issue queue), **Pre-Approved Overtime** (Pre-Shift, Post-Shift, Weekend), the
   weekly **OT Report** (All / Pre-Approved / Net OT, production vs. maintenance day split,
-  department breakdown, manager email), and the **Points Tracker** (attendance points,
-  disciplinary flags). Was the *Reports* tab, with Daily Hours alongside it.
+  department breakdown, manager email), **SG&A Overtime** (hours only — see *SG&A and Mill Overhead
+  are not costed* below), and the **Points Tracker** (attendance points, disciplinary flags). Was
+  the *Reports* tab, with Daily Hours alongside it.
 - **Settings tab** — email settings, taxonomy values, and the admin **Access** section that grants
   and revokes tiers.
 - **Cost allocation** — a person's cost can split across departments (Jeff Cook 50/50 Corporate /
@@ -55,21 +49,56 @@ Five top-level tabs. Three of them are containers with a sub-nav; one of them is
   hours. Percentages must sum to 100, enforced in the UI, the API and the database. Edited on the
   profile card.
 
+### SG&A and Mill Overhead are not costed
+
+Decided 2026-09-14. The Overhead tab is gone and with it the analysis of those two cost classes.
+**Compensation is held for the `Manufacturing` cost class and for nobody else.**
+
+What does NOT change, and it is most of it: nobody leaves the roster. Every SG&A and Mill Overhead
+employee keeps their row, department, cost class, phone, birthday, documents and points; the
+payroll import still records their hours; `cost_class` still offers all three values on the profile
+card. What changes is that `employees.wage` and `employees.annual_salary` are null for them and
+cannot be set — `netlify/functions/pay-scope-lib.js` refuses the write, the profile card draws a
+sentence instead of a field, and reclassifying somebody out of Manufacturing clears both columns as
+part of that write. `/api/cost-report` refuses `Mill Overhead` and `SG&A` with a 400 that names the
+decision, and no tier reopens them: there is nothing behind the class to unlock.
+
+**The one thing still tracked is SG&A overtime**, on its own view under the Overtime tab. Hours
+only, no dollars — there is no rate to multiply by, which is the point rather than a gap. It reads
+the same weekly report as the OT Report and filters the roster by **cost class**, not department:
+`ot-report-lib`'s `NON_PRODUCTION` bucket is keyed on the literal department value `SG&A`, which the
+v2 model retired, so nobody on the roster lands in it. Today the view is Axeri Ramirez alone — the
+only hourly SG&A employee — and it is written for the class so the next office hire appears without
+anybody remembering to add them.
+
+`SCHEMA_RETIRE_OVERHEAD.sql` is the data half, run 2026-09-14: it nulled both pay columns for 13
+rows (4 SG&A, 3 Mill Overhead, 6 inactive people with no cost class). No snapshot was taken.
+`wage_history` still holds the last recorded hourly rate for anyone who had one; the annual salaries
+are gone.
+
 ### Where pay is typed
 
-One column, one surface, and the two are gated differently because the columns are:
+Both columns, one surface — the employee **profile card** — and they are gated differently because
+the columns are:
 
-| Column | Set on | Who |
+| Column | Who may set it | Applies to |
 |---|---|---|
-| `employees.wage` (hourly rate) | the employee **profile card** | anyone signed in (base tier) |
-| `employees.annual_salary` | **Overhead → Salaries** | the `salaries` tier |
+| `employees.wage` (hourly rate) | anyone signed in (base tier) | `cost_class = 'Manufacturing'`, hourly |
+| `employees.annual_salary` | the `salaries` tier | `cost_class = 'Manufacturing'`, salaried |
 
-Both were on one *Salaries & Wages* tab until the split. The hourly half moved to the card because
-the people who correct a rate are supervisors, and a supervisor should not have to open the company
-pay list to fix one number on one person. Every hourly change is still recorded in `wage_history`
-by the server, still written before the rate it replaces: a profile save omits `wage` entirely
-unless the typed value differs from what is stored, and `data.js` deletes an unchanged wage from the
-body before writing either way.
+Three questions decide which field is drawn, in this order: does this person carry pay at all (cost
+class), which column applies (pay type), and may this reader see it (tier — the salary only). A
+salaried SG&A employee is not "a salary this reader cannot see", they are somebody with no salary
+here at all, and the card says so.
+
+Both columns were on one *Salaries & Wages* tab; it was split, the salary going to *Overhead →
+Salaries*, and came back here when that tab was removed. The card wins both times because the people
+who correct pay are supervisors, and a supervisor should not have to open a company pay list to fix
+one number on one person. Every hourly change is still recorded in `wage_history` by the server,
+still written before the rate it replaces: a profile save omits `wage` entirely unless the typed
+value differs from what is stored, and `data.js` deletes an unchanged wage from the body before
+writing either way. `annual_salary` has no history table, which is why clearing it is allowed and
+clearing a rate is not.
 - **Payroll email ingestion** — hourly scheduled function reads the `payroll import` Gmail
   label on `info@` over IMAP and imports the daily report automatically
 - **Weekly manager OT email** — Monday scheduled function emails the Mon–Sun week that just
@@ -104,6 +133,7 @@ sfp-staffing-master/
 ├── SCHEMA_CHANGES.sql          # Superseded — the original weekly_hours OT report schema
 ├── SCHEMA_BIRTHDAY.sql         # Birthday data audit queries
 ├── SCHEMA_SMS_OPTOUT.sql       # sms_opted_out migration
+├── SCHEMA_RETIRE_OVERHEAD.sql  # 2026-09-14 — nulls pay outside the Manufacturing cost class
 ├── PAYROLL_INGESTION.md        # Daily hours, email ingestion and OT report guide
 ├── tests/
 │   ├── helpers/make-xlsx.js    # Builds real .xlsx files for the parser tests
@@ -122,7 +152,8 @@ sfp-staffing-master/
         ├── db.js               # Supabase REST helper
         ├── cost-lib.js         # Cost aggregation by cost class (pure), with
         │                       # small-bucket suppression
-        ├── cost-report.js      # /api/cost-report — Manufacturing Costs + Overhead
+        ├── cost-report.js      # /api/cost-report — Manufacturing Costs
+        ├── pay-scope-lib.js    # which cost class may carry pay at all
         ├── preapproved-ot.js   # /api/preapproved-ot — standing OT allowance,
         │                       # one row per write, never replace-all
         ├── allocations.js      # /api/allocations — cost splits, sum-to-100
@@ -227,7 +258,7 @@ and each answers only its own question:
 | Column | Question | Values |
 |---|---|---|
 | `pay_type` | Do daily hours flow in? | `Hourly`, `Salaried` |
-| `cost_class` | Which accounting bucket, which tab? | `Manufacturing`, `Mill Overhead`, `SG&A` |
+| `cost_class` | Which accounting bucket, and whether they carry pay? | `Manufacturing`, `Mill Overhead`, `SG&A` |
 | `department` | Which line within that bucket? | twelve values, below |
 | `position_group` | Where in the mill do they work? | nine values, planning only |
 
@@ -946,12 +977,14 @@ different places entirely — the hourly half to the employee profile card, the 
 **Overhead → Salaries** — because a page that has to be ungated so one of its sections can be
 reached is a page holding two things that do not belong together. See *Where pay is typed* above.
 
-**Overhead became the gated tab.** It was ungated and totals-only, withholding its department
+**Overhead became the gated tab.** *Superseded 2026-09-14 — the tab and both cost classes are gone;
+see* SG&A and Mill Overhead are not costed *above. Kept because the reasoning is why the tab could
+not simply be un-gated instead.* It was ungated and totals-only, withholding its department
 breakdown because at 7 people across 5 departments nearly every row would have had to withhold its
 cost. That was the wrong instrument: no suppression threshold both protects a bucket that thin and
-leaves a usable report. So `/api/cost-report` now refuses `Mill Overhead` and `SG&A` outright
-without the salaries tier, the tab is hidden for everybody else, and for the readers who can open
-it the breakdown is drawn in full. Manufacturing is unchanged — open to everyone, and protected by
+leaves a usable report. So `/api/cost-report` refused `Mill Overhead` and `SG&A` outright without
+the salaries tier, the tab was hidden for everybody else, and for the readers who could open it the
+breakdown was drawn in full. Manufacturing is unchanged — open to everyone, and protected by
 suppression, which works because its buckets are deep enough for a threshold to mean something.
 
 **~~Staffing Economics comes back, gated~~ — DONE.** The page is back behind the salaries tier with
@@ -967,28 +1000,23 @@ open it. What that gate actually protects is `max_wage`, the per-seat rate ceili
 screen it appears on. The occupant's hourly rate beside it is base-tier and readable on the roster,
 and no salaried figure appears on the page at all — a salaried occupant shows a name and dashes.
 
-**~~Seeing what an allocation does~~ — DONE for the salaries tier.** Allocations are enforced and
-applied, and their effect is a department-level figure. With the salaries tier the suppression floor
-is 1, so the Overhead breakdown shows every destination Axeri's split reaches. Without it the
-small-bucket rule still withholds those costs (Corporate 1 person, HR 0), which is unchanged and
-correct — the split reconciles either way, it is simply not itemised for a reader who may not see
-the underlying figures.
+**~~Seeing what an allocation does~~ — DONE for the salaries tier, then mostly moot.** Allocations
+are enforced and applied, and their effect is a department-level figure. With the salaries tier the
+suppression floor is 1, so a one-person destination bucket carries its money rather than a dash.
+*As of 2026-09-14 the SG&A allocations this was written about — Axeri Ramirez's thirds across HR /
+Corporate / Accounting — no longer show anywhere, because SG&A is not costed. The rows remain and
+the mechanism is unchanged; it now only matters for a Manufacturing person split across production
+departments.*
 
 **Dropping the `overtime` table.** Only after `preapproved_ot` has reconciled for a few weeks, and
 never in the same change as the migration.
 
-**~~The SG&A department breakdown~~ — DONE, gated.** The Overhead tab is totals only at the base
-tier, for the reason it always was: SG&A is 7 active people across 5 departments — Corporate 1,
-Procurement 1, Accounting 2, Sales & Marketing 3 — so at a defensible suppression threshold nearly
-every row would withhold its cost, and a table of dashes is worse than no table.
-
-With the **salaries tier** the breakdown is shown, because the suppression floor drops to 1 for
-that tier. Not a favour: suppression protects a figure the reader may not see, and that reader can
-open Overhead → Salaries and read every annual_salary by name. `/api/cost-report` decides this
-server-side from the caller's own tiers and reports the posture it applied in `disclosure`; the
-page only declines to draw a table it would otherwise fill with dashes. The lift applies to every
-cost class rather than only Overhead — the argument does not stop at a class boundary, since a
-one-person Manufacturing bucket leaks the same salary/2080 to the same reader.
+**~~The SG&A department breakdown~~ — RETIRED 2026-09-14, not gated.** There is no SG&A breakdown
+any more, at any tier: the class is not costed and holds no pay. What survives from this decision is
+the **suppression floor**, which still answers to the reader's tier on Manufacturing — a one-person
+bucket there is still somebody's salary÷2080, and a reader who can read that salary by name on the
+profile card gains nothing from a dash. `/api/cost-report` decides it server-side from the caller's
+own tiers and reports the posture it applied in `disclosure`.
 
 **A salaried person is costed into every week you can pick.** `hire_date` now EXISTS
 (`SCHEMA_PHASE_D_PERMISSIONS.sql` §4) but is deliberately empty — no backfill, because a guessed

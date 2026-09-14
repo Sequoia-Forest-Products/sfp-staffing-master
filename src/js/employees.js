@@ -302,22 +302,29 @@ function smsCell(e) {
 // read-only until asked otherwise: Edit swaps the same card into inputs, Save
 // writes through the existing saveEdit(), Cancel discards.
 //
-// THE HOURLY RATE IS ON THIS CARD, in both modes, and that is a reversal.
+// BOTH PAY COLUMNS ARE ON THIS CARD NOW, in both modes, and each arrived by
+// undoing a different split.
 //
-// It was kept off deliberately while Salaries & Wages existed: that page was
-// the one surface that typed a rate, and a second box here would have let one
-// move as a side effect of editing a phone number. The page is gone. Its hourly
-// half came here — where a supervisor already goes to change a department —
-// and its salaried half went to Overhead → Salaries, behind the tier that
-// annual_salary needs in both directions. See THE HOURLY WAGE FIELD below for
-// how the side-effect objection is answered rather than inherited.
+// The HOURLY RATE was kept off deliberately while Salaries & Wages existed:
+// that page was the one surface that typed a rate, and a second box here would
+// have let one move as a side effect of editing a phone number. The page went,
+// and its hourly half came here — where a supervisor already goes to change a
+// department. See THE PAY FIELDS below for how the side-effect objection is
+// answered rather than inherited.
 //
-// ANNUAL SALARY IS STILL NOT HERE, in either mode. Every signed-in
-// sequoiafp.com account can open every profile, and annual_salary is not in
-// their payload at all unless they hold the salaries tier — the projection is
-// built from the caller's tiers, see netlify/functions/data.js. employees.wage
-// is a base-tier column in both directions, which is what makes the difference
-// a decision about data rather than about layout.
+// The ANNUAL SALARY went the other way that day, to Overhead → Salaries, and
+// came back on 2026-09-14 when that tab was removed. It is drawn only for the
+// salaries tier, and for that reader it is a field like any other: annual_salary
+// is not in a base-tier payload at all — the projection is built from the
+// caller's tiers, see netlify/functions/data.js — so for everybody else there is
+// nothing to draw rather than something hidden.
+//
+// NEITHER IS DRAWN FOR SOMEBODY OUTSIDE THE MANUFACTURING COST CLASS, whatever
+// tier the reader holds. Compensation is only held for that class since
+// 2026-09-14 — see employeeCarriesPay() in core.js and pay-scope-lib.js on the
+// server. The card says so in place of the fields rather than omitting them
+// silently, because "no rate on file" and "this person does not have one" are
+// different facts and only one of them is somebody's to fix.
 //
 // state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
 // state.editing is what saveEdit() reads, and it clears it on success, which
@@ -535,10 +542,10 @@ function profileReadBody(e){
       pf('Position group',e.positionGroup,{empty:'none — not mill floor staff'}),
       pf('Position',e.position,{empty:'not set'}),
       pf('Pay type',payTypeOf(e)),
-      // The rate is READ here and typed in edit mode. annual_salary is still
-      // not on this card in either mode: it is not in the payload at all
-      // without the salaries tier, and it is set under Overhead → Salaries.
-      pf('Hourly wage',isSalaried(e)?'— salaried —':fmtWage(e))
+      // Read here, typed in edit mode, and both columns are scoped the same
+      // way: profilePayRead() returns the one line that is true for this person
+      // and this reader.
+      ...profilePayRead(e)
     ])}
     ${profileGroup('Contact',[
       pf('Phone',e.phone),
@@ -768,16 +775,16 @@ function birthdayField(e){
 }
 
 // ------------------------------------------------------------------------
-// THE HOURLY WAGE FIELD
+// THE PAY FIELDS
 // ------------------------------------------------------------------------
 //
-// THIS IS WHERE AN HOURLY RATE IS TYPED, and it used to be somewhere else. The
-// Salaries & Wages tab held both columns; it is gone, and the hourly half came
-// here while annual salary went to Overhead → Salaries. The reason is audience:
-// employees.wage is writable at the base tier, the people who correct a rate
-// are supervisors, and a supervisor should not have to open a company pay list
-// to fix one number on one person. The card is already where they go to change
-// a department or a phone number.
+// THIS IS WHERE PAY IS TYPED, and both columns took a detour to get here. The
+// Salaries & Wages tab held both; it was split, the hourly half landing on this
+// card and the salaried half on Overhead → Salaries; that tab was removed on
+// 2026-09-14 and the salary came back. The reason the card wins both times is
+// audience: the people who correct a rate are supervisors, and a supervisor
+// should not have to open a company pay list to fix one number on one person.
+// The card is already where they go to change a department or a phone number.
 //
 // The old note here said a rate must not be editable on this card, because a
 // bulk save would append a wage_history row for a save nobody thought of as a
@@ -785,7 +792,7 @@ function birthdayField(e){
 //
 //   HERE, by profileWageForRow(), which omits `wage` from the payload entirely
 //   unless the typed value differs from what is stored. Saving a phone number
-//   sends no wage at all.
+//   sends no wage at all. profileSalaryForRow() does the same for the salary.
 //
 //   AND ON THE SERVER, which is what actually makes it safe: data.js plans
 //   every wage in a PATCH through wage-edit-lib and DELETES an unchanged one
@@ -794,6 +801,47 @@ function birthdayField(e){
 //
 // So the history row is still written by the server, still written BEFORE the
 // rate it replaces, and still impossible to produce by accident.
+//
+// THREE QUESTIONS DECIDE WHAT IS DRAWN, and they are independent:
+//
+//   does this person carry pay?   cost class — employeeCarriesPay()
+//   which column applies?         pay type — isSalaried()
+//   may this reader see it?       tier — canSeeSalaries(), for the salary only
+//
+// Answered in that order. A salaried SG&A employee is not "a salary this reader
+// cannot see", they are somebody with no salary here at all, and saying the
+// wrong one of those sends a person looking for a grant that would not help.
+
+// The one pay line the read-only card shows, as pf() rows. An array so the
+// caller splices it in and the no-pay case can be a single row rather than two.
+function profilePayRead(e){
+  if(!employeeCarriesPay(e)){
+    return [pf('Pay',
+      `<span style="color:var(--muted)">not held for ${esc(String(e.costClass||'').trim()||'unclassified')} staff</span>`,
+      {html:true})];
+  }
+  if(!isSalaried(e)) return [pf('Hourly wage',fmtWage(e))];
+  return [pf('Annual salary', canSeeSalaries()
+    ? (e.annualSalary==null||e.annualSalary===''
+        ? '<span style="color:#b8860b">none on file — their cost cannot be computed</span>'
+        : esc(fmtSalary(e.annualSalary))+' <span style="color:var(--muted)">· '+
+          esc(fmt$(Math.round(Number(e.annualSalary)/SALARY_HOURS_PER_YEAR*100)/100))+'/hr equivalent</span>')
+    : '<span style="color:var(--muted)">salaried — needs the salaries tier</span>',
+    {html:true})];
+}
+
+// 40 hours x 52 weeks, mirroring SALARY_HOURS_PER_YEAR in
+// netlify/functions/wage-sync.js. The mill's own week is 4x10, which is the same
+// 40, so this is the conventional annualisation and not a schedule assumption.
+// It is the divisor the costing report already uses, so showing it here is
+// showing what that report will do with the number — not a second opinion.
+const SALARY_HOURS_PER_YEAR = 2080;
+
+function fmtSalary(n){
+  if(n==null||n==='') return '—';
+  const v=Number(n);
+  return isFinite(v) ? '$'+v.toLocaleString('en-US',{maximumFractionDigits:0}) : '—';
+}
 
 // The note under the field: what this draft would do if saved. Rendered into
 // its own element and refreshed in place by wageDraftSet(), because a full
@@ -834,19 +882,27 @@ function profileEmployeeForWage(){
   return (state.employees||[]).find(x=>String(x.id)===String(id))||null;
 }
 
-// One field, rendered the same way on the card and in the Add modal. A salaried
-// person gets no input at all: their compensation is annual_salary and writing
-// an hourly rate onto them would be counted a second time by the costing
-// reports, which is why wage-edit-lib refuses it outright.
+// The pay field, rendered the same way on the card and in the Add modal. Which
+// one — or neither — is decided by the three questions above, in that order.
 function wageField(e){
-  if(isSalaried(state.editing)){
+  // 1. Does this person carry pay at all? Cost class, and it outranks the other
+  //    two: there is no column to offer, so there is nothing for a pay type or
+  //    a tier to decide about.
+  if(!employeeCarriesPay(state.editing)){
+    const cls=String((state.editing&&state.editing.costClass)||'').trim();
     return `
-      <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
-        <div style="padding:8px 0;font-size:13px;color:var(--muted)">— salaried —</div></div>
-      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">
-        A salaried person has no hourly rate. Their annual salary is set under <b>Overhead → Salaries</b>,
-        and the costing reports divide it by 2,080.</div></div>`;
+      <div class="form-group full"><label class="form-label">Pay</label>
+        <div style="padding:8px 0;font-size:13px;color:var(--muted)">— not held for ${esc(cls||'unclassified')} staff —</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.5">
+          Compensation is only held for the <b>Manufacturing</b> cost class. ${cls
+            ? esc(cls)+' staff are on the roster in full — hours, overtime, points, documents — with no wage or salary in this app.'
+            : 'This person has no cost class yet.'}
+          Change the cost class above if they really are production staff, and the field appears.</div></div>`;
   }
+
+  // 2. Which column applies? Pay type.
+  if(isSalaried(state.editing)) return salaryField(e);
+
   const stored=e||profileEmployeeForWage();
   return `
     <div class="form-group"><label class="form-label">Hourly wage ($/hr)</label>
@@ -854,6 +910,79 @@ function wageField(e){
         oninput="wageDraftSet(this.value)"></div>
     <div class="form-group full" style="margin-top:-6px">
       <div id="profileWageNote" style="font-size:11px;color:var(--muted);line-height:1.5">${profileWageNote(stored)}</div></div>`;
+}
+
+// 3. May this reader see it? The tier, and ONLY for the salary — an hourly rate
+//    is base-tier in both directions and is always drawn above.
+//
+// Without the tier this is a sentence, not a disabled input: annual_salary is
+// not in this reader's payload at all, so an input would start blank and saving
+// the card would look like it had cleared somebody's salary. It cannot — the
+// server refuses the column outright — but a field that appears to do something
+// it does not is worse than no field.
+function salaryField(e){
+  if(!canSeeSalaries()){
+    return `
+      <div class="form-group"><label class="form-label">Annual salary</label>
+        <div style="padding:8px 0;font-size:13px;color:var(--muted)">— salaried —</div></div>
+      <div class="form-group full" style="margin-top:-6px"><div style="font-size:11px;color:var(--muted);line-height:1.5">
+        A salaried person has no hourly rate; their cost is annual salary ÷ ${SALARY_HOURS_PER_YEAR.toLocaleString('en-US')}.
+        Reading or changing that salary needs the salaries tier, which an administrator grants under
+        <b>Settings → Access</b>.</div></div>`;
+  }
+  const stored=e||profileEmployeeForWage();
+  return `
+    <div class="form-group"><label class="form-label">Annual salary ($/yr)</label>
+      <input type="text" value="${esc(state.editing.annualSalary==null?'':state.editing.annualSalary)}" placeholder="105000"
+        oninput="salaryDraftSet(this.value)"></div>
+    <div class="form-group full" style="margin-top:-6px">
+      <div id="profileSalaryNote" style="font-size:11px;color:var(--muted);line-height:1.5">${profileSalaryNote(stored)}</div></div>`;
+}
+
+// Same in-place refresh as the wage note, and for the same reason: a full
+// render() on every keystroke moves the caret to the end of the field.
+function salaryDraftSet(v){
+  if(!state.editing) return;
+  state.editing.annualSalary=v;
+  const el=document.getElementById('profileSalaryNote');
+  if(el) el.innerHTML=profileSalaryNote(profileEmployeeForWage());
+}
+
+function profileSalaryNote(e){
+  const draft=state.editing?state.editing.annualSalary:'';
+  const parsed=parseSalary(draft);
+  if(parsed===undefined) return `<span style="color:#b8860b">Not a number. Enter an annual salary, e.g. 105000.</span>`;
+  if(parsed==null){
+    return (e&&e.annualSalary!=null&&e.annualSalary!=='')
+      ? `<span style="color:#b8860b">Clearing this leaves their cost uncomputable — the costing report lists them as a gap rather than assuming a figure.</span>`
+      : `<span style="color:var(--muted)">No salary on file — their cost cannot be computed until one is set.</span>`;
+  }
+  return `<span style="color:var(--muted)">Hourly equivalent ${esc(fmt$(Math.round(parsed/SALARY_HOURS_PER_YEAR*100)/100))} — what the costing report divides by.</span>`;
+}
+
+// What to do with the typed salary on save. The same three shapes as
+// profileWageForRow, and the same posture: {send:false} when the column does not
+// apply or nothing moved, {error} when what was typed cannot be recorded, and
+// only otherwise a value.
+//
+// A CLEAR IS ALLOWED HERE AND REFUSED FOR THE HOURLY RATE, which is not an
+// inconsistency. wage_history.rate is NOT NULL, so a removed rate cannot be
+// recorded at all, and an unrecorded disappearance of pay is what that history
+// exists to prevent. annual_salary has no history table, so there is nothing to
+// make impossible — and the costing report already reports a missing salary by
+// name rather than costing that person at zero.
+function profileSalaryForRow(draft, stored){
+  if(!canSeeSalaries()) return {send:false};           // not this reader's column
+  if(!employeeCarriesPay(draft)) return {send:false};  // not this person's column
+  if(!isSalaried(draft)) return {send:false};          // not this pay type's column
+
+  const parsed=parseSalary(draft&&draft.annualSalary);
+  if(parsed===undefined){
+    return {error:`"${String((draft&&draft.annualSalary)||'').trim()}" is not an annual salary. Enter a number, e.g. 105000 — nothing was saved.`};
+  }
+  const current=(stored&&stored.annualSalary!=null&&stored.annualSalary!=='')?Number(stored.annualSalary):null;
+  if(parsed===current) return {send:false};
+  return {send:true, annualSalary:parsed};
 }
 
 // What to do with the typed rate on save. Returns one of three things and
@@ -870,6 +999,13 @@ function wageField(e){
 // enforces all of them again; this exists so the refusal arrives before the
 // round trip and reads as English.
 function profileWageForRow(draft, stored){
+  // Rule 7's client mirror, and FIRST for the same reason it is first on the
+  // server: for somebody outside the costed cost class there is no rate to
+  // record, which is a different sentence from "this rate cannot be recorded".
+  // Dropped rather than refused, like the salaried case below — the field is
+  // not drawn, so anything still sitting in the draft is a leftover from before
+  // the cost class was changed, not something somebody just typed.
+  if(!employeeCarriesPay(draft)) return {send:false};
   if(isSalaried(draft)){
     // Rule 2. A rate typed before the pay type was flipped is not an error —
     // it is a field that no longer applies — so it is dropped rather than
@@ -940,8 +1076,14 @@ function profileEditBody(e){
           ${retiredOption(e.department,PAYROLL_DEPARTMENTS)}
           ${departmentOptions(e.department)}
         </select></div>
+      <!-- Re-renders, because the cost class decides whether there is a pay
+           field at all — only Manufacturing carries one. Without this, picking
+           Manufacturing on a new hire would leave no box to type their rate
+           into until something else happened to re-render the form. Like the
+           position group above, it changes what is OFFERED and never what is
+           stored in another field. -->
       <div class="form-group"><label class="form-label">Cost class</label>
-        <select onchange="state.editing.costClass=this.value">
+        <select onchange="state.editing.costClass=this.value;render()">
           <option value=""${e.costClass?'':' selected'}>— not set —</option>
           ${retiredOption(e.costClass,COST_CLASSES)}
           ${taxonomyOptions(COST_CLASSES,e.costClass)}
@@ -1044,7 +1186,7 @@ function openEdit(idx){
 // model exists to remove.
 // The one remaining caller of renderModal. state.profile stays null, which is
 // what routes this to the modal rather than the card — see renderEmployees.
-function openAdd(){state.profile=null;state.editing={name:'',wage:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',days:'MON-THU',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',addressStreet:'',addressCity:'',addressState:'',addressPostalCode:'',smsOptedOut:false,_isNew:true};render();}
+function openAdd(){state.profile=null;state.editing={name:'',wage:'',annualSalary:'',payType:'Hourly',empNum:'',department:'',costClass:'',positionGroup:'',position:'',status:'Active',days:'MON-THU',break1:'7:00 AM',break2:'12:45 PM',birthday:'',phone:'',language:'English',email:'',addressStreet:'',addressCity:'',addressState:'',addressPostalCode:'',smsOptedOut:false,_isNew:true};render();}
 function closeModal(){state.editing=null;render();}
 
 
@@ -1091,6 +1233,21 @@ async function saveEdit(){
     // be able to change what is displayed without changing what is saved.
     e.wage = wageForRow.send ? wageForRow.wage : (stored ? stored.wage : null);
 
+    // The salary, decided the same way and refused the same way. Separate from
+    // the wage rather than merged into one "pay" decision: they are different
+    // columns with different rules — one is recorded in wage_history and cannot
+    // be cleared, the other is not and can be — and a single helper answering
+    // both would have to carry that difference anyway.
+    const salaryForRow = profileSalaryForRow(e, stored);
+    if (salaryForRow && salaryForRow.error) {
+      setSyncStatus('error');
+      toast(salaryForRow.error, 'error');
+      return;
+    }
+    e.annualSalary = salaryForRow.send
+      ? salaryForRow.annualSalary
+      : (stored ? stored.annualSalary : null);
+
     const row={
       name:e.name, pay_type:payType, status:e.status,
       // clock_in / clock_out are no longer written; see the note in the form.
@@ -1111,6 +1268,11 @@ async function saveEdit(){
       // is not the same as a null one — data.js would plan a null as a clear
       // and refuse it.
       ...(wageForRow && wageForRow.send ? {wage: wageForRow.wage} : {}),
+      // Same rule, and the same reason for the spread: a key that is absent is
+      // not a key that is null. data.js would read a null as a deliberate clear
+      // — which for the salary it IS, and which is exactly why it must only
+      // appear when somebody actually emptied the field.
+      ...(salaryForRow && salaryForRow.send ? {annual_salary: salaryForRow.annualSalary} : {}),
       // Phase B. position applies to everyone; position_group does not. Blank is
       // stored as NULL rather than '', the same as the other nullable fields.
       position:e.position||null,
@@ -1223,7 +1385,9 @@ function renderModal(){
             ${retiredOption(e.department,PAYROLL_DEPARTMENTS)}
             ${departmentOptions(e.department)}
           </select></div>
-          <div class="form-group"><label class="form-label">Cost class</label><select onchange="state.editing.costClass=this.value">
+          <!-- render() for the same reason as on the profile card: the cost
+               class decides whether a pay field is offered at all. -->
+          <div class="form-group"><label class="form-label">Cost class</label><select onchange="state.editing.costClass=this.value;render()">
             <option value=""${e.costClass?'':' selected'}>— not set —</option>
             ${retiredOption(e.costClass,COST_CLASSES)}
             ${taxonomyOptions(COST_CLASSES,e.costClass)}

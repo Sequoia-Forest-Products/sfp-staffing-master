@@ -2,6 +2,7 @@ const db = require('./db');
 const { verifySession, getCookies } = require('./session-lib');
 const perms = require('./permissions-lib');
 const { planWageEdit } = require('./wage-edit-lib');
+const { carriesPay, payRefusal, PAY_COLUMNS } = require('./pay-scope-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -69,6 +70,26 @@ function pickColumns(rows, columns) {
     for (const col of columns) if (col in row) out[col] = row[col];
     return out;
   });
+}
+
+// THE WRITE RESPONSE IS A READ, and it was not projected like one.
+//
+// db.js sends `Prefer: return=representation`, so PostgREST answers every POST
+// and PATCH with the whole row — every column, annual_salary included. The GET
+// path is projected twice over (a select= built from the caller's tiers, then
+// picked apart again against the same list); the write path handed the row
+// straight back. So a base-tier account could read any salary by PATCHing the
+// employee's phone number to its current value and reading the response.
+//
+// Found 2026-09-14 while adding the cost-class scope below, which needed to
+// read annual_salary server-side to clear it and would have widened the same
+// hole. The projection is the one perms already computes for the GET, so the
+// two directions cannot disagree about what this caller may see.
+function projectEmployeeWrite(rows, tiers) {
+  const columns = perms.employeeReadColumns(tiers);
+  if (Array.isArray(rows)) return pickColumns(rows, columns);
+  if (!rows || typeof rows !== 'object') return rows;
+  return pickColumns([rows], columns)[0];
 }
 
 function isUndefinedColumnError(message) {
@@ -195,6 +216,38 @@ async function queryEmployees(tiers) {
 
 const hasWage = body => body && Object.prototype.hasOwnProperty.call(body, 'wage');
 
+// ------------------------------------------------------------------------
+// employees.annual_salary — the OTHER compensation column, and the cost-class
+// rule that now governs both
+// ------------------------------------------------------------------------
+//
+// The salaries tier decides WHO may write a salary. pay-scope-lib decides
+// whether the column applies to this PERSON at all: only the Manufacturing cost
+// class carries compensation since 2026-09-14, because SG&A and Mill Overhead
+// are no longer analysed here and pay nothing reads is a liability with no
+// benefit.
+//
+// The two questions are answered in that order and by different files on
+// purpose — a tier that let somebody write a salary onto an SG&A row would be
+// answering a question it was never asked.
+//
+// annual_salary has no history table, so a refusal here is the only protection
+// the column gets. It is a 409 rather than a 403 for the same reason a wage
+// refusal is: the request is well-formed and the caller is permitted, and what
+// makes it impossible is the state of the row.
+const hasSalary = body => body && Object.prototype.hasOwnProperty.call(body, 'annual_salary');
+const hasCostClass = body => body && Object.prototype.hasOwnProperty.call(body, 'cost_class');
+
+const scopeRefusal = (headers, employee, column) => ({
+  statusCode: 409, headers, body: JSON.stringify(payRefusal(employee, column))
+});
+
+// Reads a value as "a pay figure is being set" rather than "the column is being
+// mentioned". Clearing is always allowed — it is what a reclassification does,
+// and refusing to let somebody remove pay from a person who may not hold it
+// would be the rule pointing the wrong way.
+const isSetting = value => value !== null && value !== undefined && String(value).trim() !== '';
+
 // Refusals from planWageEdit are 409, not 400: the request is well-formed and
 // permitted, and what makes it impossible is the state of the row (salaried, no
 // employee number, nothing to record a cleared rate with). The message is meant
@@ -263,12 +316,24 @@ exports.handler = async (event) => {
       // not slip a rate in without a history row. Planned against an empty row
       // so the refusals (salaried, no employee number, blank, zero) all apply
       // and previous_rate is null, which is what a first observation is.
+      // A salary on a new row is scoped against the cost class being created
+      // with it. There is no stored row to consult — the body IS the row.
+      if (table === 'employees' && hasSalary(gated.body) && isSetting(gated.body.annual_salary)
+          && !carriesPay(gated.body)) {
+        return scopeRefusal(headers, gated.body, 'annual_salary');
+      }
+
       let wagePlan = null;
       if (table === 'employees' && hasWage(gated.body)) {
         wagePlan = planWageEdit({
           employee: { id: 'pending', name: gated.body.name, wage: null,
                       employee_number: gated.body.employee_number,
-                      pay_type: gated.body.pay_type },
+                      pay_type: gated.body.pay_type,
+                      // Rule 7 needs the class the row is being created in.
+                      // Absent here, every Add would read as unclassified and
+                      // be refused — including a production hire typed with a
+                      // rate in the same form.
+                      cost_class: gated.body.cost_class },
           value: gated.body.wage,
           editorEmail: session.email
         });
@@ -292,7 +357,10 @@ exports.handler = async (event) => {
         }
         await recordWageHistory({ ...wagePlan.history, employee_id: created.id });
       }
-      return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
+      const payload = table === 'employees'
+        ? projectEmployeeWrite(row, await callerTiers())
+        : row;
+      return { statusCode: 200, headers, body: JSON.stringify({ data: payload }) };
     }
 
     // PATCH /api/data?table=employees&id=uuid — update single row
@@ -301,15 +369,41 @@ exports.handler = async (event) => {
       const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
       if (gated.error) return gated.error;
 
+      // The row as the DATABASE has it, not as the browser remembers it. A page
+      // open since this morning holds a rate somebody else may have changed
+      // since, and a history row whose previous_rate was never the current rate
+      // is worse than no history at all. Read ONCE and shared by the three
+      // decisions below, all of which need the same row.
+      let found = null;
+      if (table === 'employees'
+          && (hasWage(gated.body) || hasSalary(gated.body) || hasCostClass(gated.body))) {
+        const rows = await db.query('employees',
+          `?id=eq.${encodeURIComponent(params.id)}` +
+          `&select=id,name,employee_number,wage,pay_type,cost_class,annual_salary`);
+        found = (rows || [])[0] || null;
+      }
+
+      // THE CLASS THIS ROW WILL BE IN WHEN THE WRITE LANDS, not the one it is in
+      // now. A single PATCH can carry both the reclassification and the pay, and
+      // scoping against the stored class would judge the write by a fact it is
+      // itself changing — in both directions: it would refuse a rate on somebody
+      // being moved INTO Manufacturing, and accept one on somebody being moved
+      // out.
+      const nextCostClass = hasCostClass(gated.body)
+        ? { cost_class: gated.body.cost_class, name: (found && found.name) || gated.body.name }
+        : found;
+
+      if (table === 'employees' && hasSalary(gated.body) && isSetting(gated.body.annual_salary)
+          && !carriesPay(nextCostClass)) {
+        return scopeRefusal(headers, nextCostClass || gated.body, 'annual_salary');
+      }
+
       if (table === 'employees' && hasWage(gated.body)) {
-        // The row as the DATABASE has it, not as the browser remembers it. A
-        // page open since this morning holds a rate somebody else may have
-        // changed since, and a history row whose previous_rate was never the
-        // current rate is worse than no history at all.
-        const found = await db.query('employees',
-          `?id=eq.${encodeURIComponent(params.id)}&select=id,name,employee_number,wage,pay_type`);
         const plan = planWageEdit({
-          employee: (found || [])[0] || null,
+          // Scoped against the class this write lands in, for the reason above.
+          employee: found
+            ? { ...found, ...(hasCostClass(gated.body) ? { cost_class: gated.body.cost_class } : {}) }
+            : null,
           value: gated.body.wage,
           editorEmail: session.email
         });
@@ -332,12 +426,42 @@ exports.handler = async (event) => {
         // write. db.update with an empty body is a request that changes nothing
         // and returns nothing useful, so answer from the row already read.
         if (!Object.keys(gated.body).length) {
-          return { statusCode: 200, headers, body: JSON.stringify({ data: (found || [])[0] || null }) };
+          // Projected, because `found` was read with the service key and carries
+          // every column — including the one this caller may not see.
+          return {
+            statusCode: 200, headers,
+            body: JSON.stringify({ data: projectEmployeeWrite(found, await callerTiers()) })
+          };
+        }
+      }
+
+      // RECLASSIFYING SOMEBODY OUT OF MANUFACTURING TAKES THEIR PAY WITH IT,
+      // and the app does it rather than asking the caller to.
+      //
+      // Appended AFTER the tier gate on purpose. The rule belongs to the
+      // application, not to the caller: a supervisor with no salaries tier must
+      // be able to move somebody to SG&A, and requiring them to send
+      // annual_salary: null to do it would 403 them for obeying the rule. They
+      // are not writing a salary — they are writing a cost class, and this is
+      // what that means.
+      //
+      // Deliberately unrecorded in wage_history: that table's `rate` is NOT
+      // NULL, so a removal cannot be expressed in it at all, and the last row it
+      // holds stays the record of what the rate was. Compare rule 4 in
+      // wage-edit-lib — a rate cannot be CLEARED by typing an empty box, which
+      // is a different act from a reclassification that makes the column
+      // inapplicable.
+      if (table === 'employees' && hasCostClass(gated.body) && !carriesPay(nextCostClass) && found) {
+        for (const col of PAY_COLUMNS) {
+          if (found[col] !== null && found[col] !== undefined) gated.body[col] = null;
         }
       }
 
       const row = await db.update(table, params.id, gated.body);
-      return { statusCode: 200, headers, body: JSON.stringify({ data: row }) };
+      const updated = table === 'employees'
+        ? projectEmployeeWrite(row, await callerTiers())
+        : row;
+      return { statusCode: 200, headers, body: JSON.stringify({ data: updated }) };
     }
 
     // DELETE /api/data?table=employees&id=uuid — delete single row

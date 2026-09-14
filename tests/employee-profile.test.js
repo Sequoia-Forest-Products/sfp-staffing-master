@@ -27,7 +27,13 @@ const SRC = path.join(__dirname, '..', 'src', 'js');
 // preApprovedFor, PREAPPROVED_TYPES, savePreApproved, profileAllocation. They are
 // loaded AFTER employees.js, matching the manifest, so the TDZ ordering the real
 // page has is the ordering these tests exercise.
-const MODULES = ['core.js', 'employees.js', 'preapproved.js', 'allocations.js'];
+//
+// permissions.js joined them on 2026-09-14: the card draws the annual salary
+// field for the salaries tier, so it calls canSeeSalaries(). It is loaded FIRST,
+// matching the manifest — the real page has it before every feature file for
+// exactly this reason. These tests hold the base tier unless they say otherwise,
+// which is the state.perms default the module ships.
+const MODULES = ['core.js', 'permissions.js', 'employees.js', 'preapproved.js', 'allocations.js'];
 
 // Enough of an element for the top-level DOM writes in core.js and for the
 // handful of render paths that poke at one.
@@ -144,15 +150,18 @@ test('a salaried person gets no wage input at all', () => {
     { editing: true });
 
   // Rule 2 of wage-edit-lib, stated on screen: their compensation is
-  // annual_salary and the costing reports divide it by 2,080, so an hourly rate
+  // annual_salary and the costing report divides it by 2,080, so an hourly rate
   // written onto them would be counted twice.
   assert.ok(!/wageDraftSet/.test(html), 'no input for a rate they cannot have');
   assert.match(html, /salaried/i);
-  assert.match(html, /Overhead → Salaries/, 'and it says where the salary IS set');
+  assert.match(html, /salaries tier/, 'and it says what reading the salary needs');
   assert.ok(!/210000|210,000/.test(html), 'without showing the figure');
 });
 
-test('a salaried person still shows no figure', () => {
+test('a salaried person still shows no figure without the tier', () => {
+  // This sandbox holds the base tier only. annual_salary is not in a base-tier
+  // payload at all — the fixture carries one so that a figure appearing here is
+  // a leak rather than an empty field.
   const ctx = sandbox();
   const html = openCard(ctx, [person({ payType: 'Salaried', wage: '', annualSalary: 210000 })]);
 

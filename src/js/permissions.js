@@ -72,27 +72,24 @@ async function loadPermissions(){
   }
 }
 
-// Which TOP-LEVEL tabs the salaries tier unlocks. One, now: Overhead.
+// Which TOP-LEVEL tabs the salaries tier unlocks. NONE, now.
 //
-// It starts hidden in app.html, because a tab that appears and then vanishes
-// when permissions load is worse than one that appears a moment late — and
-// because a tab that flashes has already told everybody that an overhead page
-// exists and that they are not allowed in it.
+// It was one — Overhead — removed on 2026-09-14 with the analysis it existed
+// for. The list stays, empty, rather than the loop below being deleted with it:
+// the mechanism is how a gated tab is hidden before permissions load (hidden
+// first, shown after — a tab that appears and then vanishes has already told
+// everybody the page exists and that they are not allowed in it), and the next
+// gated tab should be one edit here rather than a rediscovery.
 //
-// THE OTHER TWO GATED PAGES ARE NO LONGER TABS, and that is why this list
-// shrank rather than grew:
+// EVERY GATED PAGE IS NOW A SUB-VIEW OR A FIELD:
 //
-//   Staffing Economics  is now the 'Staff' view of Manufacturing Costs. Its
-//                       parent tab is open to everyone, so the gate moved into
-//                       the sub-nav — COSTS_VIEWS in costs.js carries a `tier`
-//                       and visibleViews() filters it out.
-//   Salaries & Wages    is gone. Its salaried half is the 'Salaries' view of
-//                       Overhead, covered by this tab's own gate; its hourly
-//                       half is on the employee profile card at the base tier.
-//
-// Listed rather than derived, so adding a gated tab is one edit in one place
-// and forgetting it leaves the tab visible-but-empty rather than silently open.
-const SALARIES_TABS=['overhead'];
+//   Staffing Economics  the 'Staff' view of Manufacturing Costs. Its parent tab
+//                       is open to everyone, so the gate is in the sub-nav —
+//                       COSTS_VIEWS in costs.js carries a `tier` and
+//                       visibleViews() filters it out.
+//   Annual salary       a field on the employee profile card, drawn only for
+//                       this tier and absent from the payload without it.
+const SALARIES_TABS=[];
 
 function applyTabVisibility(){
   const allowed=canSeeSalaries();
@@ -111,8 +108,12 @@ function applyTabVisibility(){
   // costsView was also 'staff' — got the bounce and kept the view.
   if(state.costsView) state.costsView=costsSubView(state.costsView).key;
   // If they were looking at a gated TAB when a grant was revoked in another
-  // window, do not leave them on one that no longer has anything to show.
-  if(!allowed&&SALARIES_TABS.includes(state.tab)) goToTab('employees');
+  // window, do not leave them on one that no longer has anything to show. The
+  // retired 'overhead' key is bounced too: a session open across the deploy, or
+  // a hand-typed switchTab() in the console, would otherwise sit on a tab whose
+  // renderer no longer exists and render nothing at all.
+  if(state.tab==='overhead') goToTab('employees');
+  else if(!allowed&&SALARIES_TABS.includes(state.tab)) goToTab('employees');
 }
 
 // ------------------------------------------------------------------------
@@ -125,9 +126,9 @@ function applyTabVisibility(){
 // nothing. The comment above loadPermissions said a failure "says so on the
 // Settings page"; no such surface existed, so what actually happened was that a
 // transient /api/permissions failure dropped somebody to the base tier with no
-// explanation anywhere. The Access section vanishes, the Overhead tab
-// vanishes, Manufacturing Costs loses its Staff view — and the obvious reading
-// of that, for an admin, is that somebody revoked them.
+// explanation anywhere. The Access section vanishes, Manufacturing Costs loses
+// its Staff view, the profile card stops showing annual salary — and the
+// obvious reading of that, for an admin, is that somebody revoked them.
 //
 // It is on Settings rather than as a global banner because that is where the
 // consequences are visible and where the fix is: an admin whose tiers failed to

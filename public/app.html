@@ -193,15 +193,13 @@
            salaries tier). The tab itself is NOT gated — its sub-nav hides the
            view somebody may not open. See costs.js. -->
       <button class="sfp-tab" data-tab="costs" onclick="switchTab('costs',this)">Manufacturing Costs</button>
-      <!-- HIDDEN BY DEFAULT and revealed by applyTabVisibility() once
-           /api/permissions answers. Hidden-then-shown is the right way round: a
-           tab that appears and then vanishes has already told everybody that an
-           overhead page exists and that they are not allowed in it.
-           Gated WHOLE, unlike Manufacturing Costs: both of its sub-views are
-           compensation at office headcount, where bucket suppression cannot
-           protect anybody. /api/cost-report refuses the two overhead classes
-           without the tier, so this is a courtesy and not the control. -->
-      <button class="sfp-tab" data-tab="overhead" hidden onclick="switchTab('overhead',this)">Overhead</button>
+      <!-- THE OVERHEAD TAB WAS HERE, hidden by default and revealed by
+           applyTabVisibility() for the salaries tier. Removed 2026-09-14: SG&A
+           and Mill Overhead are not analysed in this app any more. Their people
+           are still on the roster and their hours and overtime are still
+           reported; their pay is not held at all, so neither of that tab's two
+           views has anything to draw. Its Salaries view moved onto the employee
+           profile card, where one screen edits one person. -->
       <!-- Overtime was 'Reports' and absorbed three top-level tabs in Phase C:
            Pre-Approved Overtime, OT Report and Points Tracker. Daily Hours
            joined them here rather than sitting alongside, because it is the

@@ -26,7 +26,22 @@ const { effectiveHourlyRate, isSalaried, SALARY_HOURS_PER_YEAR } = require('./wa
 // salaried people; hourly people are costed on the hours they actually worked.
 const STANDARD_WEEKLY_HOURS = 40;
 
+// The taxonomy. Still three values, because employees.cost_class still holds
+// all three and the roster still assigns them — see src/js/core.js.
 const COST_CLASSES = ['Manufacturing', 'Mill Overhead', 'SG&A'];
+
+// THE ONES THIS APP COSTS. One, since 2026-09-14.
+//
+// SG&A and Mill Overhead stopped being analysed here on that date: the Overhead
+// tab is gone, their people stay on the roster with hours, overtime and points,
+// and pay-scope-lib refuses to hold compensation for either class — so there is
+// nothing left to build a cost report out of, and a report over a class with no
+// rates would be a page of gaps rather than a figure.
+//
+// Kept SEPARATE from COST_CLASSES rather than shrinking that list, because the
+// two answer different questions: what a person may be classified as, and what
+// this app reports on. Collapsing them would take SG&A off the employee form.
+const REPORTED_COST_CLASSES = ['Manufacturing'];
 
 // The one class where position group means anything, and therefore the one
 // class where its absence is a finding. See the bullpen in buildCostReport.
@@ -451,6 +466,7 @@ module.exports = {
   STANDARD_WEEKLY_HOURS,
   SALARY_HOURS_PER_YEAR,
   COST_CLASSES,
+  REPORTED_COST_CLASSES,
   UNASSIGNED_DEPARTMENT,
   NO_POSITION_GROUP
 };
