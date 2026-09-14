@@ -88,12 +88,66 @@ const canEditSettings = () => isPermAdmin();
 const settingValue = (text) =>
   `<div style="padding:8px 0;font-size:13px;font-weight:600;color:var(--text)">${esc(String(text))}</div>`;
 
+// THE SETTINGS ON THIS PAGE ARE NOT BEING SAVED — said on the page, because
+// that is where somebody will read it.
+//
+// This banner exists because of a fault it would have caught in a day.
+// public.settings was never created: /api/settings caught its own missing-table
+// error and answered a cheerful 200, saveEmailSettings cached the write in
+// localStorage and reported success, and loadEmailSettings read that copy back
+// on the next load. So the page showed a manager list, said "saved", kept it
+// across reloads — and the server had nothing, which meant the Monday OT email
+// had no recipients and refused to send. For months. The only complaint in the
+// whole system was that email's own alert.
+//
+// TWO DIFFERENT SENTENCES, because they need different actions:
+//
+//   unavailable   the settings row could not be READ. Nothing here can save
+//                 until that is fixed, and the figures shown are defaults.
+//   localOnly     it read, but what is on screen is a write the server never
+//                 took. It lives in this browser and nowhere else.
+//
+// Both are warnings rather than refusals: the controls stay usable, because an
+// outage is usually transient and re-typing a recipient list is worse than
+// waiting. What must not happen is the page looking healthy while it is not.
+function renderSettingsWarning(){
+  if(state.settingsUnavailable){
+    return `
+      <div style="background:var(--surface);border:1px solid var(--brick);border-radius:8px;padding:20px;margin-bottom:24px">
+        <div style="font-size:14px;font-weight:700;color:var(--brick);margin-bottom:8px">
+          ⚠ These settings are not being saved — the settings row could not be read
+        </div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          The values below are the app's defaults, not what is stored, and anything changed here
+          will not reach the database. The weekly manager OT email reads the same row, so it will
+          refuse to send until this is fixed. The reason given was:
+          <div style="font-family:var(--mono,monospace);font-size:11px;color:var(--text);background:var(--surface2);border-radius:4px;padding:8px 10px;margin-top:8px;word-break:break-word">${esc(state.settingsUnavailableReason||'no reason given')}</div>
+        </div>
+      </div>`;
+  }
+  if(state.settingsLocalOnly){
+    return `
+      <div style="background:var(--surface);border:1px solid #b8860b;border-radius:8px;padding:20px;margin-bottom:24px">
+        <div style="font-size:14px;font-weight:700;color:#b8860b;margin-bottom:8px">
+          ⚠ Showing changes this browser holds and the server does not
+        </div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          A save did not reach the database, so what you see below is kept locally on this machine.
+          Nobody else's app has it, and the weekly manager OT email reads the server's copy, not this
+          one. <b>Change any value and save again</b> to push it; a successful save clears this.
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
 function renderSettings(){
   const editable=canEditSettings();
   return `
     <div style="max-width:800px;margin:0 auto;padding:20px">
       <h2 style="font-size:24px;font-weight:700;margin-bottom:32px;color:var(--text)">Settings</h2>
 
+      ${renderSettingsWarning()}
       ${renderPermsError()}
       ${renderAccessSection()}
 

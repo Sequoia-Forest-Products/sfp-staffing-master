@@ -246,20 +246,98 @@ test('an admin save still reports success and writes once', async () => {
   assert.match(lastToast(ctx).msg, /OT budget saved/);
 });
 
+const outage500 = (url, method) => (url.startsWith('/api/settings') && method === 'POST')
+  ? { status: 500, body: { error: 'database unavailable' } } : null;
+
 test('a 500 is still cached locally — a refusal and an outage are not the same', async () => {
   // The localStorage fallback exists for the case where the browser holds the
   // only copy of what somebody typed. That is a transient failure, not a
   // decision, and removing the fallback with the 403 would lose real edits.
-  const ctx = admin();
-  ctx.state.perms.tiers = ['hourly_wages', 'admin'];
-  const outage = (url, method) => (url.startsWith('/api/settings') && method === 'POST')
-    ? { status: 500, body: { error: 'database unavailable' } } : null;
-  const ctx2 = sandbox({ tiers: ['hourly_wages', 'admin'], responder: outage });
-  await ctx2.setOTBudgetPercent(7);
+  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], responder: outage500 });
+  await ctx.setOTBudgetPercent(7);
 
-  assert.ok(ctx2.__stored.get('emailSettings'), 'a transient failure lost the edit');
-  assert.match(lastToast(ctx2).msg, /OT budget saved/);
-  void ctx;
+  assert.ok(ctx.__stored.get('emailSettings'), 'a transient failure lost the edit');
+});
+
+test('a 500 does NOT report success — the claim is what was wrong', async () => {
+  // THIS TEST USED TO ASSERT THE OPPOSITE. It pinned "OT budget saved" after a
+  // 500, on the reasoning that the edit was safe in localStorage. The edit was;
+  // the sentence was not.
+  //
+  // public.settings did not exist for months, so EVERY save took this path and
+  // every one of them said it had worked — while the Monday OT email, reading
+  // the server's copy, had no recipients and refused to send. The local cache
+  // stays. The claim of success does not.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], responder: outage500 });
+  await ctx.setOTBudgetPercent(7);
+
+  assert.ok(!ctx.__toasts.some(x => /saved/i.test(x.msg) && x.type === 'success'),
+    'a write the server never took was reported as saved');
+  assert.strictEqual(lastToast(ctx).type, 'error');
+  assert.match(lastToast(ctx).msg, /Not saved/);
+  assert.match(lastToast(ctx).msg, /this browser only/);
+  assert.strictEqual(ctx.state.settingsLocalOnly, true,
+    'the page has to be able to say the server does not have this');
+});
+
+test('the page says so, not just the toast', async () => {
+  // A toast vanishes. The fault this banner exists for lasted months, so it has
+  // to be somewhere a person will still see it tomorrow.
+  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], responder: outage500 });
+  await ctx.setOTBudgetPercent(7);
+
+  const html = ctx.renderSettings();
+  assert.match(html, /this browser holds and the server does not/);
+  assert.match(html, /save again/, 'and says how to clear it');
+});
+
+test('an unreadable settings row is named on the page, not swallowed', async () => {
+  // The exact shape of the real fault: /api/settings answers 200 with
+  // unavailable:true rather than pretending the row is merely absent.
+  const ctx = sandbox({ responder: (url) => url.startsWith('/api/settings')
+    ? { status: 200, body: { data: null, unavailable: true,
+        reason: "Could not find the table 'public.settings' in the schema cache" } } : null });
+  await ctx.loadEmailSettings();
+
+  assert.strictEqual(ctx.state.settingsUnavailable, true);
+  const html = ctx.renderSettings();
+  assert.match(html, /not being saved/);
+  assert.match(html, /public\.settings/, 'the reason is shown, because it names the fix');
+  assert.match(html, /refuse to send/, 'and it connects the dots to the Monday email');
+});
+
+test('an absent row is NOT an unreadable one', async () => {
+  // The distinction the old endpoint could not draw. A first run has no row and
+  // is perfectly healthy; it must not raise the alarm.
+  const ctx = sandbox({ responder: (url) => url.startsWith('/api/settings')
+    ? { status: 200, body: { data: null } } : null });
+  await ctx.loadEmailSettings();
+
+  assert.strictEqual(ctx.state.settingsUnavailable, false);
+  assert.strictEqual(ctx.state.settingsLocalOnly, false);
+  assert.ok(!/not being saved|server does not/.test(ctx.renderSettings()));
+});
+
+test('a successful save clears the local copy and the banner', async () => {
+  // The outage is transient: the first POST fails, the second succeeds. The
+  // responder is captured by the sandbox, so the switch is a counter rather
+  // than a reassignment.
+  let posts = 0;
+  const recovers = (url, method) => {
+    if (!(url.startsWith('/api/settings') && method === 'POST')) return null;
+    return ++posts === 1 ? { status: 500, body: { error: 'database unavailable' } } : null;
+  };
+  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], responder: recovers });
+
+  await ctx.setOTBudgetPercent(7);
+  assert.strictEqual(ctx.state.settingsLocalOnly, true);
+  assert.ok(ctx.__stored.get('emailSettings'));
+
+  await ctx.setOTBudgetPercent(8);
+  assert.strictEqual(ctx.state.settingsLocalOnly, false);
+  assert.strictEqual(ctx.__stored.get('emailSettings'), undefined,
+    'a stale local copy could be read back after some later failure');
+  assert.match(lastToast(ctx).msg, /OT budget saved/);
 });
 
 // ---------------------------------------------------------------------------

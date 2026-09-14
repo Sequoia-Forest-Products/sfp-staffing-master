@@ -143,7 +143,16 @@ async function saveEmailSettings(){
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ key: 'emailSettings', value: attempted })
     });
-    if (res.ok) return true;
+    if (res.ok) {
+      // The server has it now, so the browser must not keep a copy that could
+      // outlive it and be read back by loadEmailSettings after some later
+      // failure — showing values the server has since replaced.
+      state.settingsLocalOnly = false;
+      state.settingsUnavailable = false;
+      state.settingsUnavailableReason = '';
+      try { localStorage.removeItem('emailSettings'); } catch (e) { void e; }
+      return true;
+    }
 
     if (res.status === 403) {
       const d = await res.json().catch(()=>({}));
@@ -155,35 +164,92 @@ async function saveEmailSettings(){
       return false;
     }
 
-    console.error('Failed to save settings to database');
-    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
-    return true;
+    return keepLocally(attempted, `the server refused the save (${res.status})`);
   } catch (err) {
     console.error('Settings save error:', err);
-    localStorage.setItem('emailSettings', JSON.stringify(state.emailSettings));
-    return true;
+    return keepLocally(attempted, 'the request did not reach the server');
   }
 }
 
+// A save that did not reach the database, kept in this browser so the typing is
+// not lost — and REPORTED AS SUCH, which is the part that was missing.
+//
+// The local copy is deliberate and stays: a transient outage should not throw
+// away a recipient list somebody just typed, and that is a different thing from
+// the 403 above, which is a decision the server made and must not be cached.
+//
+// WHAT CHANGED IS THE CLAIM. This path used to `return true`, so addManager()
+// went on to toast "Manager added and saved" for a write the server never
+// took — and loadEmailSettings() read the local copy back on the next load, so
+// the list persisted across reloads and looked saved. In this browser. Nobody
+// else's app had it and the Monday OT email saw nothing.
+//
+// That is how a missing table hid for months: public.settings did not exist, so
+// every save took this path, and every one of them said it had worked. The
+// distinction the code could not draw is between a blip and a fault that will
+// never clear — so it stops guessing, keeps the edit, and says plainly that the
+// server does not have it. state.settingsLocalOnly puts that on the page rather
+// than in a toast that vanishes.
+function keepLocally(attempted, why) {
+  try { localStorage.setItem('emailSettings', JSON.stringify(attempted)); } catch (e) { void e; }
+  state.settingsLocalOnly = true;
+  toast(`Not saved — ${why}. Kept in this browser only.`, 'error');
+  return false;
+}
+
+// THREE OUTCOMES, and the page needs to tell them apart:
+//
+//   the row was read        use it, and the page is showing what the server has
+//   no row yet              use the defaults — an ordinary first-run state
+//   the read FAILED         use whatever is on hand, and SAY SO
+//
+// The third used to be indistinguishable from the second: /api/settings caught
+// its own error and answered {data: null} with a 200, so a missing table and an
+// empty table produced the same silent fallback to defaults. It now sets
+// `unavailable`, and that is what state.settingsUnavailable carries to the page.
 async function loadEmailSettings(){
+  let unavailable = false;
   try {
     const res = await fetch('/api/settings?key=emailSettings');
     if (res.ok) {
       const json = await res.json();
+      unavailable = json && json.unavailable === true;
+      state.settingsUnavailable = unavailable;
+      state.settingsUnavailableReason = (json && json.reason) || '';
       const stored = parseSettingsValue(json.data && json.data.value);
       if (stored) {
+        // The server answered with a row, so nothing on the page is local-only
+        // any more — and a stale browser copy must not outlive it, or a later
+        // failed read would resurrect values the server has since replaced.
         state.emailSettings = {...EMAIL_SETTINGS_DEFAULTS, ...stored};
+        state.settingsLocalOnly = false;
+        try { localStorage.removeItem('emailSettings'); } catch (e) { void e; }
         return;
       }
+    } else {
+      unavailable = true;
+      state.settingsUnavailable = true;
+      state.settingsUnavailableReason = `the settings request failed (${res.status})`;
     }
   } catch (err) {
     console.error('Failed to load settings from database:', err);
+    unavailable = true;
+    state.settingsUnavailable = true;
+    state.settingsUnavailableReason = 'the settings request did not reach the server';
   }
-  // Fallback to localStorage
-  const saved = localStorage.getItem('emailSettings');
+
+  // Nothing came back. Fall back to the browser's copy if there is one — it is
+  // somebody's unsaved typing, and showing it beats showing defaults that
+  // silently discard it. It is flagged as local-only either way, because the
+  // server does not have it.
+  const saved = (() => { try { return localStorage.getItem('emailSettings'); } catch (e) { void e; return null; } })();
   const stored = saved ? parseSettingsValue(saved) : null;
   if (stored) {
     state.emailSettings = {...EMAIL_SETTINGS_DEFAULTS, ...stored};
+    state.settingsLocalOnly = true;
+  } else if (!unavailable) {
+    // No row, no local copy, and the read worked: the ordinary first-run state.
+    state.settingsLocalOnly = false;
   }
 }
 
