@@ -334,7 +334,7 @@ function openProfile(idx){
   state.profile={idx:idx};
   state.editing=null;
   render();
-  if(needsDriveLookup(state.employees[idx])) setTimeout(()=>loadDriveLink(state.employees[idx].name),50);
+  if(needsDriveLookup(state.employees[idx])) setTimeout(()=>loadDriveLink(state.employees[idx].name,state.employees[idx].id),50);
 }
 
 function closeProfile(){
@@ -365,7 +365,7 @@ function startProfileEdit(){
     allocDraft(person.id, hasDepartment(person.department)?person.department:'');
   }
   render();
-  if(needsDriveLookup(person)) setTimeout(()=>loadDriveLink(person.name),50);
+  if(needsDriveLookup(person)) setTimeout(()=>loadDriveLink(person.name,person.id),50);
 }
 
 // Cancel discards ALL of it — the employee fields, the allowance draft and the
@@ -377,7 +377,7 @@ function cancelProfileEdit(){
   state.editing=null;
   render();
   if(person&&needsDriveLookup(person)){
-    setTimeout(()=>loadDriveLink(person.name),50);
+    setTimeout(()=>loadDriveLink(person.name,person.id),50);
   }
 }
 
@@ -1436,7 +1436,19 @@ function copyTextBoltList() {
 // ============================================================
 // DRIVE FOLDER LINK
 // ============================================================
-function loadDriveLink(employeeName) {
+// THE LOOKUP, AND THE ONE WRITE THAT MAKES IT THE LAST ONE.
+//
+// employees.drive_folder_id was NULL for all 75 rows on 2026-09-15, because
+// nothing had ever written it. So every profile open ran this name search, and
+// every link on the page was only as good as that search — three things that
+// can each go quietly wrong (the drive, the folder's name, the employee's name)
+// in front of a link that is the same link every time.
+//
+// `id` is the employee's row id, and when it is present and the search finds a
+// folder, the id is SAVED. After that driveLinkBlock renders the link straight
+// from the stored fact and this function never runs for that person again.
+// One write per employee, ever, and only when it changes something.
+function loadDriveLink(employeeName, id) {
   const el = document.getElementById('driveLinkArea');
   if (!el) return;
   el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Looking up folder…</div>';
@@ -1450,13 +1462,38 @@ function loadDriveLink(employeeName) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Open HR File in Drive
         </a>`;
+        if (id && data.folderId) rememberDriveFolder(id, data.folderId);
       } else {
-        el.innerHTML = '<div style="font-size:12px;color:var(--muted)">No folder found — will be created on first upload via Drive</div>';
+        // The REASON, not "No folder found". The old wording read as "there
+        // isn't one" when the usual truth is "it is named something else" —
+        // which sends somebody to make a folder that already exists.
+        const why = data.reason
+          ? esc(data.reason)
+          : 'No folder found — one is created on the first upload.';
+        el.innerHTML = `<div style="font-size:12px;color:var(--muted);line-height:1.5">${why}</div>`;
       }
     })
     .catch(() => {
       el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Could not load folder link</div>';
     });
+}
+
+// Saves the folder id onto the employee row, so the link survives a rename in
+// Drive and costs no lookup next time.
+//
+// FIRE AND FORGET, deliberately. This is a cache fill, not something the person
+// asked for: a failure must not toast at them, must not disturb the card they
+// are reading, and must not re-render — the link they can see is already
+// correct. It simply tries again next time.
+function rememberDriveFolder(id, folderId) {
+  const person = (state.employees || []).find(e => String(e.id) === String(id));
+  if (!person || person.driveFolderId) return;
+  person.driveFolderId = folderId;          // so this render is the last lookup
+  fetch('/api/data?table=employees&id=' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drive_folder_id: folderId })
+  }).catch(() => { person.driveFolderId = ''; });
 }
 
 // ============================================================
