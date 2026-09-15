@@ -173,22 +173,15 @@ function renderSettings(){
 
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:24px">
         <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px">
-          <div style="font-size:16px;font-weight:700">📧 Email Notifications</div>
+          <div style="font-size:16px;font-weight:700">📊 OT Report Settings</div>
           ${editable?'':'<div style="font-size:12px;color:var(--muted)">read-only</div>'}
         </div>
 
         ${editable?'':`
         <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:20px;padding:12px;background:var(--surface2);border-radius:4px">
-          These settings decide what the weekly OT report says and who receives it, so only an
-          administrator may change them. The recipient list is the one that matters most: that
-          report carries what every hourly employee was paid.
+          These settings decide what the weekly OT report says, so only an administrator may
+          change them.
         </div>`}
-
-        <div style="margin-bottom:20px">
-          <div style="font-size:14px;font-weight:600">The completed week is emailed every Monday morning</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6">Every Monday mid-morning, the Mon–Sun week that just finished goes to <b>everybody on the access list</b>, after Sunday’s hours have arrived. A week missing a day is not sent at all; the alert address is told why instead. You can send any week by hand at any time from the OT Report tab.
-          <br><br><b>There is no switch.</b> It was removed on 2026-09-15: the people who could have turned it off are exactly the people who receive it, and a weekly report that stops arriving because somebody unticked a box a month ago is a failure nobody notices. To stop receiving it, come off the access list above.</div>
-        </div>
 
         <div style="margin-bottom:20px">
           <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">OT Budget</div>
@@ -237,17 +230,6 @@ function renderSettings(){
             </div>`:`<div style="font-size:13px;color:var(--muted)">No holidays marked. Every imported day counts as worked.</div>`}
         </div>
 
-        <div style="margin-top:24px">
-          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Report Recipients</div>
-          <div style="font-size:12px;color:var(--muted);line-height:1.6">
-            <b>Everyone on the access list receives the Monday OT email.</b> There is no separate
-            recipient list to keep in step — there were two, and the live data had
-            <span style="font-family:var(--mono,monospace)">jeffrey.cook@</span> holding a permission
-            and <span style="font-family:var(--mono,monospace)">jefrey.cook@</span> on the recipient
-            list, one letter apart, with nothing in the app able to notice they were not the same
-            person. Add or remove people under <b>Access</b> above; that is the whole list.
-          </div>
-        </div>
       </div>
     </div>
   `;

@@ -297,7 +297,19 @@ test('two things are editable per seat: the assignment and the position rate', a
   // seat's number, section or title. Adding or retitling a seat changes what
   // the plan is rather than what it budgets.
   assert.ok(!/\.seat\s*=|\.section\s*=|\.num\s*=/.test(html));
-  assert.match(html, /number, section and title are set in the database/);
+  // The prose that used to say so was removed on 2026-09-15 at the owner's
+  // request, so the rule is asserted against the markup instead: the only
+  // handlers that PERSIST anything are the assignment and the position rate.
+  // Everything else a seat row wires up is local — a draft value or a toggle.
+  const handlers = new Set((html.match(/on(?:change|click|input)="([a-zA-Z]+)/g) || [])
+    .map(m => m.slice(m.indexOf('"') + 1)));
+  const saving = [...handlers].filter(h => /save|assign|set/i.test(h) && h !== 'econMaxSet');
+  assert.deepStrictEqual(saving.sort(), ['econAssign', 'econSaveMax', 'econSetBurden', 'econSetMhr'],
+    'something new on this page writes to the server');
+  for (const h of handlers) {
+    assert.ok(!/seat|section|title|num/i.test(h),
+      h + ' touches the shape of the plan — that is set in the database, not here');
+  }
   // The two number boxes at the top are display assumptions, and say so.
   assert.match(html, /not stored/);
 });
