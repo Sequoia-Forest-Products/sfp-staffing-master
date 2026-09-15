@@ -28,8 +28,8 @@
 // Assumed until the server answers. Deny-by-default on this side too: an
 // unloaded state must never look like access.
 function defaultPerms(){
-  return { list:[], hasAccess:false, email:'', unavailable:false,
-           loaded:false, loading:false, error:'', busy:false };
+  return { list:[], hasAccess:false, email:'', unavailable:false, migrationPending:false,
+           migrationDetail:'', loaded:false, loading:false, error:'', busy:false };
 }
 
 // Kept as a function rather than inlined at 20 call sites: it is the sentence
@@ -52,6 +52,11 @@ async function loadPermissions(){
     // the migration runs — but the list cannot be edited until it does, and the
     // page says so rather than showing an empty list that looks editable.
     state.perms.unavailable=!!d.unavailable;
+    // The table exists but SCHEMA_ACCESS_LIST.sql has not run. The list READS
+    // correctly in this state and neither write works, so the page shows it and
+    // offers nothing — a form that 503s is worse than no form.
+    state.perms.migrationPending=!!d.migrationPending;
+    state.perms.migrationDetail=d.detail||'';
     state.perms.error='';
   }catch(err){
     state.perms.list=[];
@@ -161,6 +166,23 @@ async function revokeAccess(email){
 function renderAccessSection(){
   const people=(state.perms.list||[]);
   const busy=state.perms.busy?' disabled':'';
+
+  if(state.perms.migrationPending){
+    return `
+    <div style="background:var(--surface);border:1px solid #b8860b;border-radius:8px;padding:24px;margin-bottom:24px">
+      <div style="font-size:16px;font-weight:700;margin-bottom:6px">🔑 Access — migration not run</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:16px">
+        ${esc(state.perms.migrationDetail||'Run SCHEMA_ACCESS_LIST.sql in the Supabase SQL editor.')}
+        <br><br>Sign-in is falling back to the <b>${esc('sequoiafp.com')}</b> domain rule meanwhile,
+        so nobody is locked out — but this list is not deciding anything yet.
+      </div>
+      ${people.length?`
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:8px">On the table today</div>
+        <div class="table-wrap"><table><tbody>
+          ${people.map(email=>`<tr><td style="font-size:13px;padding:10px 12px">${esc(email)}</td></tr>`).join('')}
+        </tbody></table></div>`:''}
+    </div>`;
+  }
 
   if(state.perms.unavailable){
     return `

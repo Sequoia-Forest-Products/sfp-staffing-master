@@ -54,12 +54,14 @@ exports.handler = async (event) => {
   const params = event.queryStringParameters || {};
   const caller = perms.normalizeEmail(session.email);
 
-  // The current list, read once and shared by every branch below. Every branch
-  // needs it: GET returns it, POST checks for a duplicate, DELETE counts what
-  // would be left.
-  let list;
+  // The current rows, read once and shared by every branch below. Every branch
+  // needs them: GET returns the list, POST checks for a duplicate, DELETE counts
+  // what would be left, and all three need to know whether the migration has run.
+  let list, pending;
   try {
-    list = await perms.fetchAccessList(db);
+    const rows = await perms.fetchAccessRows(db);
+    list = perms.resolveAccessList(rows);
+    pending = perms.migrationPending(rows);
   } catch (err) {
     if (perms.isMissingTable(err)) {
       return method === 'GET'
@@ -72,8 +74,22 @@ exports.handler = async (event) => {
 
   if (method === 'GET') {
     return { statusCode: 200, headers, body: JSON.stringify({
-      ok: true, list, hasAccess: list.includes(caller), caller
+      ok: true, list, hasAccess: list.includes(caller), caller,
+      // The page draws the list read-only and says what to run, rather than
+      // offering controls that would be refused.
+      migrationPending: pending,
+      ...(pending ? { detail: perms.MIGRATION_REFUSAL.detail } : {})
     }) };
+  }
+
+  // BOTH WRITES ARE HELD UNTIL THE MIGRATION RUNS, and holding the DELETE is the
+  // half that matters. The CHECK on `tier` refuses an INSERT and does not refuse
+  // a DELETE, so without this the list can only shrink — which is not a
+  // hypothetical: Ryley Stanley was removed on 2026-09-15 and could not be put
+  // back, because the add that would have restored him is the operation the
+  // CHECK rejects.
+  if (pending) {
+    return fail(503, perms.MIGRATION_REFUSAL.error, { detail: perms.MIGRATION_REFUSAL.detail });
   }
 
   // WRITES. A valid session already proves the caller was on the list when they
@@ -105,6 +121,14 @@ exports.handler = async (event) => {
       await db.insert(perms.ACCESS_TABLE,
         { email, tier: 'access', granted_by: caller });
     } catch (err) {
+      // The belt to migrationPending's braces. That check reads the table's
+      // CONTENT; this catches the constraint itself, which is the thing that
+      // actually refuses the row — so a table in some shape the content probe
+      // does not recognise still produces a sentence naming the migration
+      // rather than a raw constraint name.
+      if (perms.isTierCheckViolation(err)) {
+        return fail(503, perms.MIGRATION_REFUSAL.error, { detail: perms.MIGRATION_REFUSAL.detail });
+      }
       return fail(500, 'The access could not be granted.', { detail: readableDbError(err) });
     }
     return { statusCode: 200, headers, body: JSON.stringify({
