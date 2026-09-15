@@ -73,6 +73,40 @@
 const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED  = 'Unassigned';
 
+// ------------------------------------------------------------------------
+// MAINTENANCE vs PRODUCTION — A DEPARTMENT QUESTION, NOT A DAY QUESTION
+// ------------------------------------------------------------------------
+//
+// This split used to be Mon-Thu vs Fri-Sun, on the reasoning that the mill runs
+// production Mon-Thu and maintenance crews work the weekend. That is a true
+// GENERAL RULE and a bad BASIS FOR ARITHMETIC, which is the distinction this
+// constant exists to hold. Measured against the live week of 2026-09-07, with
+// the Labor Day holiday already taken out: it filed 121.5 hours of
+// Maintenance-department work under "production days" and 63.1 hours of
+// Production-department work under "maintenance days". 184.7 hours — 12% of the
+// week's worked time — on the wrong side of a two-line summary somebody reads in
+// five seconds.
+//
+// The department is a recorded fact about the person doing the work. The day is
+// a proxy for it, and a proxy that disagrees with the fact it stands in for is
+// worth nothing. Fri-Sun still appears on this report — the per-day table is
+// labelled with it and summary.weekend* still measures it — but it no longer
+// DECIDES anything.
+const MAINTENANCE_DEPARTMENTS = ['Maintenance'];
+const PRODUCTION_DEPARTMENTS  = DEPARTMENTS.filter(d => !MAINTENANCE_DEPARTMENTS.includes(d));
+
+// Which side of the split a row falls on. 'other' is SG&A and Unassigned: both
+// are findings rather than buckets (see NON_PRODUCTION below and
+// issues.unassignedEmployees), and folding either into production would hide a
+// data problem inside a number people act on. It is reported as its own line so
+// the three still add up to the week.
+function departmentGroup(department) {
+  const d = cleanText(department);
+  if (d && MAINTENANCE_DEPARTMENTS.includes(d)) return 'maintenance';
+  if (d && PRODUCTION_DEPARTMENTS.includes(d))  return 'production';
+  return 'other';
+}
+
 // NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
 // mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
 // string is the label the database CHECK constraint now uses for it. The label
@@ -411,7 +445,10 @@ function buildReport({
   overtimeRows = [],
   employees = [],
   expectedDays = null,
-  graceHoursPerEmployee = null
+  graceHoursPerEmployee = null,
+  // Dates the mill did not run: 'YYYY-MM-DD', from the holiday list on the
+  // Settings tab. See the partition below for what a holiday does to a figure.
+  holidays = null
 } = {}) {
   const standingRows = preApprovedRows === null ? (overtimeRows || []) : (preApprovedRows || []);
   // Every loop below iterates `dates`, which is why a range costs so little
@@ -481,7 +518,8 @@ function buildReport({
   };
 
   // ---- normalize the daily rows ---------------------------------------
-  const rows = [];
+  // `let`, because the holiday partition below rebinds it to the WORKED rows.
+  let rows = [];
   for (const raw of dailyRows || []) {
     const date = normalizeDate(raw.work_date);
     if (!date || !dateSet.has(date)) continue; // defensive: the caller may over-fetch
@@ -546,6 +584,39 @@ function buildReport({
       dateSource: cleanText(raw.date_source)
     });
   }
+
+  // ---- HOLIDAYS: hours that were PAID but not WORKED ---------------------
+  //
+  // Labor Day 2026 arrived as 52 rows totalling 508.00 hours — 50 people on
+  // exactly 10.00 and two on exactly 4.00, with not one minute of overtime. The
+  // mill was closed. Nobody clocks a round number; that shape is holiday pay
+  // posted per employee, and the vendor file has no pay-code column to say so,
+  // so nothing could tell it from a day's work. It counted as 24% of that
+  // week's hours and sat inside every figure on the report.
+  //
+  // THE SPLIT IS WORKED vs PAID, and it runs here, before any aggregation, so
+  // there is exactly ONE place a holiday is taken out and no chance of a total
+  // that includes it meeting a total that does not:
+  //
+  //   workedRows    everything downstream — the week, the departments, the
+  //                 people, the day blocks, both percentages of payroll.
+  //   holidayRows   the `holidays` section alone. The money is real and stays
+  //                 visible; it is simply not payroll that bought production.
+  //
+  // A holiday still shows up as a DAY, with its hours labelled as holiday pay.
+  // Dropping the date entirely would read as a missed delivery, which is a
+  // different problem with a different fix, and would send somebody looking for
+  // a file that arrived exactly as it should have.
+  const holidaySet = new Set(
+    (Array.isArray(holidays) ? holidays : []).map(normalizeDate).filter(Boolean)
+  );
+  const isHolidayDate = (date) => holidaySet.has(date);
+
+  const allRows     = rows;
+  const holidayRows = holidaySet.size ? allRows.filter(r => isHolidayDate(r.date)) : [];
+  // Rebound rather than renamed at 40 call sites: every aggregation below this
+  // line means WORKED hours, and the one that does not says so explicitly.
+  rows = holidaySet.size ? allRows.filter(r => !isHolidayDate(r.date)) : allRows;
 
   // ---- per employee ----------------------------------------------------
   const people = new Map();
@@ -899,13 +970,27 @@ function buildReport({
     .sort((a, b) => b.hours - a.hours || a.department.localeCompare(b.department));
 
   // ---- per day ---------------------------------------------------------
+  //
+  // Built from `rows` (worked) so a holiday's hours do not reach the totals,
+  // and from holidayByDate alongside so the DAY is still on the table with its
+  // pay shown. A holiday that simply vanished would read as a day the vendor
+  // never sent, and somebody would go looking for a file that arrived on time.
   const rowsByDate = new Map(dates.map(d => [d, []]));
   for (const row of rows) rowsByDate.get(row.date).push(row);
 
+  const holidayByDate = new Map(dates.map(d => [d, []]));
+  for (const row of holidayRows) {
+    if (holidayByDate.has(row.date)) holidayByDate.get(row.date).push(row);
+  }
+
   const days = dates.map((date) => {
     const dayRows = rowsByDate.get(date);
+    const holRows = holidayByDate.get(date) || [];
     const isoDow  = isoDowFromMs(dateToUTC(date));
     const block   = newBlock();
+    const holBlock = newBlock();
+    for (const row of holRows) addRow(holBlock, row);
+    const holiday = finishBlock(holBlock);
     const workers = new Map();
 
     for (const row of dayRows) {
@@ -924,7 +1009,9 @@ function buildReport({
     }
 
     const distinct = (field) => {
-      const values = [...new Set(dayRows.map(r => r[field]).filter(Boolean))];
+      // Over worked AND holiday rows: `source` and `dateSource` describe the
+      // FILE, and a holiday's file is as real as any other.
+      const values = [...new Set([...dayRows, ...holRows].map(r => r[field]).filter(Boolean))];
       if (values.length === 0) return null;
       return values.length === 1 ? values[0] : values.join(', ');
     };
@@ -935,8 +1022,16 @@ function buildReport({
       dayName: DAY_NAMES[isoDow - 1],
       isoDow,
       isScheduledDay: isoDow <= LAST_SCHEDULED_ISO_DOW,
-      hasData: dayRows.length > 0,
-      rowCount: dayRows.length,
+      // A marked holiday, and what was PAID on it. Never added to `hours` —
+      // that is worked time and this day has none.
+      isHoliday: isHolidayDate(date),
+      holidayHours: holiday.hours,
+      holidayEarnings: holiday.earnings,
+      holidayHeadcount: holiday.headcount,
+      // hasData counts the holiday rows too: a file DID arrive for this date,
+      // and reporting it as a missed delivery would be false.
+      hasData: dayRows.length > 0 || holRows.length > 0,
+      rowCount: dayRows.length + holRows.length,
       hours: totals.hours,
       otHours: totals.otHours,
       otDollars: totals.otDollars,
@@ -994,19 +1089,31 @@ function buildReport({
   });
 
   // ---- summary + split -------------------------------------------------
+  //
+  // TWO INDEPENDENT CUTS OF THE SAME WEEK, and they are no longer the same cut
+  // wearing two labels:
+  //
+  //   split        by DEPARTMENT. Maintenance vs the production departments —
+  //                see departmentGroup(). This is the maintenance/production
+  //                breakdown, and it is what changed on 2026-09-15.
+  //   nonScheduled by DAY. Fri-Sun, feeding summary.weekend*, which the weekend
+  //                section reports and labels as days.
+  //
+  // Both sum to the week. Keeping them apart is the point: the day cut is a
+  // fact about the calendar and stays available, it just stopped standing in
+  // for the department.
   const weekBlock         = newBlock();
-  const scheduledBlock    = newBlock();
   const nonScheduledBlock = newBlock();
+  const groupBlocks = { maintenance: newBlock(), production: newBlock(), other: newBlock() };
   for (const row of rows) {
     addRow(weekBlock, row);
-    addRow(row.isScheduledDay ? scheduledBlock : nonScheduledBlock, row);
+    if (!row.isScheduledDay) addRow(nonScheduledBlock, row);
+    addRow(groupBlocks[departmentGroup(row.department)], row);
   }
 
   const week         = finishBlock(weekBlock);
-  const scheduled    = finishBlock(scheduledBlock);
-  // "weekend" and "nonScheduled" are the same Fri-Sun block under two names, so
-  // scheduled + weekend is always exactly the week. Friday belongs here: the
-  // scheduled week is Mon-Thu, and Friday work is maintenance work.
+  // Fri-Sun. Named for the days it covers, and used for nothing but
+  // summary.weekend* now that the split has moved to departments.
   const nonScheduled = finishBlock(nonScheduledBlock);
 
   const totalHourlyPayroll = week.earnings;
@@ -1049,17 +1156,26 @@ function buildReport({
     weekendHeadcount: nonScheduled.headcount
   };
 
+  // BY DEPARTMENT. The three add up to the week exactly, which is why `other`
+  // is here at all rather than folded into production: SG&A and Unassigned rows
+  // are both findings, and a summary that quietly absorbed them would hide a
+  // data problem inside a number people act on.
+  //
+  // earnings as well as otDollars, on every one: a Saturday maintenance shift
+  // paid entirely at the regular rate has 0 OT dollars and still costs real
+  // money, and that was true of the old split too.
+  const blockOut = (b) => ({
+    hours: b.hours, otHours: b.otHours, otDollars: b.otDollars,
+    earnings: b.earnings, headcount: b.headcount
+  });
   const split = {
-    scheduled: {
-      hours: scheduled.hours, otHours: scheduled.otHours, otDollars: scheduled.otDollars,
-      earnings: scheduled.earnings, headcount: scheduled.headcount
-    },
-    nonScheduled: {
-      // earnings, not otDollars: a Saturday maintenance shift paid entirely at
-      // the regular rate has 0 OT dollars and still costs real money.
-      hours: nonScheduled.hours, otHours: nonScheduled.otHours, otDollars: nonScheduled.otDollars,
-      earnings: nonScheduled.earnings, headcount: nonScheduled.headcount
-    }
+    maintenance: blockOut(finishBlock(groupBlocks.maintenance)),
+    production:  blockOut(finishBlock(groupBlocks.production)),
+    other:       blockOut(finishBlock(groupBlocks.other)),
+    // The departments behind each side, so the screen can name them rather than
+    // asking a reader to know which five 'production' means.
+    maintenanceDepartments: [...MAINTENANCE_DEPARTMENTS],
+    productionDepartments:  [...PRODUCTION_DEPARTMENTS]
   };
 
   // ---- employees -------------------------------------------------------
@@ -1134,6 +1250,54 @@ function buildReport({
     missingDays: expectedDayList.filter(d => !d.hasData).map(d => d.date),
     daysWithData: expectedDayList.filter(d => d.hasData).length,
     daysExpected: expectedDayList.length
+  };
+
+  // ---- holiday pay -----------------------------------------------------
+  //
+  // Everything the partition took out, added back up where it can be seen. Per
+  // date, because "508 hours" is a number somebody will want to check against
+  // the roster, and per department because a holiday is paid across all of them.
+  const holidayBlock = newBlock();
+  for (const row of holidayRows) addRow(holidayBlock, row);
+  const holidayTotals = finishBlock(holidayBlock);
+
+  const holidayDeptAcc = new Map();
+  for (const row of holidayRows) {
+    if (!holidayDeptAcc.has(row.department)) holidayDeptAcc.set(row.department, newBlock());
+    addRow(holidayDeptAcc.get(row.department), row);
+  }
+
+  const holidayDates = dates
+    .filter(d => isHolidayDate(d) && (holidayByDate.get(d) || []).length > 0)
+    .map((date) => {
+      const b = newBlock();
+      for (const row of holidayByDate.get(date)) addRow(b, row);
+      const t = finishBlock(b);
+      const isoDow = isoDowFromMs(dateToUTC(date));
+      return {
+        date, dayName: DAY_NAMES[isoDow - 1],
+        hours: t.hours, earnings: t.earnings, headcount: t.headcount
+      };
+    });
+
+  const holidaySummary = {
+    // Marked AND inside this period AND carrying rows. A date marked but never
+    // imported is not reported as a holiday with zero hours — there is nothing
+    // to report and a zero row reads like a finding.
+    dates: holidayDates.map(d => d.date),
+    byDate: holidayDates,
+    byDepartment: sortDepartments([...holidayDeptAcc.keys()]).map((name) => {
+      const t = finishBlock(holidayDeptAcc.get(name));
+      return { department: name, hours: t.hours, earnings: t.earnings, headcount: t.headcount };
+    }),
+    hours: holidayTotals.hours,
+    earnings: holidayTotals.earnings,
+    headcount: holidayTotals.headcount,
+    rowCount: holidayRows.length,
+    // Marked dates that fall in this period but brought no rows — nothing was
+    // imported for them. Separate from `dates` because it means something else:
+    // the day is excluded and there is also no holiday pay to show.
+    datesWithoutData: dates.filter(d => isHolidayDate(d) && (holidayByDate.get(d) || []).length === 0)
   };
 
   // ---- issues ----------------------------------------------------------
@@ -1262,6 +1426,11 @@ function buildReport({
     // report, which is what they have always been.
     weekStart: monday,
     weekEnd: sunday,
+    // HOLIDAY PAY: in the period, excluded from every figure above, reported
+    // here so the money stays visible. `dates` is only the marked days that
+    // actually fall inside this period and carry rows — a holiday list covering
+    // the year must not make every week claim a holiday it did not contain.
+    holidays: holidaySummary,
     // What the period is worth in weeks, and how many days it spans. Reported so
     // a reader can check the allowance scaling rather than take it on trust: the
     // pre-approved and grace figures below are these weeks' worth.

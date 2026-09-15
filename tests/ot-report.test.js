@@ -23,6 +23,7 @@ const {
 } = require('../netlify/functions/ot-report-lib');
 
 const WEEK = '2026-08-03';
+const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 // The columns a real daily_hours row carries; each fixture overrides what matters.
 function dailyRow(over) {
@@ -188,23 +189,27 @@ test('buildReport snaps a mid-week weekStart to its Monday', () => {
 });
 
 // ============================================================
-// Scheduled vs non-scheduled
+// Fri-Sun, as DAYS
 // ============================================================
+//
+// summary.weekend* is the day cut and stays the day cut. What moved on
+// 2026-09-15 is `split`, which used to be these same numbers under a
+// maintenance/production label — see the department tests below.
 
 test('a Saturday shift paid entirely at the regular rate still shows up as earnings', () => {
   const r = report();
   // Ben's 8 Saturday hours carry no OT dollars at all...
-  assert.strictEqual(r.split.nonScheduled.otDollars, 0);
-  assert.strictEqual(r.split.nonScheduled.otHours, 0);
+  assert.strictEqual(r.summary.weekendOtDollars, 0);
+  assert.strictEqual(r.summary.weekendOtHours, 0);
   // ...and $196 of payroll that must not disappear from the weekend view.
   //
   // Ben only. Fred Nobody worked the Friday but is not on the roster, so there
   // is no rate we own for him: his 6 HOURS still count and his dollars are 0,
   // the same answer anybody with no wage gets. He is named in
   // issues.unknownEmployeeNumbers, so the gap is reported rather than absorbed.
-  assert.strictEqual(r.split.nonScheduled.earnings, 196);
-  assert.strictEqual(r.split.nonScheduled.hours, 14);
-  assert.strictEqual(r.split.nonScheduled.headcount, 2);
+  assert.strictEqual(r.summary.weekendDollars, 196);
+  assert.strictEqual(r.summary.weekendHours, 14);
+  assert.strictEqual(r.summary.weekendHeadcount, 2);
 
   const saturday = dayOf(r.days, '2026-08-08');
   assert.strictEqual(saturday.dayName, 'Saturday');
@@ -215,15 +220,70 @@ test('a Saturday shift paid entirely at the regular rate still shows up as earni
   assert.strictEqual(saturday.workers[0].name, 'Ben Carter');
 });
 
-test('scheduled and non-scheduled split adds back up to the week', () => {
+// ============================================================
+// The split is by DEPARTMENT, not by day
+// ============================================================
+//
+// Changed 2026-09-15. Mon-Thu vs Fri-Sun is a true general rule about when the
+// mill runs and a bad basis for arithmetic: in the week of 2026-09-07 it filed
+// 121.5 hours of Maintenance-department work under "production days" and 63.1
+// hours of Production-department work under "maintenance days" — 184.7 hours,
+// 12% of that week's worked time.
+
+test('the split adds back up to the week', () => {
   const r = report();
-  assert.strictEqual(r.split.scheduled.hours + r.split.nonScheduled.hours, r.summary.totalHours);
-  assert.strictEqual(r.split.scheduled.earnings + r.split.nonScheduled.earnings, r.summary.totalHourlyPayroll);
-  // "weekend" in the summary is the same Fri-Sun block as split.nonScheduled.
-  assert.strictEqual(r.summary.weekendHours, r.split.nonScheduled.hours);
-  assert.strictEqual(r.summary.weekendDollars, r.split.nonScheduled.earnings);
-  assert.strictEqual(r.summary.weekendOtDollars, 0);
-  assert.strictEqual(r.summary.weekendHeadcount, 2);
+  const { maintenance: m, production: p, other: o } = r.split;
+  assert.strictEqual(round2(m.hours + p.hours + o.hours), r.summary.totalHours);
+  assert.strictEqual(round2(m.earnings + p.earnings + o.earnings), r.summary.totalHourlyPayroll);
+  assert.strictEqual(round2(m.otHours + p.otHours + o.otHours), r.summary.allOtHours);
+});
+
+test('a department lands on its own side whatever day it worked', () => {
+  // The whole point. A Maintenance person working Monday is MAINTENANCE, and a
+  // Production person working Saturday is PRODUCTION — the day decides nothing.
+  const r = buildReport({
+    weekStart: WEEK,
+    dailyRows: [
+      // Maintenance dept, on a Monday — used to count as 'production days'.
+      dailyRow({ work_date: '2026-08-03', employee_number: '0201', first_name: 'Mel', last_name: 'Fix',
+                 department: 'Maintenance', regular_hours: 10, total_hours: 10 }),
+      // Production dept, on a Saturday — used to count as 'maintenance days'.
+      dailyRow({ work_date: '2026-08-08', employee_number: '0202', first_name: 'Pat', last_name: 'Mill',
+                 department: 'Production', regular_hours: 8, total_hours: 8 })
+    ],
+    preApprovedRows: [], employees: [], graceHoursPerEmployee: 0
+  });
+
+  assert.strictEqual(r.split.maintenance.hours, 10, 'Monday maintenance is maintenance');
+  assert.strictEqual(r.split.production.hours, 8, 'Saturday production is production');
+  // And the day cut still says what it always said, on the same rows.
+  assert.strictEqual(r.summary.weekendHours, 8);
+});
+
+test('SG&A and unassigned rows are their own line, never folded into production', () => {
+  // Both are findings. A summary that absorbed them would hide a data problem
+  // inside a number people act on.
+  const r = buildReport({
+    weekStart: WEEK,
+    dailyRows: [
+      dailyRow({ work_date: '2026-08-03', employee_number: '0203', first_name: 'No', last_name: 'Dept',
+                 department: null, regular_hours: 5, total_hours: 5 }),
+      dailyRow({ work_date: '2026-08-03', employee_number: '0204', first_name: 'Off', last_name: 'Ice',
+                 department: 'SG&A', regular_hours: 6, total_hours: 6 })
+    ],
+    preApprovedRows: [], employees: [], graceHoursPerEmployee: 0
+  });
+
+  assert.strictEqual(r.split.production.hours, 0);
+  assert.strictEqual(r.split.maintenance.hours, 0);
+  assert.strictEqual(r.split.other.hours, 11);
+});
+
+test('the split names the departments on each side', () => {
+  const r = report();
+  assert.deepStrictEqual(r.split.maintenanceDepartments, ['Maintenance']);
+  assert.deepStrictEqual([...r.split.productionDepartments].sort(),
+    ['Clean-up', 'Log Yard', 'Production', 'Saw Filing', 'Shipping']);
 });
 
 test('Friday counts as non-scheduled work and, having data, is not missing', () => {
@@ -2197,4 +2257,110 @@ test('an empty period is refused rather than reported as nothing', () => {
   // a page of zeros that looks like a quiet week.
   assert.throws(() => buildReport({ from: '2026-09-13', to: '2026-09-07', employees: RANGE_EMPLOYEES }),
     /no dates in the period/);
+});
+
+// ============================================================
+// Holidays — hours that were PAID but not WORKED
+// ============================================================
+//
+// Labor Day 2026 (Monday 2026-09-07) arrived as 52 rows totalling 508.00 hours:
+// 50 people on exactly 10.00 and two on exactly 4.00, with zero overtime. The
+// mill was closed. Nobody clocks a round number, and the vendor file has no
+// pay-code column, so nothing could tell holiday pay from a day's work — it
+// counted as 24% of that week's hours inside every figure on the report.
+//
+// A date on the Settings holiday list is taken out of every worked figure and
+// reported on its own. The fixture below is the real day's shape, scaled down.
+
+const HOLIDAY_WEEK = '2026-09-07';
+const HOLIDAY_ROWS = [
+  // Labor Day: everyone posted a flat shift, nobody worked.
+  dailyRow({ work_date: '2026-09-07', employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+             department: 'Production', pay_rate: 28, regular_hours: 10, total_hours: 10 }),
+  dailyRow({ work_date: '2026-09-07', employee_number: '0102', first_name: 'Ben', last_name: 'Carter',
+             department: 'Maintenance', pay_rate: 24.5, regular_hours: 10, total_hours: 10 }),
+  // Tuesday: a real day, with real ragged hours and real overtime.
+  dailyRow({ work_date: '2026-09-08', employee_number: '0101', first_name: 'Ana', last_name: 'Reyes',
+             department: 'Production', pay_rate: 28, regular_hours: 10, ot_hours: 2, total_hours: 12 }),
+  dailyRow({ work_date: '2026-09-08', employee_number: '0102', first_name: 'Ben', last_name: 'Carter',
+             department: 'Maintenance', pay_rate: 24.5, regular_hours: 9.75, total_hours: 9.75 })
+];
+const HOLIDAY_EMPLOYEES = [
+  { id: 'p1', name: 'Ana Reyes',  employee_number: '0101', wage: '28.00', status: 'Active',
+    department: 'Production',  cost_class: 'Manufacturing', pay_type: 'Hourly' },
+  { id: 'p2', name: 'Ben Carter', employee_number: '0102', wage: '24.50', status: 'Active',
+    department: 'Maintenance', cost_class: 'Manufacturing', pay_type: 'Hourly' }
+];
+const holidayReport = (holidays) => buildReport({
+  weekStart: HOLIDAY_WEEK, dailyRows: HOLIDAY_ROWS, preApprovedRows: [],
+  employees: HOLIDAY_EMPLOYEES, graceHoursPerEmployee: 0, holidays
+});
+
+test('without a holiday list, the closed day counts as worked — the bug as found', () => {
+  const r = holidayReport(null);
+  assert.strictEqual(r.summary.totalHours, 41.75, '20 posted + 21.75 actually worked');
+  assert.strictEqual(r.holidays.hours, 0);
+  assert.deepStrictEqual(r.holidays.dates, []);
+});
+
+test('a marked holiday leaves every worked figure', () => {
+  const r = holidayReport(['2026-09-07']);
+  assert.strictEqual(r.summary.totalHours, 21.75, 'only Tuesday was worked');
+  assert.strictEqual(r.summary.allOtHours, 2, 'the holiday carried no OT and still carries none');
+  // The payroll denominator too — otherwise the percentage divides real OT by
+  // a payroll that includes a day nobody worked, and reads low.
+  // Ana 10x28 = 280, plus 2 OT at 1.5x28 = 84. Ben 9.75x24.50 = 238.88.
+  assert.strictEqual(r.summary.totalHourlyPayroll, 602.88);
+  assert.ok(r.summary.allOtPctOfPayroll > 0);
+});
+
+test('the holiday pay is reported rather than deleted', () => {
+  const r = holidayReport(['2026-09-07']);
+  assert.deepStrictEqual(r.holidays.dates, ['2026-09-07']);
+  assert.strictEqual(r.holidays.hours, 20);
+  assert.strictEqual(r.holidays.earnings, 525);              // 10x28 + 10x24.5
+  assert.strictEqual(r.holidays.headcount, 2);
+  assert.deepStrictEqual(r.holidays.byDate[0],
+    { date: '2026-09-07', dayName: 'Monday', hours: 20, earnings: 525, headcount: 2 });
+  // Across departments, because a holiday is paid to all of them.
+  assert.deepStrictEqual(r.holidays.byDepartment.map(d => d.department), ['Maintenance', 'Production']);
+});
+
+test('the holiday stays on the day table, marked, and is never a missed delivery', () => {
+  // A day that vanished would read as a file the vendor never sent, and send
+  // somebody looking for something that arrived exactly on time.
+  const r = holidayReport(['2026-09-07']);
+  const monday = dayOf(r.days, '2026-09-07');
+  assert.strictEqual(monday.isHoliday, true);
+  assert.strictEqual(monday.hours, 0, 'no hours were worked');
+  assert.strictEqual(monday.holidayHours, 20);
+  assert.strictEqual(monday.holidayEarnings, 525);
+  assert.strictEqual(monday.hasData, true, 'a file DID arrive for this date');
+  assert.strictEqual(monday.source, 'email', 'and the file is still described');
+  assert.ok(!r.completeness.missingDays.includes('2026-09-07'));
+});
+
+test('a holiday is out of the department split and out of every person', () => {
+  const r = holidayReport(['2026-09-07']);
+  assert.strictEqual(r.split.production.hours, 12,  'Ana worked Tuesday only');
+  assert.strictEqual(r.split.maintenance.hours, 9.75, 'Ben likewise');
+
+  const ana = r.employees.find(e => e.employeeNumber === '0101');
+  assert.strictEqual(ana.totalHours, 12);
+  assert.strictEqual(ana.daysWorked, 1, 'the holiday is not a day worked');
+
+  const production = r.departments.find(d => d.department === 'Production');
+  assert.strictEqual(production.week.hours, 12);
+});
+
+test('a marked date outside the period, or with no data, changes nothing', () => {
+  // A holiday list covers the year. Every week must not claim a holiday it did
+  // not contain, and a marked day nobody imported is not a zero-hour holiday.
+  const outside = holidayReport(['2026-12-25']);
+  assert.strictEqual(outside.summary.totalHours, 41.75, 'an out-of-period date is inert');
+  assert.deepStrictEqual(outside.holidays.dates, []);
+
+  const noData = holidayReport(['2026-09-07', '2026-09-10']);
+  assert.deepStrictEqual(noData.holidays.dates, ['2026-09-07'], 'only the day with rows is reported');
+  assert.deepStrictEqual(noData.holidays.datesWithoutData, ['2026-09-10'], 'the other is named separately');
 });

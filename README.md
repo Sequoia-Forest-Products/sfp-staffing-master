@@ -678,13 +678,65 @@ they display hours and dollars side by side and a bare percentage does not say w
   payroll is not a meaningful figure and must never be one again. A test pins both the card and the
   budget comparison.
 
-**"Maintenance" names the day block, not the department, and that distinction is live.**
-Production-department people do work Fri-Sun, and their rows keep `department = 'Production'` —
-that is where a person works, not what ran that day. So the OT report legitimately shows Production
-rows under a Maintenance heading. Both sections carrying the label are followed by a line saying so,
-and `tests/reports-tab.test.js` fails if either is removed: without them the report reads as though
-production ran a weekend. For the same reason the figures are `Maintenance-day OT $` rather than
-`Maintenance OT $` — they are every department's overtime on Fri-Sun, not one department's.
+### Maintenance vs production is a DEPARTMENT split — changed 2026-09-15
+
+It used to be Mon-Thu vs Fri-Sun, on the reasoning that the mill runs production Mon-Thu and
+maintenance crews work the weekend. That is a true **general rule** and a bad **basis for
+arithmetic**, and the distinction is the whole change.
+
+Measured on the live week of 2026-09-07, holiday excluded, the day rule filed **121.5 hours** of
+Maintenance-department work under "production days" and **63.1 hours** of Production-department work
+under "maintenance days" — 184.7 hours, **12% of the week's worked time**, on the wrong side of a
+two-line summary somebody reads in five seconds.
+
+`report.split` is now `{ maintenance, production, other }`, built from `departmentGroup()` in
+`ot-report-lib.js`. The department is a recorded fact about the person doing the work; the day was a
+proxy for it, and a proxy that disagrees with the fact it stands in for is worth nothing.
+
+**Three buckets, not two.** `other` is SG&A and Unassigned — both are findings rather than buckets,
+and folding either into production would hide a data problem inside a number people act on. The
+third card renders only when it has something in it, so a clean week still reads as two.
+
+**Fri-Sun did not go away; it stopped deciding things.** `summary.weekend*` is still the day cut and
+still feeds the Fri-Sun labour block and the per-day table, where the day is a fact about the
+calendar rather than a stand-in for the department. That block still prints a Department column and
+still carries the line saying its heading names the **days** — Production-department people work
+Fri-Sun and their rows keep `department = 'Production'`, so it legitimately shows Production rows
+under a Maintenance heading. Its figures stay `Maintenance-day OT $` rather than `Maintenance OT $`
+for the same reason: they are every department's overtime on Fri-Sun, not one department's. A test
+fails if that line is removed.
+
+### Mill holidays — hours that were PAID but not WORKED
+
+Labor Day 2026 (Monday 2026-09-07) arrived as 52 rows totalling **508.00 hours**: 50 people on
+exactly `10.00`, two on exactly `4.00`, and **zero overtime**. The mill was closed. Nobody clocks a
+round number — every real day in the table has ragged decimals like `507.60` and `470.73` — but the
+vendor file has no pay-code column, so nothing could tell holiday pay from a day's work. It counted
+as **24% of that week's hours** inside every figure on the report.
+
+`settings.emailSettings.holidays` is a list of `YYYY-MM-DD` dates, managed on the Settings tab and
+read server-side by `payroll-report.js` alongside the grace hours (one row, one query). A marked date
+is partitioned out in `buildReport` **before any aggregation**, so there is exactly one place a
+holiday is removed and no chance of a total that includes it meeting a total that does not:
+
+| | |
+|---|---|
+| `rows` (worked) | the week, departments, people, day blocks, **both percentages of payroll** |
+| `holidayRows` | `report.holidays` alone — the money is real and stays visible |
+
+On the live week of 2026-09-07 that moves the week from **2098.75** hours to **1590.75**, with 508.00
+reported separately as holiday pay. Overtime is unchanged at 83.18 — the holiday carried none.
+
+**The day still appears, marked.** A holiday that vanished would read as a missed delivery, which is
+a different problem with a different fix, and would send somebody looking for a file that arrived
+exactly on time. `days[].isHoliday`, `holidayHours` and `holidayEarnings` carry it; `hasData` counts
+the holiday rows, so completeness never calls it missing.
+
+**Nothing is inferred.** A rule like "everyone on a round number with no OT" would need no upkeep and
+would be a guess: a genuine day where everybody happened to work exact shifts would be excluded,
+taking real production out of every figure — the same failure this fixes, pointed the other way. A
+wrong exclusion is worse than a missing one, so only typed dates are excluded, and a malformed entry
+is dropped at the parser rather than passed through to silently match nothing.
 
 **THE FEED IS HOURS-ONLY SINCE 2026-08-22.** `pay_rate`, `total_earnings`, `ot_dollars` and
 `regular_dollars` are **NULL on every row imported since**, and hold real vendor figures on every

@@ -63,6 +63,45 @@ async function setOTBudgetPercent(v){
   toast('OT budget saved','success');
 }
 
+// ---- mill holidays -----------------------------------------------------
+//
+// Dates the mill did not run. Labor Day 2026 is why this exists: the payroll
+// file posted 508 hours of holiday pay — 50 people on exactly 10.00, two on
+// 4.00, zero overtime — and nothing in the file says it is holiday pay rather
+// than a day's work, so every figure on the OT report counted it. It was 24% of
+// that week.
+//
+// TYPED, NOT GUESSED. A rule like "everyone on a round number with no OT" would
+// need no upkeep and would be a guess: a genuine day where everybody happened to
+// work exact shifts would be excluded, taking real production out of every
+// figure — the same failure pointed the other way. A wrong exclusion is worse
+// than a missing one, so this list is only ever what somebody typed.
+//
+// Reloads the report after every change, because the number on screen is now
+// wrong and leaving it there is how somebody quotes it.
+const holidayList=()=>Array.isArray(state.emailSettings.holidays)?state.emailSettings.holidays:[];
+
+async function addHoliday(){
+  const input=document.getElementById('newHolidayDate');
+  const date=String(input&&input.value||'').trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){toast('Pick a date','error');return;}
+  if(holidayList().includes(date)){toast('That date is already marked as a holiday','warning');return;}
+  state.emailSettings.holidays=[...holidayList(),date].sort();
+  if(!await saveEmailSettings()) return;
+  if(input) input.value='';
+  if(state.otReportWeek) await loadOTReport(state.otReportWeek);
+  render();
+  toast(fmtDate(date)+' marked as a mill holiday','success');
+}
+
+async function removeHoliday(date){
+  state.emailSettings.holidays=holidayList().filter(d=>d!==date);
+  if(!await saveEmailSettings()) return;
+  if(state.otReportWeek) await loadOTReport(state.otReportWeek);
+  render();
+  toast(fmtDate(date)+' is no longer a holiday','success');
+}
+
 async function removeManager(idx){
   state.emailSettings.managers.splice(idx,1);
   if(!await saveEmailSettings()) return;
@@ -191,6 +230,35 @@ function renderSettings(){
             <span style="font-size:13px;color:var(--muted)">hours per employee per week</span>
           </div>
           <div style="font-size:12px;color:var(--muted);margin-top:6px">Employees may clock in 7.5 minutes early and out 7.5 minutes late. That time is compensable and cannot be rounded away, so it is pre-approved OT and is added to the Overtime table's allowance on the OT Report. Counted for every active hourly employee on the roster, whether or not they worked. Default ${EMAIL_SETTINGS_DEFAULTS.graceHoursPerEmployee} hrs — at the current roster that is about ${fmtHrs(graceHrs()*(state.employees||[]).filter(e=>e.status==='Active'&&!isSalaried(e)).length)} hrs a week.</div>
+        </div>
+
+        <div style="margin-bottom:20px">
+          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Mill Holidays</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+            Days the mill did not run. The payroll file still reports them — Labor Day 2026 arrived as
+            ${'508'} hours across 52 people, every one on a round number with no overtime — and nothing in the file
+            says that is holiday pay rather than a day's work. A date marked here is taken out of hours, overtime,
+            the department split, the per-person rows and both percentages of payroll on the OT Report, and the
+            pay is shown on its own instead. Nothing is guessed: only dates typed here are excluded.
+          </div>
+          ${editable?`
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <input type="date" id="newHolidayDate" style="font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:8px 12px">
+            <button class="btn btn-primary btn-sm" onclick="addHoliday()" style="padding:8px 16px">+ Mark holiday</button>
+          </div>`:''}
+          ${holidayList().length?`
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Day</th><th style="width:50px">${editable?'Action':''}</th></tr></thead>
+                <tbody>
+                  ${holidayList().map(d=>`<tr>
+                    <td style="font-size:13px;padding:12px;font-weight:600">${esc(fmtDate(d))}</td>
+                    <td style="font-size:13px;padding:12px;color:var(--muted)">${esc(dayNameOf(d))}</td>
+                    <td style="text-align:center;padding:12px">${editable?`<button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted);padding:4px 8px;cursor:pointer" onclick="removeHoliday('${esc(d)}')">Remove</button>`:'<span style="font-size:12px;color:var(--muted)">—</span>'}</td>
+                  </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>`:`<div style="font-size:13px;color:var(--muted)">No holidays marked. Every imported day counts as worked.</div>`}
         </div>
 
         <div style="margin-top:24px">

@@ -21,7 +21,11 @@ if (user.picture) document.getElementById('userAvatar').src = user.picture;
 // save writes the row back without it. That is how editing the manager list
 // would silently wipe the configured grace hours and revert the report to its
 // default without saying anything.
-const EMAIL_SETTINGS_DEFAULTS={managers:[], autoSend:false, otBudgetPercent:10, graceHoursPerEmployee:0.5};
+// holidays: 'YYYY-MM-DD' dates the mill did not run, taken out of every worked
+// figure on the OT report. Empty by default and never inferred — see the note
+// above addHoliday in settings-tab.js for why a wrong exclusion is worse than a
+// missing one.
+const EMAIL_SETTINGS_DEFAULTS={managers:[], autoSend:false, otBudgetPercent:10, graceHoursPerEmployee:0.5, holidays:[]};
 
 // settings.js writes value as a raw object on insert and as a JSON string on
 // update, so both shapes come back from the same key.

@@ -350,8 +350,9 @@ function renderOTReport(){
   const r=state.otReport;
   const s=r.summary||{};
   const pa=r.preApproved||{}; const gr=pa.grace||{hours:0,dollars:0,headcount:0,hoursPerEmployee:0,rateMissing:[]};
-  const split=r.split||{scheduled:{},nonScheduled:{}};
-  const sched=split.scheduled||{}, nons=split.nonScheduled||{};
+  const split=r.split||{};
+  const maint=split.maintenance||{}, prod=split.production||{}, otherDept=split.other||{};
+  const hol=r.holidays||{dates:[],byDate:[],byDepartment:[],hours:0,earnings:0,headcount:0,datesWithoutData:[]};
   const days=r.days||[];
   const depts=r.departments||[];
   const deptNames=depts.map(d=>d.department);
@@ -406,57 +407,103 @@ function renderOTReport(){
         Change the rate on the Settings tab.${graceMissing.length?` <strong style="color:var(--brick)">${graceMissing.length} employee${graceMissing.length===1?'':'s'} had no rate on file</strong> — their grace hours are counted but contribute $0: ${graceMissing.map(esc).join(', ')}.`:''}</div>
     </div>`;
 
-  // 3. Production days vs maintenance days
-  //
-  // NAMING, and it has moved twice. It used to read "Scheduled" and
-  // "Non-scheduled", which was a wrong label rather than a wrong split:
-  // maintenance crews ARE scheduled Fri–Sun, so calling those days unscheduled
-  // said something untrue about the people working them. It then read "Weekend"
-  // for one deploy, as a placeholder while it was unconfirmed whether production
-  // ever runs a Saturday. It does not — production runs Mon–Thu only — so the
-  // block is named for what it is.
-  //
-  // THE TRAP THIS COMMENT EXISTS FOR. "Maintenance" here names the DAY BLOCK,
-  // not the department. Production-department people do work Fri–Sun, and their
-  // rows keep department = Production, because that is where a person works
-  // rather than what ran that day. So the tables below WILL show Production rows
-  // under a Maintenance heading and that is correct. Every heading in this
-  // section is followed by a line saying so, and removing one of those lines
-  // makes this report read as though production ran a weekend.
-  //
-  // The DATA keys are untouched — split.nonScheduled, e.nonScheduledHours,
-  // is_scheduled_day. The split is correct and load-bearing (it is what keeps
-  // maintenance-day cost visible as its own line instead of dissolving into a
-  // weekly total); only what it is called on screen was wrong.
+  // The note that goes above the two remaining DAY sections — the per-day table
+  // and the Fri-Sun labor block. It used to sit above the split card too, back
+  // when that card was day-based; the split moved to departments on 2026-09-15
+  // and this note stayed with the sections that really are about days.
   const dayBlockNote=`Production runs Mon–Thu. Fri–Sun is the maintenance block —
     that names the <strong>days</strong>, not the departments: someone in Production who works a
-    Saturday still shows as Production, because that is where they work, not what ran that day.`;
+    Saturday still shows as Production, because that is where they work, not what ran that day.
+    The maintenance vs production split above is by <strong>department</strong> and does not use this rule.`;
+
+  // 3. Maintenance vs production — BY DEPARTMENT
+  //
+  // This was Mon-Thu vs Fri-Sun until 2026-09-15, and the label was the problem
+  // rather than the split: it called a day block a department block. In the week
+  // of 2026-09-07, holiday excluded, that filed 121.5 hours of
+  // Maintenance-department work under "production days" and 63.1 hours of
+  // Production-department work under "maintenance days" — 184.7 hours, 12% of
+  // the week's worked time, on the wrong side of a two-line summary somebody
+  // reads in five seconds.
+  //
+  // The department is a recorded fact about the person doing the work; the day
+  // was a proxy for it. Fri-Sun has not gone anywhere — the per-day table is
+  // still labelled with it and the weekend section still measures it — it just
+  // no longer DECIDES which side of this card an hour lands on.
+  //
+  // THREE CARDS, not two. SG&A and Unassigned rows are both findings, and
+  // folding them into production would hide a data problem inside a number
+  // people act on. The third card appears only when it has something in it, so
+  // a clean week still reads as two.
+  const otherHasAnything=(Number(otherDept.hours)||0)>0||(Number(otherDept.earnings)||0)>0;
+  const splitCard=(title,sub,b,cls)=>`
+        <div class="ot-split-card${cls?' '+cls:''}">
+          <div class="ot-split-hdr">${title}</div>
+          <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">${sub}</div>
+          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(b.hours)}</span></div>
+          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(b.otHours)}</span></div>
+          <div class="ot-kv"><span>OT $</span><span>${fmt$(b.otDollars)}</span></div>
+          <div class="ot-kv"><span>Total labor $</span><span>${fmt$(b.earnings)}</span></div>
+          <div class="ot-kv"><span>Headcount</span><span>${b.headcount||0}</span></div>
+        </div>`;
   const splitBlock=`
-    <div class="section-head"><span>Production days vs maintenance days</span></div>
+    <div class="section-head"><span>Maintenance vs production</span></div>
     <div class="ot-panel">
-      <div class="ot-note" style="margin:0 0 12px">${dayBlockNote}</div>
+      <div class="ot-note" style="margin:0 0 12px"><strong>Split by department, not by day.</strong>
+        Every hour counts under the department of the person who worked it, whatever day of the week that was.
+        Maintenance crews working a Monday are maintenance; production staff working a Saturday are production.
+        The Mon–Thu / Fri–Sun pattern is still shown on the day table below, where it is a fact about the calendar
+        rather than a stand-in for the department.</div>
       <div class="ot-split">
-        <div class="ot-split-card">
-          <div class="ot-split-hdr">Production · Mon–Thu</div>
-          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(sched.hours)}</span></div>
-          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(sched.otHours)}</span></div>
-          <div class="ot-kv"><span>OT $</span><span>${fmt$(sched.otDollars)}</span></div>
-          <div class="ot-kv"><span>Earnings</span><span>${fmt$(sched.earnings)}</span></div>
-          <div class="ot-kv"><span>Headcount</span><span>${sched.headcount||0}</span></div>
-        </div>
-        <div class="ot-split-card nonsched">
-          <div class="ot-split-hdr">Maintenance · Fri–Sun</div>
-          <div class="ot-kv"><span>Hours</span><span>${fmtHrs(nons.hours)}</span></div>
-          <div class="ot-kv"><span>Maintenance-day OT $</span><span>${fmt$(nons.otDollars)}</span></div>
-          <div class="ot-kv"><span>OT hours</span><span>${fmtHrs(nons.otHours)}</span></div>
-          <div class="ot-kv"><span>Total maintenance-day labor $</span><span>${fmt$(nons.earnings)}</span></div>
-          <div class="ot-kv"><span>Headcount</span><span>${nons.headcount||0}</span></div>
-        </div>
+        ${splitCard('Maintenance',esc((split.maintenanceDepartments||['Maintenance']).join(', ')),maint,'nonsched')}
+        ${splitCard('Production',esc((split.productionDepartments||[]).join(', ')),prod,'')}
+        ${otherHasAnything?splitCard('Neither','SG&amp;A or no department — a finding, not a bucket',otherDept,''):''}
       </div>
-      <div class="ot-note" style="margin:12px 0 0">Two different numbers matter here and they are not interchangeable:
-        <strong>maintenance-day OT $ (${fmt$(nons.otDollars)})</strong> is the premium portion, comparable against the pre-approved allowance;
-        <strong>total maintenance-day labor $ (${fmt$(nons.earnings)})</strong> is every dollar paid for Fri–Sun work, which is the real cost of running those days.</div>
+      <div class="ot-note" style="margin:12px 0 0">Two different numbers matter on each card and they are not interchangeable:
+        <strong>OT $</strong> is the premium portion, comparable against the pre-approved allowance;
+        <strong>total labor $</strong> is every dollar paid for that department's work, which is what it costs to run.${
+        otherHasAnything?` <strong style="color:var(--brick)">${fmtHrs(otherDept.hours)} hrs are in neither</strong> — somebody is in the SG&amp;A cost class or has no department set. Both are fixed on the Employees tab.`:''}</div>
     </div>`;
+
+  // 3b. Holiday pay — hours that were PAID but not WORKED.
+  //
+  // Labor Day 2026 posted 508 hours the mill never worked, and until the holiday
+  // list existed they sat inside every figure on this page. Marked days are out
+  // of all of them now; this block is where the money stays visible, because it
+  // was really paid and somebody still has to account for it.
+  const holBlock=(hol.dates||[]).length?`
+    <div class="section-head"><span>Holiday pay</span></div>
+    <div class="ot-panel">
+      <div class="ot-note" style="margin:0 0 12px"><strong>Paid, not worked — and not in any figure above.</strong>
+        ${(hol.dates||[]).length===1?'This day is':'These days are'} marked as a mill holiday on the Settings tab,
+        so the hours are out of the totals, the department split, the per-person rows and both percentages of payroll.
+        They are real dollars and are shown here on their own.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Day</th><th class="num">People</th><th class="num">Hours paid</th><th class="num">Cost</th></tr></thead>
+          <tbody>
+            ${(hol.byDate||[]).map(d=>`<tr>
+              <td style="font-weight:600">${esc(fmtDate(d.date))}</td>
+              <td>${esc(d.dayName||'')}</td>
+              <td class="num">${d.headcount||0}</td>
+              <td class="num">${fmtHrs(d.hours)}</td>
+              <td class="num">${fmt$(d.earnings)}</td>
+            </tr>`).join('')}
+          </tbody>
+          ${(hol.byDate||[]).length>1?`<tfoot><tr>
+            <td colspan="2" style="font-weight:700;padding:10px 12px">${hol.dates.length} days</td>
+            <td class="num" style="font-weight:700">${hol.headcount||0}</td>
+            <td class="num" style="font-weight:700">${fmtHrs(hol.hours)}</td>
+            <td class="num" style="font-weight:800">${fmt$(hol.earnings)}</td>
+          </tr></tfoot>`:''}
+        </table>
+      </div>
+      ${(hol.byDepartment||[]).length?`<div class="ot-note" style="margin:12px 0 0">By department:
+        ${hol.byDepartment.map(d=>`${esc(d.department)} ${fmtHrs(d.hours)} hrs`).join(' · ')}</div>`:''}
+    </div>`:((hol.datesWithoutData||[]).length?`
+    <div class="section-head"><span>Holiday pay</span></div>
+    <div class="ot-panel"><div class="ot-ok">${hol.datesWithoutData.map(esc).join(', ')} ${hol.datesWithoutData.length===1?'is':'are'}
+      marked as a mill holiday and no hours were imported for ${hol.datesWithoutData.length===1?'it':'them'} — nothing to exclude.</div></div>`:'');
 
   // 4. Departments
   const rec=(r.issues&&r.issues.reconciliation)||null;
@@ -546,17 +593,23 @@ function renderOTReport(){
     // dateSource is null on an empty day, one value when the rows agree and a
     // comma-joined list when they disagree, so test for containment.
     const inferred=String(d.dateSource||'').includes('email_received');
-    const row=`<tr class="${d.isScheduledDay?'':'nonsched-row'}">
+    // A MARKED HOLIDAY IS A ROW OF ZEROS WITH AN EXPLANATION, not a gap and not
+    // a dash. Its worked figures are genuinely zero — that is the whole point —
+    // and the pay it did carry is named on the row so nobody reads the zeros as
+    // a missing file and goes looking for one that arrived on time.
+    const row=`<tr class="${d.isHoliday?'':(d.isScheduledDay?'':'nonsched-row')}"${d.isHoliday?' style="background:var(--surface2)"':''}>
       <td style="font-weight:600">${d.dayName||dayNameOf(d.date)}<div style="font-size:11px;color:var(--muted);font-weight:400">${fmtDate(d.date)}</div></td>
-      <td>${schedBadge(d.isScheduledDay)}${inferred?'<div style="font-size:10px;color:#9a600a;margin-top:3px">date inferred from email arrival</div>':''}</td>
-      <td class="num">${d.hasData?(t.headcount||0):'—'}</td>
-      <td class="num">${d.hasData?fmtHrs(t.hours):'—'}</td>
-      <td class="num">${d.hasData?fmtHrs(t.otHours):'—'}</td>
-      <td class="num">${d.hasData?fmt$(t.otDollars):'—'}</td>
-      <td class="num">${d.hasData?fmt$(t.earnings):'—'}</td>
-      <td>${workers.length?`<button class="btn btn-outline btn-sm" onclick="toggleOtDay('${d.date}')">${open?'Hide':'Who worked'}</button>`:'<span style="color:var(--muted)">no rows</span>'}</td>
+      <td>${d.isHoliday
+        ? `<span class="badge" style="background:#e8e2d5;color:#6b5b3e">Mill holiday</span><div style="font-size:10px;color:var(--muted);margin-top:3px">${fmtHrs(d.holidayHours)} hrs paid · ${fmt$(d.holidayEarnings)} — not counted</div>`
+        : `${schedBadge(d.isScheduledDay)}${inferred?'<div style="font-size:10px;color:#9a600a;margin-top:3px">date inferred from email arrival</div>':''}`}</td>
+      <td class="num">${d.isHoliday?'—':(d.hasData?(t.headcount||0):'—')}</td>
+      <td class="num">${d.isHoliday?'0.00':(d.hasData?fmtHrs(t.hours):'—')}</td>
+      <td class="num">${d.isHoliday?'0.00':(d.hasData?fmtHrs(t.otHours):'—')}</td>
+      <td class="num">${d.isHoliday?fmt$(0):(d.hasData?fmt$(t.otDollars):'—')}</td>
+      <td class="num">${d.isHoliday?fmt$(0):(d.hasData?fmt$(t.earnings):'—')}</td>
+      <td>${(!d.isHoliday&&workers.length)?`<button class="btn btn-outline btn-sm" onclick="toggleOtDay('${d.date}')">${open?'Hide':'Who worked'}</button>`:`<span style="color:var(--muted)">${d.isHoliday?'closed':'no rows'}</span>`}</td>
     </tr>`;
-    const detail=(open&&workers.length)?`<tr class="day-workers"><td colspan="8">
+    const detail=(open&&workers.length&&!d.isHoliday)?`<tr class="day-workers"><td colspan="8">
       ${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>`<span class="ot-chip">${esc(w.name||('#'+w.employeeNumber))} · ${fmtHrs(w.hours)}h${(w.otHours||0)>0?' · OT '+fmtHrs(w.otHours)+'h':''} · ${fmt$(w.earnings)}<span style="color:var(--muted)"> · ${esc(w.department||'Unassigned')}</span></span>`).join('')}
     </td></tr>`:'';
     return row+detail;
@@ -743,5 +796,5 @@ function renderOTReport(){
 
   return otReportStyle+picker+trunc+`
     ${otPeriodNote(r)}
-    ${cards}${standingNote}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
+    ${cards}${standingNote}${holBlock}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
 }
