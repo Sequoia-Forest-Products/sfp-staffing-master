@@ -43,7 +43,7 @@ const SRC = path.join(ROOT, 'src', 'js');
 const lib = require('../netlify/functions/ot-weekly-email-lib');
 const {
   runWeeklyOtEmail, buildOtEmailPayload, previousWeekStart, incompleteReasons,
-  otBudgetFromSettingsRow, autoSendFromSettingsRow, otWeekRangeLabel
+  otBudgetFromSettingsRow, otWeekRangeLabel
 } = lib;
 
 // ---------------------------------------------------------------------------
@@ -154,15 +154,20 @@ test('zero is a real OT budget and nonsense is not', () => {
   assert.strictEqual(otBudgetFromSettingsRow(null), null);
 });
 
-test('auto-send is off only when it is explicitly false', () => {
-  assert.strictEqual(autoSendFromSettingsRow({ value: { autoSend: false } }), false);
-  assert.strictEqual(autoSendFromSettingsRow({ value: '{"autoSend":false}' }), false);
-  assert.strictEqual(autoSendFromSettingsRow({ value: { autoSend: true } }), true);
-  // A row that predates the checkbox, or one that got mangled, sends. Defaulting
-  // a damaged setting to silence is the failure nobody notices.
-  assert.strictEqual(autoSendFromSettingsRow({ value: {} }), true);
-  assert.strictEqual(autoSendFromSettingsRow({ value: 'not json' }), true);
-  assert.strictEqual(autoSendFromSettingsRow(null), true);
+test('THERE IS NO OFF SWITCH — a stored autoSend:false cannot stop the email', () => {
+  // Removed 2026-09-15. It was already "unset means ON", because for a weekly
+  // summary a damaged setting defaulting to silence is the failure nobody
+  // notices — and the people who could flip it are exactly the people who
+  // receive the mail.
+  //
+  // The rows written while the checkbox existed still carry the key. This pins
+  // that such a row is now inert rather than quietly suppressing the report.
+  const lib = require('../netlify/functions/ot-weekly-email-lib');
+  assert.strictEqual(lib.autoSendFromSettingsRow, undefined, 'the reader is gone');
+
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'netlify', 'functions', 'ot-weekly-email-lib.js'), 'utf8');
+  assert.ok(!/value\.autoSend/.test(src), 'something still reads the switch');
 });
 
 // ---------------------------------------------------------------------------
@@ -193,9 +198,12 @@ function report(overrides = {}) {
 
 function harness(opts = {}) {
   const calls = { emails: [], alerts: [], weeks: [] };
+  // `managers` here is what the ACCESS LIST holds — the recipients moved there
+  // on 2026-09-15 and the settings row no longer carries them. It stays in this
+  // object so one option keeps configuring one thing.
   const settingsValue = Object.assign(
-    { managers: ['a@sequoiafp.com', 'b@sequoiafp.com'], autoSend: true, otBudgetPercent: 10 },
-    opts.settings || {});
+    { otBudgetPercent: 10 }, opts.settings || {});
+  const accessList = opts.managers || ['a@sequoiafp.com', 'b@sequoiafp.com'];
   const deps = {
     db: { query: async () => opts.settingsThrows
       ? Promise.reject(new Error('supabase down'))
@@ -219,6 +227,10 @@ function harness(opts = {}) {
     sendAlert: async (subject, body) => {
       if (opts.alertThrows) throw new Error('smtp down');
       calls.alerts.push({ subject, body });
+    },
+    loadManagers: async () => {
+      if (opts.accessListThrows) throw new Error('access list unreadable');
+      return accessList;
     }
   };
   return { calls, deps };
@@ -279,20 +291,45 @@ test('a skip that could not be alerted is a function error', async () => {
   assert.strictEqual(typeof handler.handler, 'function');
 });
 
-test('switched off means switched off — no email, and no alert either', async () => {
+test('a stored autoSend:false sends anyway', async () => {
+  // A row written while the checkbox existed, with the box unticked. It must
+  // not keep suppressing the report months after the control was removed.
   const { calls, deps } = harness({ settings: { autoSend: false } });
   const res = await runWeeklyOtEmail({ now: FIRES_AT, deps });
-  assert.strictEqual(res.skipped, 'auto-send-off');
-  assert.strictEqual(calls.emails.length, 0);
-  assert.strictEqual(calls.alerts.length, 0, 'an admin turned it off and does not need telling');
-  assert.strictEqual(res.deliveryFailed, false, 'and it is not a failed run');
+  assert.ok(!res.skipped, 'the retired switch still stopped the send');
+  assert.strictEqual(calls.emails.length, 2);
 });
 
-test('an empty manager list is a refusal, not a quiet no-op', async () => {
-  const { calls, deps } = harness({ settings: { managers: [] } });
+test('an empty ACCESS LIST is a refusal, not a quiet no-op', async () => {
+  const { calls, deps } = harness({ managers: [] });
   const res = await runWeeklyOtEmail({ now: FIRES_AT, deps });
   assert.strictEqual(res.skipped, 'no-recipients');
+  assert.match(calls.alerts[0].body, /access list/i, 'and it says where to fix it');
   assert.strictEqual(calls.alerts.length, 1);
+});
+
+test('an unreadable access list refuses rather than sending to nobody', async () => {
+  const { calls, deps } = harness({ accessListThrows: true });
+  const res = await runWeeklyOtEmail({ now: FIRES_AT, deps });
+  assert.strictEqual(res.skipped, 'recipients-unreadable');
+  assert.strictEqual(calls.emails.length, 0);
+  assert.strictEqual(calls.alerts.length, 1);
+});
+
+test('THE MONDAY EMAIL GOES TO THE ACCESS LIST, not the retired settings list', async () => {
+  // This path had its own copy of the rule and kept reading
+  // emailSettings.managers after the lists merged on 2026-09-15, so the
+  // automatic email and the manual button would have gone to different people
+  // with nothing reporting it.
+  const { calls, deps } = harness({
+    managers: ['tony.griffith@sequoiafp.com', 'travis.vance@sequoiafp.com'],
+    settings: { managers: ['stale@sequoiafp.com'] }      // the retired list
+  });
+  await runWeeklyOtEmail({ now: FIRES_AT, deps });
+
+  const to = calls.emails.map(e => e.to).sort();
+  assert.deepStrictEqual(to, ['tony.griffith@sequoiafp.com', 'travis.vance@sequoiafp.com']);
+  assert.ok(!to.includes('stale@sequoiafp.com'), 'the retired settings list is still being read');
 });
 
 test('an unreadable settings row refuses rather than guessing at recipients', async () => {
@@ -329,15 +366,13 @@ test('a dry run composes everything and sends nothing', async () => {
   assert.deepStrictEqual(res.recipients, ['a@sequoiafp.com', 'b@sequoiafp.com']);
 });
 
-test('the recipient allowlist still runs on the saved list', async () => {
-  // The schedule proposes nobody — the saved list IS the recipient list — so a
-  // saved off-domain manager is allowed by design (that rule belongs to
-  // send-ot-email.js and is tested there). What is worth pinning HERE is that
-  // resolveRecipients is still in the path at all, and the way to show that is a
-  // list it rejects: a mangled address the Settings tab let through.
-  const { calls, deps } = harness({
-    settings: { managers: ['a@sequoiafp.com', 'not an email'] }
-  });
+test('the recipient allowlist still runs on the access list', async () => {
+  // The schedule proposes nobody — the access list IS the recipient list — so an
+  // off-domain entry is allowed by design (that rule belongs to send-ot-email.js
+  // and is tested there). What is worth pinning HERE is that resolveRecipients is
+  // still in the path at all, and the way to show that is a list it rejects: a
+  // mangled address the Access tab let through.
+  const { calls, deps } = harness({ managers: ['a@sequoiafp.com', 'not an email'] });
   const res = await runWeeklyOtEmail({ now: FIRES_AT, deps });
 
   assert.strictEqual(res.skipped, 'recipients-rejected');

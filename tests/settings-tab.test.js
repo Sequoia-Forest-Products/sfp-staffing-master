@@ -135,9 +135,22 @@ test('everybody signed in gets every control — there are no roles', () => {
 
   assert.match(html, /setOTBudgetPercent\(/);
   assert.match(html, /setGraceHours\(/);
-  assert.match(html, /saveEmailSettings\(\)/, 'the auto-send checkbox is live');
+  assert.match(html, /addHoliday\(\)/);
   assert.ok(!/read-only/.test(html));
   assert.ok(!/administrator/i.test(html), 'nothing on the page still talks about admins');
+});
+
+test('THE AUTO-SEND CHECKBOX IS GONE — the Monday email always sends', () => {
+  // Removed 2026-09-15. The people who could have turned it off are exactly the
+  // people who receive it, and a weekly report that stops arriving because
+  // somebody unticked a box a month ago is a failure nobody notices.
+  const ctx = sandbox();
+  const html = ctx.renderSettings();
+
+  assert.ok(!/type="checkbox"/.test(html), 'a checkbox is back on this page');
+  assert.ok(!/autoSend/.test(html));
+  assert.match(html, /There is no switch/);
+  assert.match(html, /everybody on the access list/i, 'and it says who receives it');
 });
 
 test('the recipient list is NOT edited here — it is the access list', () => {

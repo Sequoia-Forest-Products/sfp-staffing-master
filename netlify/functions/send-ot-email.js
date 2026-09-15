@@ -370,6 +370,11 @@ exports.handler = async (event) => {
 module.exports.sendEmail = sendEmail;
 module.exports.resolveRecipients = resolveRecipients;
 module.exports.managersFromSettingsRow = managersFromSettingsRow;
+// Exported so the Monday schedule resolves recipients through the SAME function
+// the manual button does. It had its own copy of the rule and kept reading the
+// retired emailSettings.managers after the lists merged on 2026-09-15, so the
+// automatic email and the manual one would have gone to different people.
+module.exports.loadManagers = loadManagers;
 module.exports.generateEmailHTML = generateEmailHTML;
 module.exports.ALLOWED_DOMAIN = ALLOWED_DOMAIN;
 module.exports.MAX_RECIPIENTS = MAX_RECIPIENTS;

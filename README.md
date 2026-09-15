@@ -823,14 +823,27 @@ still session-only: three of the values it holds are not casual.
 - `graceHoursPerEmployee` — the timeclock grace allowance. At ~54 hourly staff, 0.5 hrs/person/week
   is ~27 hours of pre-approved OT, so moving it moves the headline Net OT figure on every report.
 - `otBudgetPercent` — decides what managers are **told** is over budget.
-- `autoSend` — the on/off switch for the Monday manager email. Absent counts as **on**: every row
-  written since the checkbox shipped carries an explicit boolean, so a missing value means a row
-  that predates it or one that got mangled, and defaulting a damaged setting to silence is the
-  failure nobody notices.
+- `holidays` — dates the mill did not run, excluded from every worked figure on the OT report.
+
+> **`autoSend` was removed on 2026-09-15.** It was the on/off switch for the Monday email, and it
+> was already "absent counts as on", because for a weekly summary defaulting a damaged setting to
+> silence is the failure nobody notices. Once the recipient list became the access list, the people
+> who could flip the switch were exactly the people who receive the mail — a control with one
+> correct setting and a way to lose the report by accident. **The Monday email always sends.** To
+> stop receiving it, come off the access list. Rows written while the checkbox existed still carry
+> the key; nothing reads it, and a test pins that a stored `autoSend: false` no longer suppresses
+> anything.
 
 Reads stay open deliberately: the figures are already visible on every report that uses them, and
 hiding the settings that produce them would make those reports less legible while protecting
-nothing. The page renders read-only values for a non-admin rather than fields that would 403.
+nothing.
+
+> **The weekly schedule read the wrong list until 2026-09-15.** `ot-weekly-email-lib.js` had its own
+> copy of the recipient rule — `managersFromSettingsRow(settingsRow)` — and kept reading the retired
+> `emailSettings.managers` after the two lists merged. So the Monday email would have gone to the six
+> addresses on the old list (including `jefrey.cook@`, one `f`) while the manual *Email managers*
+> button went to the seven people with access: two senders, two audiences, one of them wrong and
+> nothing reporting it. Both now resolve through `loadManagers()` in `send-ot-email.js`.
 
 ### wage_history
 `id, employee_id, employee_number, employee_name, rate, previous_rate, change_pct, effective_date,
