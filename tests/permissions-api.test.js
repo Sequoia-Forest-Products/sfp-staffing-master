@@ -289,3 +289,96 @@ test('an empty access list refuses to send rather than sending to nobody', async
   assert.strictEqual(out.ok, false);
   assert.match(out.error, /No manager recipients are configured/);
 });
+
+// ---------------------------------------------------------------------------
+// THE MIGRATION HAS NOT RUN — the state that bit on 2026-09-15
+// ---------------------------------------------------------------------------
+//
+// The table is migrated by SCHEMA_ACCESS_LIST.sql in two ways that fail
+// differently. Until §2 widens it, the CHECK on `tier` allows only
+// ('salaries','admin'), so an INSERT of tier='access' is refused — and a DELETE
+// is not. Deployed without the migration the app could REMOVE people and not
+// ADD them, and the list shrank with no way to grow it. Ryley Stanley was
+// removed and could not be put back.
+//
+// The signal is the seed: §3 writes tier='access' for everybody, so afterwards
+// at least one such row always exists. Rows that exist with none of them saying
+// 'access' means the migration has not run.
+
+const LEGACY_ROWS = [
+  { id: 'g1', email: PETER, tier: 'admin' },
+  { id: 'g2', email: PETER, tier: 'salaries' },
+  { id: 'g3', email: JEFF,  tier: 'salaries' }
+];
+
+test('the pending migration is detected from the rows, and reported on GET', async () => {
+  stub({ rows: LEGACY_ROWS });
+  const d = json(await call('GET', PETER));
+  assert.strictEqual(d.ok, true);
+  assert.strictEqual(d.migrationPending, true);
+  assert.match(d.detail, /SCHEMA_ACCESS_LIST\.sql/);
+  // The list still READS correctly — that is not what is broken.
+  assert.deepStrictEqual(d.list, [JEFF, PETER]);
+});
+
+test('ADDING is refused with a sentence naming the migration', async () => {
+  const { writes } = stub({ rows: LEGACY_ROWS });
+  const res = await call('POST', PETER, { body: { email: NOBODY } });
+  assert.strictEqual(res.statusCode, 503);
+  assert.match(json(res).error, /migration has not been run/i);
+  assert.match(json(res).detail, /SCHEMA_ACCESS_LIST\.sql/);
+  assert.strictEqual(writes.length, 0);
+});
+
+test('REMOVING is refused too, and that is the half that matters', async () => {
+  // The CHECK does not refuse a DELETE. Without this the list can only shrink,
+  // and the operation that would undo it is the one the CHECK rejects.
+  const { writes } = stub({ rows: LEGACY_ROWS });
+  const res = await call('DELETE', PETER, { params: { email: JEFF } });
+  assert.strictEqual(res.statusCode, 503);
+  assert.match(json(res).error, /migration has not been run/i);
+  assert.strictEqual(writes.length, 0, 'the list must not shrink while it cannot grow');
+});
+
+test('an EMPTY table is not pending — the first add has to work', async () => {
+  // Pre-seed, with sign-in on the domain fallback. Refusing here would mean the
+  // list could never be started at all.
+  const { writes } = stub({ rows: [] });
+  assert.strictEqual(json(await call('GET', PETER)).migrationPending, false);
+  const res = await call('POST', PETER, { body: { email: NOBODY } });
+  assert.strictEqual(res.statusCode, 200, res.body);
+  assert.strictEqual(writes.length, 1);
+});
+
+test('a migrated table is not pending, and both writes work', async () => {
+  const migrated = [{ id: 'a', email: PETER, tier: 'access' },
+                    { id: 'b', email: JEFF,  tier: 'access' }];
+  assert.strictEqual(json(await (stub({ rows: migrated }), call('GET', PETER))).migrationPending, false);
+
+  const { writes } = stub({ rows: migrated });
+  assert.strictEqual((await call('POST', PETER, { body: { email: NOBODY } })).statusCode, 200);
+  assert.ok(writes.length >= 1);
+});
+
+test('LEGACY ROWS ALONGSIDE ACCESS ROWS are not pending', async () => {
+  // §5 of the migration leaves the old tier rows in place by default, so the
+  // ordinary post-migration table is a mix. Reading that as pending would hold
+  // every write on a database that is perfectly correct.
+  stub({ rows: [{ id: 'a', email: PETER, tier: 'access' },
+                { id: 'b', email: PETER, tier: 'admin' },
+                { id: 'c', email: PETER, tier: 'salaries' }] });
+  assert.strictEqual(json(await call('GET', PETER)).migrationPending, false);
+});
+
+test('the tier CHECK violation itself is caught, whatever the content probe said', async () => {
+  // Belt to the probe's braces: the content check reads the table, this catches
+  // the constraint that actually refuses the row.
+  const { writes } = stub({
+    rows: [{ id: 'a', email: PETER, tier: 'access' }],       // looks migrated
+    writeError: 'new row violates check constraint "user_permissions_tier_check"'
+  });
+  const res = await call('POST', PETER, { body: { email: NOBODY } });
+  assert.strictEqual(res.statusCode, 503);
+  assert.match(json(res).error, /migration has not been run/i);
+  assert.strictEqual(writes.length, 1, 'it was attempted, and the refusal is the answer');
+});

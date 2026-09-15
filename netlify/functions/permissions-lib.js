@@ -147,9 +147,54 @@ function partitionWrite(body) {
 // domain, because locking the whole company out of its own app is worse than
 // the day of domain-wide access it would replace.
 async function fetchAccessList(db) {
-  const rows = await db.query(ACCESS_TABLE, '?select=email');
-  return resolveAccessList(rows || []);
+  return resolveAccessList(await fetchAccessRows(db));
 }
+
+// The rows, with their tier. Only one thing reads `tier` and it is
+// migrationPending() below — the app does not care what somebody's tier says,
+// it cares whether the migration that made tiers meaningless has run.
+async function fetchAccessRows(db) {
+  return (await db.query(ACCESS_TABLE, '?select=email,tier')) || [];
+}
+
+// HAS SCHEMA_ACCESS_LIST.sql RUN?
+//
+// It matters because the table is migrated in two ways that fail differently.
+// The CHECK on `tier` still allows only ('salaries','admin') until §2 widens it,
+// so an INSERT of tier='access' is refused — but a DELETE is not. Deployed
+// without the migration, the app can REMOVE people and cannot ADD them, and the
+// list shrinks with no way to grow it. That happened: Ryley Stanley was removed
+// on 2026-09-15 and could not be put back.
+//
+// THE SIGNAL is the seed. §3 writes tier='access' for every person, so after
+// the migration at least one such row always exists — the last entry cannot be
+// removed, so they cannot all go. Rows that exist and none of them saying
+// 'access' therefore means the migration has not run.
+//
+// An EMPTY table is deliberately NOT pending: it is the pre-seed state, sign-in
+// is on the domain fallback, and the first add has to be allowed to work.
+function migrationPending(rows) {
+  const all = rows || [];
+  if (!all.length) return false;
+  return !all.some(r => String((r && r.tier) || '').trim().toLowerCase() === 'access');
+}
+
+// The other half of the same signal, for the write that actually hits it. The
+// CHECK refuses tier='access' with a 23514, and a raw constraint name is not
+// something anybody can act on.
+function isTierCheckViolation(err) {
+  const m = String((err && err.message) || '');
+  return /user_permissions_tier_check/.test(m) || /\b23514\b/.test(m);
+}
+
+const MIGRATION_REFUSAL = {
+  error: 'The access list migration has not been run yet.',
+  detail:
+    'Run SCHEMA_ACCESS_LIST.sql in the Supabase SQL editor. Until it does, the tier CHECK on ' +
+    'user_permissions still refuses the rows this list writes, so nobody can be added — and ' +
+    'because a DELETE is not refused the same way, the list could otherwise be emptied with no ' +
+    'way to refill it. Both adding and removing are held until the migration runs.'
+};
 
 // True when the table does not exist yet — the code deployed before the
 // migration ran. Distinguished from a read error because it is expected once,
@@ -189,6 +234,7 @@ module.exports = {
   EMPLOYEE_READ_COLUMNS, EMPLOYEE_WRITE_COLUMNS,
   normalizeEmail, resolveAccessList, hasAccess,
   partitionWrite,
-  fetchAccessList, isMissingTable, bootstrapAllows,
-  LAST_ENTRY_REFUSAL
+  fetchAccessList, fetchAccessRows, isMissingTable, bootstrapAllows,
+  migrationPending, isTierCheckViolation,
+  LAST_ENTRY_REFUSAL, MIGRATION_REFUSAL
 };

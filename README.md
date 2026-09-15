@@ -419,6 +419,23 @@ you may see once you are in is answering a question nobody asked: the list alrea
   removed person keeps their session until it expires (`SESSION_MAX_AGE_SECONDS`). Closing that
   window would put a database round-trip in front of every roster load.
 
+#### Deploying before the migration
+
+`SCHEMA_ACCESS_LIST.sql` is not optional and the app now knows it. Until §2 widens the CHECK on
+`tier`, the table refuses an INSERT of `tier='access'` — **and refuses no DELETE**. Deployed without
+the migration, the list could only shrink, and the operation that would undo a removal is exactly
+the one being rejected. That is not hypothetical: Ryley Stanley was removed on 2026-09-15 and could
+not be put back.
+
+So `permissions.js` holds **both** writes until the migration has run, and says which file to run.
+The state is detected from the rows — the seed writes `tier='access'` for everybody, so after the
+migration at least one such row always exists (the last entry cannot be removed, so they cannot all
+go). Rows that exist with none of them saying `access` means it has not run. An **empty** table is
+deliberately not "pending": that is the pre-seed state and the first add has to work.
+
+The tier-CHECK violation is caught separately as well, so a table in some shape the content probe
+does not recognise still produces a sentence naming the migration rather than a raw constraint name.
+
 #### The one refusal
 
 **The last entry cannot be removed.** That is not a role sneaking back in — it applies to everybody

@@ -90,6 +90,14 @@ alter table user_permissions
 -- 3. SEED THE LIST — the UNION of both lists
 -- ------------------------------------------------------------------------
 --
+-- THIS ALSO RESTORES RYLEY. The app was deployed before this file was run, and
+-- in that window the CHECK in §2 refused every INSERT while refusing no DELETE
+-- — so the list could only shrink. ryley.stanley@sequoiafp.com was removed on
+-- 2026-09-15 and could not be added back. The seed below puts him in.
+--
+-- The app no longer allows that state: permissions.js now holds BOTH writes
+-- until this migration has run. See migrationPending() in permissions-lib.js.
+--
 -- Anybody who held a grant, plus anybody who was receiving the weekly email.
 -- Taking either one alone would silently drop people: the grant list alone
 -- unsubscribes four managers from the report, and the recipient list alone
