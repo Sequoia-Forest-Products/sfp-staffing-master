@@ -410,15 +410,6 @@ function renderOTReport(){
         Change the rate on the Settings tab.${graceMissing.length?` <strong style="color:var(--brick)">${graceMissing.length} employee${graceMissing.length===1?'':'s'} had no rate on file</strong> — their grace hours are counted but contribute $0: ${graceMissing.map(esc).join(', ')}.`:''}</div>
     </div>`;
 
-  // The note that goes above the two remaining DAY sections — the per-day table
-  // and the Fri-Sun labor block. It used to sit above the split card too, back
-  // when that card was day-based; the split moved to departments on 2026-09-15
-  // and this note stayed with the sections that really are about days.
-  const dayBlockNote=`Production runs Mon–Thu. Fri–Sun is the maintenance block —
-    that names the <strong>days</strong>, not the departments: someone in Production who works a
-    Saturday still shows as Production, because that is where they work, not what ran that day.
-    The maintenance vs production split above is by <strong>department</strong> and does not use this rule.`;
-
   // 3. Maintenance vs production — BY DEPARTMENT
   //
   // This was Mon-Thu vs Fri-Sun until 2026-09-15, and the label was the problem
@@ -452,11 +443,6 @@ function renderOTReport(){
   const splitBlock=`
     <div class="section-head"><span>Maintenance vs production</span></div>
     <div class="ot-panel">
-      <div class="ot-note" style="margin:0 0 12px"><strong>Split by department, not by day.</strong>
-        Every hour counts under the department of the person who worked it, whatever day of the week that was.
-        Maintenance crews working a Monday are maintenance; production staff working a Saturday are production.
-        The Mon–Thu / Fri–Sun pattern is still shown on the day table below, where it is a fact about the calendar
-        rather than a stand-in for the department.</div>
       <div class="ot-split">
         ${splitCard('Maintenance',esc((split.maintenanceDepartments||['Maintenance']).join(', ')),maint,'nonsched')}
         ${splitCard('Production',esc((split.productionDepartments||[]).join(', ')),prod,'')}
@@ -638,10 +624,9 @@ function renderOTReport(){
 
   // 6. Maintenance-day labor as its own block — small headcount, so name names.
   //
-  // This is the table where the day-block/department distinction is visible
-  // rather than theoretical: it prints a Department column, and Production
-  // appears in it. dayBlockNote is repeated here for that reason, not for
-  // symmetry — a reader who scrolled straight to this section never saw it.
+  // Fri-Sun is a day cut, not a department one: the Department column here will
+  // show Production for someone in Production who worked a Saturday. The split
+  // card above is by department and does not use this rule.
   const weekendDays=days.filter(d=>!d.isScheduledDay&&d.hasData);
   const weekendPeople={};
   weekendDays.forEach(d=>(d.workers||[]).forEach(w=>{
@@ -656,7 +641,6 @@ function renderOTReport(){
   const weekendBlock=`
     <div class="section-head"><span>Maintenance-day labor · Friday to Sunday</span></div>
     <div class="ot-panel">
-      <div class="ot-note" style="margin:0 0 12px">${dayBlockNote}</div>
       <div class="ot-split">
         <div class="ot-split-card nonsched">
           <div class="ot-split-hdr">Fri–Sun totals</div>

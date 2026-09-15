@@ -149,8 +149,10 @@ test('THE AUTO-SEND CHECKBOX IS GONE — the Monday email always sends', () => {
 
   assert.ok(!/type="checkbox"/.test(html), 'a checkbox is back on this page');
   assert.ok(!/autoSend/.test(html));
-  assert.match(html, /There is no switch/);
-  assert.match(html, /everybody on the access list/i, 'and it says who receives it');
+  // The paragraph explaining the removal came out on 2026-09-15 — the switch
+  // being gone is what matters, not the note about it.
+  assert.ok(!/There is no switch/.test(html));
+  assert.ok(!/emailed every Monday morning/.test(html));
 });
 
 test('the recipient list is NOT edited here — it is the access list', () => {
@@ -162,7 +164,10 @@ test('the recipient list is NOT edited here — it is the access list', () => {
   assert.ok(!/addManager\(\)/.test(html), 'the second recipient list is editable again');
   assert.ok(!/removeManager\(/.test(html));
   assert.ok(!/id="newManagerEmail"/.test(html));
-  assert.match(html, /Everyone on the access list receives the Monday OT email/);
+  // No Report Recipients block either: the access list above IS the list, and
+  // the paragraph saying so was removed on 2026-09-15.
+  assert.ok(!/Report Recipients/.test(html));
+  assert.ok(!/Everyone on the access list receives the Monday OT email/.test(html));
 });
 
 // ---------------------------------------------------------------------------

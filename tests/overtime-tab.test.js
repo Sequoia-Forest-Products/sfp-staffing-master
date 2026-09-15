@@ -414,7 +414,6 @@ test('the OT report no longer calls Fri-Sun unscheduled', () => {
   // The split card moved to departments on 2026-09-15 and took its Mon-Thu
   // heading with it; the Fri-Sun labour block below still carries the day one.
   assert.match(html, /Maintenance vs production/);
-  assert.match(html, /Split by department, not by day/);
   assert.match(html, /Maintenance-day labor · Friday to Sunday/);
 });
 
@@ -425,25 +424,22 @@ test('the day badge names the kind of day, not who was rostered', () => {
   assert.doesNotMatch(ctx.schedBadge(false), /scheduled/i);
 });
 
-test('every Maintenance heading says it names the day, not the department', () => {
+test('the Department column says what a Maintenance heading means', () => {
   // The live trap. Production-department people work Fri–Sun and their rows keep
   // department = Production, so the tables below a "Maintenance · Fri–Sun"
-  // heading DO show Production. Without a line saying the heading is about the
-  // day block, this report reads as though production ran a weekend.
+  // heading DO show Production. Somewhere that has to be said, or this report
+  // reads as though production ran a weekend.
   const html = withOtReport(sandbox());
 
-  // ONE section carries the day label now. The split card went over to
-  // departments on 2026-09-15, so the only block left that says "Maintenance"
-  // and means the DAYS is the Fri-Sun labour block — which is also the one that
-  // prints a Department column, i.e. the one that always needed the line most.
-  const notes = html.match(/that names the <strong>days<\/strong>, not the departments/g) || [];
-  assert.strictEqual(notes.length, 1,
-    'the Fri–Sun labour block prints a Department column and must say what its heading means');
-
-  assert.match(html, /Production runs Mon–Thu/);
-  assert.match(html, /still shows as Production, because that is where they work/);
+  // Said once, at the column that shows it, rather than in a paragraph above
+  // each block: the standalone notes came out on 2026-09-15 at the owner's
+  // request and this caption is what carries the distinction now.
   assert.match(html, /production days are Mon–Thu regardless of what it says/,
     'the table with the Department column has to say it at the column');
+
+  assert.ok(!/Production runs Mon–Thu\. Fri–Sun is the maintenance block/.test(html));
+  assert.ok(!/that names the <strong>days<\/strong>, not the departments/.test(html));
+  assert.ok(!/Split by department, not by day/.test(html));
 });
 
 test('the maintenance figures are labelled as the day block, not the department', () => {

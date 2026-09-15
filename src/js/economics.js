@@ -522,28 +522,6 @@ function renderEconomics(){
 
   <div style="max-width:1100px;margin:0 auto;padding:20px">
     <h2 style="font-size:24px;font-weight:700;margin-bottom:6px;color:var(--text)">Staff</h2>
-    <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      The budgeted staffing plan: one row per <b>seat</b>, not per person. A seat can be vacant and
-      still be a real row — that is the point of the plan. <b>Current Rate</b> is what the occupant
-      is actually paid, set on their profile card under Employees. <b>Position Rate</b> is what the
-      seat is budgeted at, and <b>Variance</b> is the current rate minus it — so a red figure is
-      somebody paid above the rate their seat was budgeted at.
-    </div>
-    <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      <b>Both the assignment and the position rate save immediately</b>, one seat at a time — there
-      is no Save button because there is nothing to reconcile. A position rate saves when you leave
-      the field, and clearing it leaves the seat with no ceiling. What is NOT editable here is the
-      shape of the plan: a seat's number, section and title are set in the database, because adding
-      or retitling a seat changes what the plan is rather than what it budgets.
-    </div>
-    <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:6px;max-width:820px">
-      <b>A salaried occupant's rate is imputed</b>, marked <span class="econ-imputed">imputed</span>,
-      and is annual salary ÷ ${SALARY_HOURS_PER_YEAR.toLocaleString('en-US')} — the same figure
-      Manufacturing Costs prices them at, and the same divisor shown beside the salary on their
-      profile card. It counts in the wage pool and in the variance against the seat ceiling like any
-      other rate, because for the purpose this page exists for it is one. A salaried person with no
-      salary on file still contributes nothing, and that is a gap to fill rather than a rate of zero.
-    </div>
 
     <div class="econ-ctrls">
       <span><b>Burden</b>
