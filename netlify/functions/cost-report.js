@@ -22,22 +22,20 @@
 // cost-lib.js withholds money for any grouping small enough that its average IS
 // somebody's rate. That protects a figure the reader is not allowed to see —
 // so for a reader who IS allowed to see it, the same dashes protect nothing and
-// cost everything. Somebody holding the salaries tier can read every
-// annual_salary by name on the employee's own profile card; hourly rates are
-// base-tier and visible to everyone on the roster. There is no figure a small
-// bucket could leak to them that they cannot already read directly.
+// cost everything. Anybody signed in can read every annual_salary and every
+// hourly rate by name on the employee's own profile card, so there is no figure
+// a small bucket could leak to them that they cannot already read directly.
 //
-// So the floor is 1 for the salaries tier and DEFAULT_MIN_BUCKET for everybody
-// else, and it is decided HERE, server-side, from the caller's own tiers. A
-// base-tier caller's payload still arrives with the money nulled out — the
-// dashes are in the response, not in the rendering.
+// SUPPRESSION STOPPED BEING TIERED ON 2026-09-15. The floor used to be 1 for a
+// salaries-tier reader and DEFAULT_MIN_BUCKET for everybody else, because
+// "everybody else" was the whole sequoiafp.com domain. Access is an explicit
+// list now and everyone on it sees every column, so a suppressed bucket
+// withholds a figure from somebody who can read its inputs in two clicks —
+// which is not protection, it is a dash where a number should be.
 //
-// THIS IS SLIGHTLY WIDER THAN "SHOW THE SG&A BREAKDOWN". It lifts suppression on
-// every cost class for that tier, not only on Overhead, because the argument
-// above does not stop at a class boundary — a one-person Manufacturing bucket
-// leaks the same salary/2080 to the same reader. Narrowing it to SG&A would
-// leave dashes on Manufacturing that protect nothing from the person looking at
-// them.
+// The floor is 1 for everybody. The PARAMETER survives, raise-only: a caller
+// may still ask for a higher threshold, which is what somebody wants when they
+// are pasting a departmental view into a deck.
 //
 // 2026-09-14: MANUFACTURING IS THE ONLY CLASS LEFT TO ASK ABOUT. The Overhead
 // tab is gone and the other two classes are refused here rather than gated —
@@ -159,11 +157,9 @@ exports.handler = async (event) => {
     };
   }
 
-  // The suppression threshold is a disclosure judgement, so it is settable — but
-  // only upward from the caller's FLOOR. A caller must not be able to talk the
-  // endpoint into publishing a one-person bucket by asking for minBucket=1;
-  // whether 1 is even a floor for them is decided below, from their tiers, and
-  // never from anything in the query string.
+  // The suppression threshold is a disclosure judgement, so it is settable —
+  // but only UPWARD from the floor, which is 1 and is decided below rather than
+  // anywhere in the query string.
   const requestedMin = parseDecimal(params.minBucket, { min: 1, max: 100, fallback: null });
 
   // A DATE RANGE, or a week. The range wins when both are given — it is the
@@ -188,18 +184,19 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Fails closed to the base tier, which here means full suppression — the
-    // safe direction. A permissions read that breaks costs somebody their
-    // breakdown; it cannot publish one.
-    const tiers = await perms.fetchTiers(session.email, db);
-
-    // THE OVERHEAD CLASSES WERE GATED HERE, WHOLE, and the gate is gone with
-    // the classes: RETIRED_COST_CLASSES is refused above, before a permissions
-    // read is even worth doing, because no tier unlocks a report that no longer
-    // exists. Manufacturing stays open to every signed-in account and is
-    // protected by suppression, the way it always was.
-
-    const floor = perms.has(tiers, perms.TIER_SALARIES) ? 1 : DEFAULT_MIN_BUCKET;
+    // SMALL-BUCKET SUPPRESSION IS NO LONGER TIERED, 2026-09-15.
+    //
+    // The floor used to be 1 for a salaries-tier reader and DEFAULT_MIN_BUCKET
+    // for everybody else, because "everybody else" was the whole sequoiafp.com
+    // domain and a one-person department bucket is that person's pay. Access is
+    // an explicit list now and everyone on it can read annual_salary outright,
+    // so suppressing a bucket from them protects nothing and only withholds a
+    // figure they could get from the roster in two clicks.
+    //
+    // The PARAMETER survives: a caller may still ask for a higher floor, which
+    // is what the report does when somebody wants a departmental view they can
+    // paste into a deck. It just cannot be asked for a LOWER one than 1.
+    const floor = 1;
     const minBucketHeadcount = requestedMin === null
       ? floor
       : Math.max(floor, Math.floor(requestedMin));
@@ -275,8 +272,10 @@ exports.handler = async (event) => {
         // already happened, above, and the money is already null in `report`.
         disclosure: {
           minBucketHeadcount,
-          suppressionLifted: floor === 1,
-          tiers: Array.from(tiers)
+          // Always true now — the floor is 1 for everybody. Kept in the payload
+          // because the page reads it to decide whether to explain a dash, and
+          // a key that vanishes is a page that starts explaining nothing.
+          suppressionLifted: floor === 1
         },
         availableWeeks,
         // `week` is the Mon-Sun week when one was reported and the range

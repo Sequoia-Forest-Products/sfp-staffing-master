@@ -144,25 +144,31 @@ test('no session is 401, and nothing is read', async (t) => {
   assert.deepStrictEqual(calls, []);
 });
 
-test('the base tier cannot read the plan, and no seat is queried', async (t) => {
+test('anybody signed in can read the plan — one access list, no tiers', async (t) => {
+  // This endpoint was all-or-nothing behind the salaries tier while the
+  // alternative audience was the whole sequoiafp.com domain. Access is an
+  // explicit list since 2026-09-15 and everyone on it holds the same rights, so
+  // a signed-in caller is one who was already told yes.
   const { calls } = stub(t, { tier: null });
   const res = await call('GET');
-  assert.strictEqual(res.statusCode, 403);
-  assert.ok(!calls.some(c => c.url.includes('economics')), 'refused before the query');
-  assert.ok(!res.body.includes('38.5'));
-  assert.ok(!res.body.includes('Millwright'));
+  assert.strictEqual(res.statusCode, 200, res.body);
+  assert.ok(calls.some(c => c.url.includes('economics')), 'the seats are queried');
+  assert.ok(res.body.includes('Millwright'));
 });
 
-test('the admin tier alone does not open it', async (t) => {
-  stub(t, { tier: 'admin' });
-  assert.strictEqual((await call('GET')).statusCode, 403);
+test('the plan no longer costs a permissions read', async (t) => {
+  // It resolved the caller's tiers on every request. A permissions table that
+  // is down cannot take the staffing plan with it now.
+  const { calls } = stub(t, { tier: null });
+  await call('GET');
+  assert.strictEqual(calls.filter(c => c.url.includes('user_permissions')).length, 0);
 });
 
-test('the base tier cannot ASSIGN, and nothing is written', async (t) => {
+test('anybody signed in can ASSIGN a seat', async (t) => {
   const { writes } = stub(t, { tier: null });
   const res = await call('PATCH', { id: SEAT_1, employeeId: ANA });
-  assert.strictEqual(res.statusCode, 403);
-  assert.deepStrictEqual(writes, []);
+  assert.strictEqual(res.statusCode, 200, res.body);
+  assert.strictEqual(writes.length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -464,14 +470,6 @@ test('malformed JSON is a 400, not a crash', async (t) => {
 // read a ceiling, so the people who can set one are exactly the people who
 // could already see one — which is what the first test here pins.
 
-test('setting a position rate needs the salaries tier, like everything else here', async (t) => {
-  const { writes } = stub(t, { tier: null });
-  const res = await call('PATCH', { id: SEAT_1, maxWage: 42 });
-  assert.strictEqual(res.statusCode, 403);
-  assert.match(json(res).detail, /salaries tier/);
-  assert.deepStrictEqual(writes, [], 'refused before any write');
-});
-
 test('a position rate writes one column on one row', async (t) => {
   const { writes } = stub(t);
   const res = await call('PATCH', { id: SEAT_1, maxWage: 42.5 });
@@ -734,13 +732,6 @@ test('GET ?history=<seat> returns that seat\'s changes, shaped for a reader', as
   // The raw values are deliberately not sent: a UUID of somebody who may have
   // left adds nothing a reader can use.
   assert.ok(!('previous_value' in rows[0]));
-});
-
-test('reading the history needs the salaries tier, like the plan', async (t) => {
-  stub(t, { tier: null });
-  const res = await call('GET', null, { history: SEAT_1 });
-  assert.strictEqual(res.statusCode, 403);
-  assert.match(json(res).detail, /salaries tier/);
 });
 
 test('a history read for a non-UUID is refused', async (t) => {

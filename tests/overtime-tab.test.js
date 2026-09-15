@@ -243,13 +243,15 @@ test('opening Reports on a view with no loader fires no request', () => {
 
 test('sendOTReportEmail still exists and still posts to /api/send-ot-email', async () => {
   const ctx = sandbox();
-  ctx.state.emailSettings = { managers: ['a@sequoiafp.com', 'b@sequoiafp.com'], autoSend: false };
+  // THE ACCESS LIST, since 2026-09-15. There is no separate recipient list any
+  // more — everyone who can use the app receives the Monday report.
+  ctx.state.perms.list = ['a@sequoiafp.com', 'b@sequoiafp.com'];
   ctx.render = () => {};
   ctx.toast = () => {};
   // The body is built by otEmailPayload(), which assembles a fair amount of the
   // report. Stubbing it keeps this test about the WIRING — that the function
-  // exists, reads the Settings manager list and posts to the endpoint — rather
-  // than about the payload's shape, which the OT report tests already cover.
+  // exists, reads the access list and posts to the endpoint — rather than about
+  // the payload's shape, which the OT report tests already cover.
   ctx.otEmailPayload = () => ({ dateRange: 'Aug 17 – Aug 23' });
 
   assert.strictEqual(typeof ctx.sendOTReportEmail, 'function',
@@ -261,13 +263,13 @@ test('sendOTReportEmail still exists and still posts to /api/send-ot-email', asy
   assert.strictEqual(posts.length, 1, 'exactly one send');
   const body = JSON.parse(posts[0].opts.body);
   assert.deepStrictEqual(body.to, ['a@sequoiafp.com', 'b@sequoiafp.com'],
-    'it must send to the Settings manager list, not a hardcoded address');
+    'it must send to the access list, not a hardcoded address');
   assert.ok(body.subject.includes('Aug 17'), 'and name the week it is reporting');
 });
 
-test('with no managers configured it does not send', async () => {
+test('with nobody on the access list it does not send', async () => {
   const ctx = sandbox();
-  ctx.state.emailSettings = { managers: [], autoSend: false };
+  ctx.state.perms.list = [];
   ctx.render = () => {};
   ctx.toast = () => {};
   ctx.otEmailPayload = () => ({ dateRange: 'Aug 17 – Aug 23' });
@@ -287,15 +289,20 @@ test('the Email managers button is still rendered by the OT Report view', () => 
     'the Email managers button must still call sendOTReportEmail()');
 });
 
-test('the Settings manager list is still live, not inert UI', () => {
-  // The Phase A failure was a list that saved and was read by nothing.
+test('the recipient list is still live, not inert UI — and there is only one of it', () => {
+  // The Phase A failure was a list that saved and was read by nothing. The
+  // 2026-09-15 failure it now guards against is subtler: TWO lists, both
+  // meaning "the managers", drifting apart. The live data had jeffrey.cook@
+  // holding a permission and jefrey.cook@ — one f — on the recipient list.
   const settings = fs.readFileSync(path.join(SRC, 'settings-tab.js'), 'utf8');
-  assert.ok(/state\.emailSettings\.managers\.push/.test(settings), 'add still writes');
-  assert.ok(/state\.emailSettings\.managers\.splice/.test(settings), 'remove still writes');
+  assert.ok(!/state\.emailSettings\.managers\.(push|splice)/.test(settings),
+    'the second recipient list is editable again');
 
   const otReport = fs.readFileSync(path.join(SRC, 'ot-report.js'), 'utf8');
-  assert.ok(/state\.emailSettings\.managers/.test(otReport),
-    'and something must READ the list, or it is decoration again');
+  assert.ok(/state\.perms\.list/.test(otReport),
+    'something must READ the access list, or the email has no recipients');
+  assert.ok(!/state\.emailSettings\.managers/.test(otReport),
+    'and it must not read the retired one');
 });
 
 // This test used to assert the OPPOSITE: that commitDailyImport() still called
@@ -886,20 +893,18 @@ test('Staffing Economics is first, and named what it is called on screen', () =>
   assert.ok(!/'staff'/.test(src), "the old 'staff' key is still in costs.js");
 });
 
-test('the landing view follows the reader tier, because the first view is gated', () => {
-  // state.costsView starts EMPTY and resolves at render time. Hardcoding a
-  // default would open the tab on the SECOND item for exactly the people who
-  // can read the first — and on a refusal for everybody else if it named the
-  // first.
-  const base = sandbox();
-  assert.strictEqual(base.state.costsView, '', 'the default names no view');
-  assert.strictEqual(base.costsSubView(base.state.costsView).key, 'deptgroup',
-    'without the tier, Staffing is not in the sub-nav at all');
-
-  const salaried = sandbox();
-  salaried.state.perms.tiers = ['hourly_wages', 'salaries'];
-  assert.strictEqual(salaried.costsSubView(salaried.state.costsView).key, 'staffing',
-    'with the tier, the tab opens on the view that leads it');
+test('the landing view is resolved, not hardcoded', () => {
+  // state.costsView starts EMPTY and resolves at render time. It mattered most
+  // while Staffing Economics was gated — hardcoding a default would have opened
+  // the tab on the second item for exactly the people who could read the first.
+  // The gate went with the tiers on 2026-09-15 and the resolution stays: the
+  // mechanism is what makes a stale or unknown key safe.
+  const ctx = sandbox();
+  assert.strictEqual(ctx.state.costsView, '', 'the default names no view');
+  assert.strictEqual(ctx.costsSubView(ctx.state.costsView).key, 'staffing',
+    'and resolves to the view that leads the sub-nav');
+  assert.strictEqual(ctx.costsSubView('no-such-view').key, 'staffing',
+    'a key that no longer exists resolves rather than rendering nothing');
 });
 
 // ---------------------------------------------------------------------------

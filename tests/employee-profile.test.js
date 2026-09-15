@@ -154,19 +154,20 @@ test('a salaried person gets no wage input at all', () => {
   // written onto them would be counted twice.
   assert.ok(!/wageDraftSet/.test(html), 'no input for a rate they cannot have');
   assert.match(html, /salaried/i);
-  assert.match(html, /salaries tier/, 'and it says what reading the salary needs');
-  assert.ok(!/210000|210,000/.test(html), 'without showing the figure');
+  // The salary itself IS offered since 2026-09-15 — the tiers collapsed into
+  // one access list and everyone on it sees every column.
+  assert.match(html, /salaryDraftSet/, 'the salary is editable by anybody signed in');
 });
 
-test('a salaried person still shows no figure without the tier', () => {
-  // This sandbox holds the base tier only. annual_salary is not in a base-tier
-  // payload at all — the fixture carries one so that a figure appearing here is
-  // a leak rather than an empty field.
+test('a salaried person shows their salary to anybody signed in', () => {
+  // The reversal, on the read-only card. Until 2026-09-15 this figure was
+  // absent from a base-tier payload entirely; access is an explicit list now
+  // and being signed in means somebody put you on it.
   const ctx = sandbox();
   const html = openCard(ctx, [person({ payType: 'Salaried', wage: '', annualSalary: 210000 })]);
 
-  assert.ok(!/210000|210,000/.test(html));
-  assert.ok(html.includes('Salaried'), 'the pay TYPE is a classification and does show');
+  assert.match(html, /210,000/, 'the salary is shown');
+  assert.ok(html.includes('Salaried'), 'and the pay type beside it');
 });
 
 // ---------------------------------------------------------------------------

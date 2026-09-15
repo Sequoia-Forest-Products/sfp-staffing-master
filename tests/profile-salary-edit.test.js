@@ -74,7 +74,9 @@ function fakeEl(id) {
   return el;
 }
 
-function sandbox({ tiers = ['hourly_wages'], grants = null, responder = null } = {}) {
+// `tiers` and `grants` are gone with the tier model — one access list since
+// 2026-09-15, and `list` is what the Access editor renders from.
+function sandbox({ list = ['me@sequoiafp.com'], responder = null } = {}) {
   const calls = [];
   const toasts = [];
   const els = new Map();
@@ -104,8 +106,7 @@ function sandbox({ tiers = ['hourly_wages'], grants = null, responder = null } =
       if (over) return { ok: over.status < 400, status: over.status, json: async () => over.body };
       if (u.startsWith('/api/permissions')) {
         return { ok: true, status: 200, json: async () => ({
-          ok: true, email: 'me@sequoiafp.com', tiers, grants,
-          isAdmin: tiers.includes('admin'), grantableTiers: ['salaries', 'admin'] }) };
+          ok: true, caller: 'me@sequoiafp.com', hasAccess: true, list }) };
       }
       if (u.startsWith('/api/preapproved-ot')) return { ok: true, status: 200, json: async () => ({ ok: true, rows: [], otTypes: [] }) };
       if (u.startsWith('/api/allocations')) return { ok: true, status: 200, json: async () => ({ ok: true, allocations: [] }) };
@@ -129,14 +130,16 @@ function sandbox({ tiers = ['hourly_wages'], grants = null, responder = null } =
   // Seeded synchronously so the render tests do not each have to await
   // loadPermissions. The tests that are ABOUT loadPermissions call it and let
   // it overwrite this.
-  ctx.state.perms.tiers = tiers.slice();
-  ctx.state.perms.isAdmin = tiers.includes('admin');
-  ctx.state.perms.grants = grants;
+  ctx.state.perms.list = list.slice();
+  ctx.state.perms.hasAccess = true;
+  ctx.state.perms.email = 'me@sequoiafp.com';
   ctx.state.perms.loaded = true;
   return ctx;
 }
 
-const withTier = (t) => sandbox({ tiers: ['hourly_wages', t] });
+// Everybody holds everything now. Kept as an alias so the tests that used it
+// read as what they assert.
+const withTier = () => sandbox();
 const lastToast = (ctx) => ctx.__toasts[ctx.__toasts.length - 1] || {};
 const writes = (ctx) => ctx.__calls.filter(c => c.method !== 'GET');
 
@@ -168,22 +171,16 @@ const patches = (ctx) => ctx.__calls.filter(c => c.method === 'PATCH');
 // who may see the figure
 // ---------------------------------------------------------------------------
 
-test('without the tier a salary never appears in the HTML, read or edit', () => {
-  // The load-bearing one. The fixture carries a salary the server would not
-  // have sent, so a figure appearing here is a leak rather than an empty field.
-  const ctx = sandbox({ tiers: ['hourly_wages'] });
+test('anybody signed in sees the salary, read and edit', () => {
+  // The reversal, 2026-09-15. This was the load-bearing negative case while
+  // sign-in was the whole sequoiafp.com domain; access is an explicit list now,
+  // and being signed in means somebody put you on it.
+  const ctx = sandbox();
   for (const html of [readCard(ctx, 's1'), editCard(ctx, 's1')]) {
-    assert.ok(!/105000|105,000/.test(html));
-    assert.ok(!/salaryDraftSet/.test(html), 'and no input that would post one');
-    assert.match(html, /salaries tier/, 'it says what is missing rather than nothing');
+    assert.match(html, /105,000|105000/);
+    assert.ok(!/salaries tier/.test(html), 'the refusal is still being drawn');
   }
-});
-
-test('the admin tier alone does not open it', () => {
-  // Admin grants access; it does not itself read pay. Same rule as the column
-  // registry on the server.
-  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'] });
-  assert.ok(!/105000|105,000/.test(readCard(ctx, 's1')));
+  assert.match(editCard(ctx, 's1'), /salaryDraftSet/, 'and it is editable');
 });
 
 test('with the tier the figure and its hourly equivalent both show', () => {
@@ -294,13 +291,12 @@ test('a salary that is not a number refuses the save and never says saved', asyn
   assert.ok(!ctx.__toasts.some(t => t.type === 'success'));
 });
 
-test('a reader without the tier cannot post a salary even by editing state', async () => {
-  // The client gate is cosmetic and this asserts the cosmetic part only — the
-  // server refuses the column outright. What matters here is that a draft left
-  // in state by some other path does not ride along on an ordinary save.
-  const ctx = sandbox({ tiers: ['hourly_wages'] });
+test('an UNCHANGED salary is not sent, so a save adds no needless write', async () => {
+  // profileSalaryForRow sends the column only when the figure moved. The tier
+  // check above it went on 2026-09-15; this one did not, and it is what keeps
+  // an ordinary profile save from rewriting a salary nobody touched.
+  const ctx = sandbox();
   editCard(ctx, 's1');
-  ctx.state.editing.annualSalary = '999999';
   await ctx.saveEdit();
   const w = patches(ctx).filter(c => /table=employees/.test(c.url));
   assert.ok(!('annual_salary' in w[0].body));
@@ -320,49 +316,33 @@ test('an inactive person\'s salary is still editable, and still theirs', async (
 // tier plumbing
 // ---------------------------------------------------------------------------
 
-test('loadPermissions resolves the tier', async () => {
-  // It used to reveal a tab as well. There is no gated tab any more — the
-  // salary is a field, and the staffing plan is a sub-view — so what the tier
-  // unlocks is asserted where it is drawn, above.
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+test('loadPermissions reads the access list', async () => {
+  const ctx = sandbox({ list: ['me@sequoiafp.com', 'ryley@sequoiafp.com'] });
   await ctx.loadPermissions();
-  assert.ok(ctx.canSeeSalaries());
+  assert.deepStrictEqual(Array.from(ctx.state.perms.list),
+    ['me@sequoiafp.com', 'ryley@sequoiafp.com']);
+  assert.strictEqual(ctx.state.perms.hasAccess, true);
 });
 
-test('a permissions request that fails leaves the base tier, and says so', async () => {
+test('a permissions request that fails leaves an empty list, and says so', async () => {
   const ctx = sandbox({ responder: (u) => u.startsWith('/api/permissions')
     ? { status: 500, body: { ok: false, error: 'boom' } } : null });
   await ctx.loadPermissions();
-  assert.deepStrictEqual(Array.from(ctx.state.perms.tiers), ['hourly_wages']);
-  assert.strictEqual(ctx.state.perms.isAdmin, false);
+  assert.deepStrictEqual(Array.from(ctx.state.perms.list), []);
+  assert.strictEqual(ctx.state.perms.hasAccess, false);
   assert.match(ctx.state.perms.error, /boom/);
   // Failing closed is right; failing closed SILENTLY is not — the error has a
-  // surface on Settings.
+  // surface on Settings. It says only the EDITOR is missing now, because that
+  // is all a failed read costs since the collapse.
   assert.match(ctx.renderPermsError(), /boom/);
+  assert.match(ctx.renderPermsError(), /The access list could not be read/);
 });
 
-test('a tier this build does not recognise unlocks nothing', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'superuser'] });
-  await ctx.loadPermissions();
-  assert.deepStrictEqual(Array.from(ctx.state.perms.tiers), ['hourly_wages']);
-  assert.ok(!ctx.canSeeSalaries());
-});
-
-test('a session left on the retired Overhead tab bounces off it', async () => {
-  // A page open across the 2026-09-14 deploy. render() has no branch for that
-  // key any more, so without the bounce the content would stay as it was with
-  // nothing explaining why.
-  const ctx = withTier('salaries');
-  ctx.state.tab = 'overhead';
-  ctx.applyTabVisibility();
-  assert.strictEqual(ctx.state.tab, 'employees');
-});
-
-test('losing the tier does NOT take away the rate editor', async () => {
-  // The consequence of the split, and the reason for it. A supervisor whose
-  // grant they never had can still set an hourly rate, because that is a
-  // base-tier column on a page nothing gates.
-  const ctx = sandbox({ tiers: ['hourly_wages'] });
+test('the rate editor is drawn for anybody, as it always was', async () => {
+  // Hourly rates were the base tier and stayed drawn for everyone through the
+  // whole tier era. Nothing about that changed; it is pinned because it is the
+  // one thing the collapse must NOT have quietly altered.
+  const ctx = sandbox();
   ctx.state.employees = [{ ...ctx.state.employees.find(e => e.id === 'h1') }];
   ctx.state.profile = { idx: 0 };
   ctx.startProfileEdit();
@@ -373,92 +353,107 @@ test('losing the tier does NOT take away the rate editor', async () => {
 // the Access section
 // ---------------------------------------------------------------------------
 
-test('a non-admin gets no Access section at all — not a disabled one', async () => {
-  const ctx = withTier('salaries');
+test('everybody sees the Access section — there is no audience for hiding it', async () => {
+  // It was admin-only: a greyed-out control that manages who can see salaries
+  // is an invitation to ask why. Everyone on the list may edit the list now, so
+  // there is nobody left for whom hiding it would be correct.
+  const ctx = sandbox({ list: ['me@sequoiafp.com'] });
   await ctx.loadPermissions();
   const html = ctx.renderSettings();
-  assert.ok(!/🔑 Access/.test(html));
-  assert.ok(!/grantTier\(\)/.test(html), 'and no control to click');
+  assert.match(html, /🔑 Access/);
+  assert.match(html, /grantAccess\(\)/, 'and a control to click');
 });
 
-test('an admin sees one row per person, with their tiers listed', async () => {
+test('the list is one row per person, and says what being on it means', async () => {
   const ctx = sandbox({
-    tiers: ['hourly_wages', 'admin'],
-    grants: [
-      { id: 'g1', email: 'peter.stroble@sequoiafp.com', tier: 'admin' },
-      { id: 'g2', email: 'peter.stroble@sequoiafp.com', tier: 'salaries' },
-      { id: 'g3', email: 'jeffrey.cook@sequoiafp.com', tier: 'salaries' }
-    ]
+    list: ['jeffrey.cook@sequoiafp.com', 'me@sequoiafp.com', 'peter.stroble@sequoiafp.com']
   });
   await ctx.loadPermissions();
   const html = ctx.renderSettings();
 
-  assert.match(html, /🔑 Access/);
-  // Two people, not three grants — the question this table answers is "who".
-  assert.strictEqual((html.match(/@sequoiafp\.com/g) || []).length >= 2, true);
   assert.match(html, /peter\.stroble@sequoiafp\.com/);
   assert.match(html, /jeffrey\.cook@sequoiafp\.com/);
-  assert.match(html, /revokeTier\('peter\.stroble@sequoiafp\.com','admin'\)/);
-  assert.match(html, /last administrator cannot be revoked/i);
-  // hourly_wages must not be offered — it is not grantable.
-  assert.ok(!/value="hourly_wages"/.test(html));
+  assert.match(html, /revokeAccess\('peter\.stroble@sequoiafp\.com'\)/);
+  // The two consequences somebody has to know BEFORE they add a name.
+  // \s+ rather than a literal space: the template wraps these sentences.
+  assert.match(html, /see and edit\s+everything including annual salaries/i);
+  assert.match(html, /receives the Monday OT email/i);
+  // And no tier picker survives.
+  assert.ok(!/value="salaries"/.test(html));
+  assert.ok(!/value="admin"/.test(html));
 });
 
-test('granting posts the address and re-reads rather than trusting the input', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], grants: [] });
+test('the sole entry says it cannot be removed, before anybody tries', async () => {
+  const ctx = sandbox({ list: ['me@sequoiafp.com'] });
+  await ctx.loadPermissions();
+  const html = ctx.renderSettings();
+  assert.match(html, /only entry and it cannot be removed/i);
+  assert.match(html, /Add somebody else first/i);
+});
+
+test('adding posts the address and re-reads rather than trusting the input', async () => {
+  const ctx = sandbox({ list: [] });
   await ctx.loadPermissions();
   ctx.__el('grantEmail').value = '  ANA.Reyes@SequoiaFP.com ';
-  ctx.__el('grantTier').value = 'salaries';
 
-  await ctx.grantTier();
+  await ctx.grantAccess();
 
   const posts = ctx.__calls.filter(c => c.method === 'POST' && c.url.startsWith('/api/permissions'));
   assert.strictEqual(posts.length, 1);
-  assert.strictEqual(posts[0].body.tier, 'salaries');
   // Sent as typed; the SERVER canonicalises, and the page then re-reads so it
   // shows what was stored rather than what was typed.
   assert.strictEqual(posts[0].body.email, 'ANA.Reyes@SequoiaFP.com');
+  assert.ok(!('tier' in posts[0].body), 'there is no tier to send');
   const rereads = ctx.__calls.filter(c => c.method === 'GET' && c.url.startsWith('/api/permissions'));
-  assert.strictEqual(rereads.length, 2, 'loaded once on entry, once after the grant');
+  assert.strictEqual(rereads.length, 2, 'loaded once on entry, once after the add');
 });
 
-test('granting with no address asks for one instead of posting', async () => {
-  const ctx = sandbox({ tiers: ['hourly_wages', 'admin'], grants: [] });
+test('adding with no address asks for one instead of posting', async () => {
+  const ctx = sandbox({ list: [] });
   await ctx.loadPermissions();
   ctx.__el('grantEmail').value = '   ';
-  await ctx.grantTier();
+  await ctx.grantAccess();
   assert.deepStrictEqual(writes(ctx), []);
   assert.match(lastToast(ctx).msg, /Enter the email address/);
 });
 
-test("the last-admin refusal reaches the user with the database's own wording", async () => {
-  const message = 'Refusing to remove the last administrator.\n\nWith no admin row nobody can ' +
-                  'grant or revoke through the app. If this is deliberate, see ' +
-                  'SCHEMA_PHASE_D_PERMISSIONS.sql section 7 — grant somebody else admin first, ' +
-                  'then remove this one.';
+test("the last-entry refusal reaches the user with the remedy attached", async () => {
   const ctx = sandbox({
-    tiers: ['hourly_wages', 'admin'],
-    grants: [{ id: 'g1', email: 'peter.stroble@sequoiafp.com', tier: 'admin' }],
+    list: ['peter.stroble@sequoiafp.com'],
     responder: (url, method) => method === 'DELETE'
-      ? { status: 409, body: { ok: false, error: message } } : null
+      ? { status: 409, body: { ok: false,
+          error: 'The last person cannot be removed from the access list.',
+          detail: 'Add the replacement first, then remove this entry.' } } : null
   });
   await ctx.loadPermissions();
-  await ctx.revokeTier('peter.stroble@sequoiafp.com', 'admin');
+  await ctx.revokeAccess('peter.stroble@sequoiafp.com');
 
   const t = lastToast(ctx);
   assert.strictEqual(t.type, 'error');
-  assert.match(t.msg, /grant somebody else admin first/,
-    'the actionable half survives — a generic "conflict" would send them nowhere');
+  assert.match(t.msg, /Add the replacement first/,
+    'the actionable half survives — a bare "conflict" would send them nowhere');
 });
 
-test('revoke targets email and tier, not a row id the page could get wrong', async () => {
-  const ctx = sandbox({
-    tiers: ['hourly_wages', 'admin'],
-    grants: [{ id: 'g3', email: 'jeffrey.cook@sequoiafp.com', tier: 'salaries' }]
-  });
+test('removing targets the email, and there is no tier to get wrong', async () => {
+  const ctx = sandbox({ list: ['jeffrey.cook@sequoiafp.com', 'me@sequoiafp.com'] });
   await ctx.loadPermissions();
-  await ctx.revokeTier('jeffrey.cook@sequoiafp.com', 'salaries');
+  await ctx.revokeAccess('jeffrey.cook@sequoiafp.com');
   const [del] = ctx.__calls.filter(c => c.method === 'DELETE');
   assert.match(del.url, /email=jeffrey\.cook%40sequoiafp\.com/);
-  assert.match(del.url, /tier=salaries/);
+  assert.ok(!/tier=/.test(del.url));
+});
+
+test('removing YOURSELF is allowed and is said out loud', async () => {
+  // No roles means it is the same act as removing anybody else. It needs
+  // saying, because the app keeps working until the session expires and the
+  // silence would read as "it did not work".
+  const ctx = sandbox({
+    list: ['me@sequoiafp.com', 'other@sequoiafp.com'],
+    responder: (url, method) => method === 'DELETE'
+      ? { status: 200, body: { ok: true, removed: true, self: true, list: ['other@sequoiafp.com'] } } : null
+  });
+  await ctx.loadPermissions();
+  await ctx.revokeAccess('me@sequoiafp.com');
+  assert.match(lastToast(ctx).msg, /removed your own access/i);
+  assert.match(lastToast(ctx).msg, /until this session expires/i);
 });

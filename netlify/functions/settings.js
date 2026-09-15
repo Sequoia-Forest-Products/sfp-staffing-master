@@ -1,5 +1,5 @@
 const db = require('./db');
-const perms = require('./permissions-lib');
+
 const { verifySession, getCookies } = require('./session-lib');
 
 // This endpoint had NO session check on either method. GET returned any
@@ -102,28 +102,20 @@ exports.handler = async (event) => {
       }
     }
 
-    // POST /api/settings - save setting. ADMIN ONLY.
+    // POST /api/settings - save setting.
+    //
+    // THE ADMIN CHECK IS GONE, 2026-09-15, with the tiers it belonged to. Being
+    // signed in is being on the access list — auth.js checks it — and everyone
+    // on that list holds the same rights by decision. A second gate here would
+    // be a role, and the model has none.
+    //
+    // What that opens is real and was accepted knowingly: anyone on the list can
+    // move the timeclock grace allowance and the OT budget, both of which change
+    // what the weekly report says. The list is short and everyone on it is a
+    // manager. The recipient list is no longer among the things this endpoint
+    // can change at all — it IS the access list now, and it is edited through
+    // /api/permissions.
     if (method === 'POST') {
-      // Resolved through the same fetchTiers every other gate uses, so an admin
-      // here is an admin there. Fails closed to the base tier: a broken
-      // permissions read costs an admin the ability to change a setting, which
-      // is the right way round.
-      //
-      // Before the body is parsed and before anything touches the settings
-      // table, so a refusal writes nothing and reads nothing.
-      const tiers = await perms.fetchTiers(perms.normalizeEmail(session.email), db);
-      if (!perms.has(tiers, perms.TIER_ADMIN)) {
-        return {
-          statusCode: 403, headers,
-          body: JSON.stringify({
-            error: 'Only an administrator may change these settings.',
-            detail: 'The manager recipient list, the timeclock grace allowance and the OT ' +
-                    'budget all change what the weekly report says and who receives it. ' +
-                    'An administrator can grant the admin tier under Settings → Access.'
-          })
-        };
-      }
-
       const body = JSON.parse(event.body || '{}');
       const settingKey = body.key;
       const settingValue = body.value;

@@ -481,7 +481,11 @@ const COSTS_VIEWS = [
     // The KEY stays 'staffing': it is the distinctive word of the label, so
     // searching either finds the other. What the key must never be is a word
     // that appears nowhere on screen, which is what 'staff' had become.
-    tier: TIER_SALARIES,
+    //
+    // NO `tier` SINCE 2026-09-15. This view was behind the salaries tier while
+    // the alternative audience was the whole sequoiafp.com domain. Access is an
+    // explicit list now and everyone on it sees everything, so a signed-in
+    // reader is one who was already told yes.
     render: () => renderEconomics(),
     load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }
   },
@@ -494,10 +498,15 @@ const COSTS_VIEWS = [
 ];
 
 // A view somebody may not open is not in their sub-nav at all. Filtered rather
-// than disabled: a greyed-out tab still announces the page exists, and the
-// point of the tier is that most of the roster never learns it is there.
+// than disabled: a greyed-out tab still announces the page exists.
+//
+// NOTHING SETS `tier` ANY MORE — the three tiers collapsed into one access list
+// on 2026-09-15 and everyone on it sees every view. The filter stays because
+// the sub-nav machinery is built on it and the next gated view, if there ever
+// is one, should be one property rather than a rediscovery. With no view
+// carrying a tier it returns the list unchanged.
 function visibleViews(views) {
-  return views.filter(v => !v.tier || hasTier(v.tier));
+  return views.filter(v => !v.tier);
 }
 
 // Resolution falls back to the first VISIBLE view, not the first listed one.

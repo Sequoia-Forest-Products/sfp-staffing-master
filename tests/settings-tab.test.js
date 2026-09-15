@@ -1,15 +1,12 @@
-// The Settings tab: who may change what, and what a refusal looks like.
+// The Settings tab: what it offers, and what a refusal looks like.
 //
-// The gate is server-side — /api/settings refuses a POST from anybody without
-// the admin tier, above any parsing or database access, and
-// tests/settings-api.test.js asserts that against real responses. What is
-// tested here is the other half:
+// THE ADMIN GATE IS GONE, 2026-09-15. /api/settings refused a POST from anybody
+// without the admin tier; access is an explicit list now and everyone on it
+// holds the same rights, so half of what this file used to test does not exist.
 //
-//   1. the page does not OFFER a control the server would refuse, and
-//   2. when a refusal happens anyway it is REPORTED rather than swallowed.
-//
-// (2) is the one that matters. saveEmailSettings used to ignore every failure
-// and write to localStorage instead, so a refused save would have shown "OT
+// What remains is the half that always mattered: when a save is refused it is
+// REPORTED rather than swallowed. saveEmailSettings used to ignore every
+// failure and write to localStorage instead, so a refused save showed "OT
 // budget saved" and left the browser holding a private copy of a setting the
 // server rejected.
 
@@ -32,7 +29,9 @@ function fakeEl(id) {
   };
 }
 
-function sandbox({ tiers = ['hourly_wages'], responder = null } = {}) {
+// `tiers` is gone with the tier model. Nothing about this sandbox varies by
+// caller any more — that is the change.
+function sandbox({ responder = null } = {}) {
   const calls = [];
   const toasts = [];
   const stored = new Map();
@@ -69,8 +68,8 @@ function sandbox({ tiers = ['hourly_wages'], responder = null } = {}) {
       if (over) return { ok: over.status < 400, status: over.status, json: async () => over.body };
       if (u.startsWith('/api/permissions')) {
         return { ok: true, status: 200, json: async () => ({
-          ok: true, email: 'me@sequoiafp.com', tiers, grants: null,
-          isAdmin: tiers.includes('admin'), grantableTiers: ['salaries', 'admin'] }) };
+          ok: true, caller: 'me@sequoiafp.com', hasAccess: true,
+          list: ['me@sequoiafp.com', 'ryley@sequoiafp.com'] }) };
       }
       if (u.startsWith('/api/settings')) {
         // serverSettings(), not the shared literal. state.emailSettings is a
@@ -98,8 +97,9 @@ function sandbox({ tiers = ['hourly_wages'], responder = null } = {}) {
   ctx.__el = getEl;
   ctx.state.employees = [];
   ctx.state.loading = false;
-  ctx.state.perms.tiers = tiers.slice();
-  ctx.state.perms.isAdmin = tiers.includes('admin');
+  ctx.state.perms.list = ['me@sequoiafp.com', 'ryley@sequoiafp.com'];
+  ctx.state.perms.hasAccess = true;
+  ctx.state.perms.email = 'me@sequoiafp.com';
   ctx.state.perms.loaded = true;
   ctx.state.emailSettings = { ...ctx.EMAIL_SETTINGS_DEFAULTS, ...serverSettings() };
   return ctx;
@@ -115,7 +115,10 @@ const serverSettings = () => ({
   graceHoursPerEmployee: 0.5
 });
 
-const admin = () => sandbox({ tiers: ['hourly_wages', 'admin'] });
+// There is no admin since 2026-09-15 — one access list, no roles. Kept as an
+// alias so the tests that used it read as what they now assert: everybody gets
+// the controls.
+const admin = () => sandbox();
 const lastToast = (ctx) => ctx.__toasts[ctx.__toasts.length - 1] || {};
 const writes = (ctx) => ctx.__calls.filter(c => c.method !== 'GET');
 
@@ -123,66 +126,40 @@ const writes = (ctx) => ctx.__calls.filter(c => c.method !== 'GET');
 // what the page offers
 // ---------------------------------------------------------------------------
 
-test('a non-admin sees every figure and no control to change one', () => {
+test('everybody signed in gets every control — there are no roles', () => {
+  // The reversal, 2026-09-15. These controls were admin-only because sign-in
+  // was the whole sequoiafp.com domain. Access is an explicit list now and
+  // everyone on it holds the same rights, so a gate here would be a role.
   const ctx = sandbox();
-  const html = ctx.renderSettings();
-
-  // The values are all there — they are on every report that uses them, and
-  // hiding them would make those reports less legible while protecting nothing.
-  assert.match(html, /ryley@sequoiafp\.com/);
-  assert.match(html, /0\.5/);
-  assert.match(html, /Email the completed week to managers every Monday morning/);
-
-  // And nothing to type into or click.
-  assert.ok(!/setOTBudgetPercent\(/.test(html), 'the OT budget is editable');
-  assert.ok(!/setGraceHours\(/.test(html), 'the grace allowance is editable');
-  assert.ok(!/addManager\(\)/.test(html), 'the recipient list can be added to');
-  assert.ok(!/removeManager\(/.test(html), 'a recipient can be removed');
-  assert.ok(!/saveEmailSettings\(\)/.test(html), 'the auto-send checkbox is live');
-  assert.ok(!/<input/.test(html), 'a field the server would refuse is on the page');
-
-  assert.match(html, /read-only/);
-  assert.match(html, /only an\s+administrator may change them/i);
-});
-
-test('an admin gets the controls back', () => {
-  const ctx = admin();
   const html = ctx.renderSettings();
 
   assert.match(html, /setOTBudgetPercent\(/);
   assert.match(html, /setGraceHours\(/);
-  assert.match(html, /addManager\(\)/);
-  assert.match(html, /removeManager\(0\)/);
-  assert.match(html, /id="newManagerEmail"/);
+  assert.match(html, /saveEmailSettings\(\)/, 'the auto-send checkbox is live');
   assert.ok(!/read-only/.test(html));
+  assert.ok(!/administrator/i.test(html), 'nothing on the page still talks about admins');
 });
 
-test('the salaries tier alone does not unlock the settings', () => {
-  // Mirrors the server: this endpoint is about who may change what the report
-  // says, which is a different question from who may read pay.
-  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
-  const html = ctx.renderSettings();
-  assert.ok(!/setGraceHours\(/.test(html));
-  assert.match(html, /read-only/);
-});
-
-test('an empty recipient list reads differently for someone who cannot fix it', () => {
+test('the recipient list is NOT edited here — it is the access list', () => {
+  // There were two lists both meaning "the managers", and the live data had
+  // jeffrey.cook@ on one and jefrey.cook@ — one f — on the other.
   const ctx = sandbox();
-  ctx.state.emailSettings = { ...ctx.state.emailSettings, managers: [] };
   const html = ctx.renderSettings();
 
-  // "Add email addresses above" points at a control that is not there.
-  assert.ok(!/Add email addresses above/.test(html));
-  assert.match(html, /not being emailed to anyone/);
+  assert.ok(!/addManager\(\)/.test(html), 'the second recipient list is editable again');
+  assert.ok(!/removeManager\(/.test(html));
+  assert.ok(!/id="newManagerEmail"/.test(html));
+  assert.match(html, /Everyone on the access list receives the Monday OT email/);
 });
 
 // ---------------------------------------------------------------------------
 // what a refusal does
 // ---------------------------------------------------------------------------
 
+// The server no longer refuses a save on permissions grounds — this is any
+// refusal, which the page must report rather than claim success for.
 const refuse403 = (url, method) => (url.startsWith('/api/settings') && method === 'POST')
-  ? { status: 403, body: { error: 'Only an administrator may change these settings.',
-                           detail: 'The manager recipient list, the timeclock grace allowance and the OT budget all change what the weekly report says and who receives it.' } }
+  ? { status: 403, body: { error: 'Not permitted.', detail: 'The save was refused.' } }
   : null;
 
 test('a refused save says so, and never claims success', async () => {
@@ -191,7 +168,7 @@ test('a refused save says so, and never claims success', async () => {
 
   const t = lastToast(ctx);
   assert.strictEqual(t.type, 'error');
-  assert.match(t.msg, /weekly report says and who receives it/);
+  assert.match(t.msg, /The save was refused/, "the server's own words, not a generic failure");
   assert.ok(!ctx.__toasts.some(x => /OT budget saved/.test(x.msg)),
     'the success toast fired after a refusal');
 });
@@ -216,23 +193,20 @@ test('a refused save puts the server\'s value back on the page', async () => {
     'the page kept showing the value the server refused');
 });
 
-test('a refused Add Manager does not add the manager', async () => {
+test('a refused holiday add does not add the holiday', async () => {
+  // The same rule the manager list used to pin: the success toast is BEHIND the
+  // save, and a refusal must leave the local state alone. addManager and
+  // removeManager went with the recipient list on 2026-09-15; addHoliday is the
+  // control that now has this shape.
   const ctx = sandbox({ responder: refuse403 });
-  ctx.__el('newManagerEmail').value = 'outsider@sequoiafp.com';
-  await ctx.addManager();
+  ctx.__el('newHolidayDate').value = '2026-09-07';
+  await ctx.addHoliday();
 
   // Array.from: deepStrictEqual compares prototypes, and an array built inside
   // the vm realm is not reference-equal to one built out here.
-  assert.deepStrictEqual(Array.from(ctx.state.emailSettings.managers), ['ryley@sequoiafp.com']);
+  assert.deepStrictEqual(Array.from(ctx.state.emailSettings.holidays || []), []);
   assert.strictEqual(lastToast(ctx).type, 'error');
-  assert.ok(!ctx.__toasts.some(x => /Manager added/.test(x.msg)));
-});
-
-test('a refused Remove does not remove the manager', async () => {
-  const ctx = sandbox({ responder: refuse403 });
-  await ctx.removeManager(0);
-  assert.deepStrictEqual(Array.from(ctx.state.emailSettings.managers), ['ryley@sequoiafp.com']);
-  assert.ok(!ctx.__toasts.some(x => /Manager removed/.test(x.msg)));
+  assert.ok(!ctx.__toasts.some(x => /marked as a mill holiday/.test(x.msg)));
 });
 
 test('an admin save still reports success and writes once', async () => {
@@ -353,10 +327,10 @@ test('a failed permissions load is SAID, not just acted on', async () => {
     ? { status: 500, body: { ok: false, error: 'upstream timeout' } } : null });
   await ctx.loadPermissions();
 
-  assert.deepStrictEqual(Array.from(ctx.state.perms.tiers), ['hourly_wages'], 'it still fails closed');
+  assert.deepStrictEqual(Array.from(ctx.state.perms.list), [], 'it still fails closed');
 
   const html = ctx.renderSettings();
-  assert.match(html, /Your access could not be checked/);
+  assert.match(html, /The access list could not be read/);
   assert.match(html, /Nothing has been revoked/);
   assert.match(html, /Reload the page/);
   assert.match(html, /upstream timeout/, 'the underlying error is quoted');
