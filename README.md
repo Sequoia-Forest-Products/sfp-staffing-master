@@ -273,7 +273,7 @@ sfp-staffing-master/
 | `ALLOWED_USERS` | Comma-separated extra emails |
 | `SUPABASE_URL` | `https://zwghbbyzrycpnesuuzgi.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | Supabase service role key |
-| `DOCS_FOLDER_ID` | `1TMyTQVjpQO8fTrGppx4KchaHRimwIi9Q` |
+| `DOCS_FOLDER_ID` | `1TMyTQVjpQOBfTrGppx4KchaHRimwIi9Q` |
 | `SHARED_DRIVE_ID` | `0AKnhIL1gZ8TmUk9PVA` |
 | `GMAIL_USER` | Gmail address for birthday emails |
 | `GMAIL_APP_PASSWORD` | Gmail app password |
@@ -878,9 +878,33 @@ The original OT report's table, superseded by `daily_hours`. Nothing reads or wr
 
 Employee files live at: **HR Shared Drive → Employee Files → [Employee Name]**
 
+**The parent is addressed by ID, not by name** (`EMPLOYEE_FILES_FOLDER_ID`). It used to be found by
+searching the shared drive's root for a folder *named* `Employee Files`, on every profile open — so
+a rename in Drive would have silently emptied every link on the page. An id cannot be renamed.
+
+**A read never creates.** Opening a profile used to create the employee's folder as a side effect,
+while the page said one would be created on the first upload. Both could not be true; the upload is
+what creates now.
+
+**The folder id is cached onto the employee row.** `employees.drive_folder_id` was NULL for all 75
+rows on 2026-09-15 — nothing had ever written it — so every link was produced live by a name search,
+and the day that search stopped working every profile read "No folder found". When a lookup now
+succeeds the id is saved, `driveLinkBlock` renders from the stored fact, and that person is never
+looked up again. One write per employee, ever.
+
+**A miss says why.** "No folder found" reads as *there isn't one*, which sends somebody to create a
+folder that already exists under a slightly different name. The message now names the employee, says
+Drive matches the name exactly, and gives the folder it searched.
+
+> The recorded folder id was **wrong for as long as it was recorded**: `README.md` and
+> `.env.example` both said `...jpQO8fTr...` with an **8**; the folder is `...jpQOBfTr...` with a
+> **B**. It broke nothing, because `DOCS_FOLDER_ID` was read by no code at all — it simply sat
+> being wrong in the two places somebody would go to look it up. Corrected 2026-09-15, and now it
+> *is* read, so it cannot rot unnoticed again.
+
 Key IDs:
 - Shared Drive: `0AKnhIL1gZ8TmUk9PVA`
-- Employee Files folder: `1TMyTQVjpQO8fTrGppx4KchaHRimwIi9Q`
+- Employee Files folder: `1TMyTQVjpQOBfTrGppx4KchaHRimwIi9Q`
 
 API rules:
 - GET: needs `supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=drive&driveId=0AKnhIL1gZ8TmUk9PVA`
@@ -1294,6 +1318,6 @@ one-line change that belongs in its own commit.
 | Netlify site | seq-staffing |
 | Supabase project | zwghbbyzrycpnesuuzgi |
 | HR Shared Drive | 0AKnhIL1gZ8TmUk9PVA |
-| Employee Files folder | 1TMyTQVjpQO8fTrGppx4KchaHRimwIi9Q |
+| Employee Files folder | 1TMyTQVjpQOBfTrGppx4KchaHRimwIi9Q |
 | Google Cloud project | sfp-staffing-app |
 | SFP Staffing DB sheet | 1_WJ8MuOz3kUfeCEl9Uq-FLvby8ggxnb5MLnz5yALzM4 |
