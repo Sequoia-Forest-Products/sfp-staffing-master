@@ -227,10 +227,19 @@ const otReportStyle=`<style>
 // its own — it was briefly a sub-tab — because it is one line of a weekly
 // overtime picture and a tab for one line is furniture.
 //
-// HOURS ONLY, NO DOLLARS, and that is the point rather than a gap to fill
-// later. These people have no wage in this system by design, so there is no
-// rate to multiply by. If a dollar figure is ever wanted here, the question to
-// answer first is whether SG&A is being analysed again.
+// HOURS ONLY, NO DOLLARS — still, but for a different reason since 2026-09-15.
+//
+// It used to be that there was no rate to multiply by: SG&A carried no pay at
+// all. That changed when hourly SG&A staff got their wage back, precisely
+// because this section exists — an hourly person's overtime is paid at a rate,
+// and the roster had no way to say what it was.
+//
+// So the rate is now AVAILABLE here and is deliberately not used. Costing SG&A
+// overtime is analysing SG&A, which is the thing that stopped on 2026-09-14,
+// and one table quietly growing a dollar column is how that decision would get
+// reversed without anybody deciding to reverse it. Adding the column is a small
+// change when somebody asks for it; the question to answer first is still
+// whether SG&A is being analysed again.
 //
 // COST CLASS, NOT DEPARTMENT, and that distinction is the whole reason this is
 // not three lines long. ot-report-lib has a NON_PRODUCTION bucket whose value
@@ -477,7 +486,7 @@ function renderOTReport(){
   const sgaTotalHrs=sgaRows.reduce((t,x)=>t+Number(x.hours||0),0);
   const sgaBlock=`
     <div class="section-head"><span>SG&amp;A overtime</span></div>
-    <div class="ot-note"><strong>Hours only — SG&amp;A carries no pay in this app.</strong>
+    <div class="ot-note"><strong>Hours only — SG&amp;A overtime is not costed in this app.</strong>
       Everyone in the SG&amp;A cost class who can earn an overtime hour is listed, including at zero:
       an empty row means no overtime, not no data. Salaried office staff are not listed — the payroll
       file drops them and they earn no OT hour. These hours are NOT in the department table above or

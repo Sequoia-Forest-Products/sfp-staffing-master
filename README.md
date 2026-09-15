@@ -97,19 +97,48 @@ worked** — those come from the payroll file and are already whatever they are 
 ### SG&A and Mill Overhead are not costed
 
 Decided 2026-09-14. The Overhead tab is gone and with it the analysis of those two cost classes.
-**Compensation is held for the `Manufacturing` cost class and for nobody else.**
+
+**Who carries which pay column** — the rule, as `netlify/functions/pay-scope-lib.js` enforces it:
+
+| Cost class | `wage` | `annual_salary` |
+|---|---|---|
+| Manufacturing | yes | yes |
+| SG&A | **only if hourly** | no |
+| Mill Overhead | no | no |
+| (unclassified) | no | no |
+
+Which of the two columns a Manufacturing person actually uses is decided by their pay type one step
+later — `wage-edit-lib` rule 2 for the rate, the salary field's own gate for the other.
+
+**SG&A got the hourly column back on 2026-09-15**, and the original one-line rule was too blunt by
+exactly one case. SG&A overtime is still tracked here — it was the one thing deliberately kept — and
+an hourly person's overtime is paid at an hourly rate. That rate is the number their own pay is
+computed from, not an analysis this app invented, and refusing to hold it meant the roster could not
+answer what somebody is paid; the only place it survived was `wage_history`, which records rate
+*changes* and is the wrong thing to read for a current one. A **salaried** SG&A employee still
+carries nothing: the payroll file drops them so they earn no overtime hour, nothing reports on their
+salary, and it is the more sensitive of the two numbers.
+
+So pay type now decides something it deliberately did not before — outside Manufacturing only.
+Inside it, a Manufacturing person carries both columns whatever their pay type, so a salaried one
+still gets rule 2's sentence about being counted twice rather than a false claim about their class.
 
 What does NOT change, and it is most of it: nobody leaves the roster. Every SG&A and Mill Overhead
 employee keeps their row, department, cost class, phone, birthday, documents and points; the
 payroll import still records their hours; `cost_class` still offers all three values on the profile
-card. What changes is that `employees.wage` and `employees.annual_salary` are null for them and
-cannot be set — `netlify/functions/pay-scope-lib.js` refuses the write, the profile card draws a
-sentence instead of a field, and reclassifying somebody out of Manufacturing clears both columns as
-part of that write. `/api/cost-report` refuses `Mill Overhead` and `SG&A` with a 400 that names the
-decision, and no tier reopens them: there is nothing behind the class to unlock.
+card. Where a column does not apply the profile card draws a sentence instead of a field, and a
+write that makes one inapplicable clears it **column by column** as part of that write: moving an
+*hourly* person from Manufacturing to SG&A clears their salary and keeps their rate; flipping an
+SG&A employee to Salaried clears the rate they no longer carry. `/api/cost-report` still refuses
+`Mill Overhead` and `SG&A` with a 400 that names the decision, and no tier reopens them —
+**holding what somebody is paid is not the same act as costing their department**, and `cost-lib`
+filters its members on `cost_class === 'Manufacturing'` so an SG&A rate cannot reach a Manufacturing
+figure however it is set.
 
 **The one thing still tracked is SG&A overtime**, as a section of the OT Report. Hours only, no
-dollars — there is no rate to multiply by, which is the point rather than a gap. It was a sub-view
+dollars — and since 2026-09-15 that is a choice rather than a limitation: the rate is now available
+and is deliberately not used, because costing SG&A overtime is analysing SG&A, and one table quietly
+growing a dollar column is how that decision would get reversed without anybody deciding to. It was a sub-view
 of its own for a day; a tab holding one table is furniture, and as a section it reads as one line
 of the weekly picture. It uses the report already loaded and filters the roster by **cost class**,
 not department:
@@ -122,6 +151,11 @@ anybody remembering to add them.
 rows (4 SG&A, 3 Mill Overhead, 6 inactive people with no cost class). No snapshot was taken.
 `wage_history` still holds the last recorded hourly rate for anyone who had one; the annual salaries
 are gone.
+
+> **The 2026-09-15 narrowing has no data half and needs no migration.** It reopens the column; it
+> does not refill it. Every hourly SG&A rate nulled the day before is still null and has to be typed
+> back in on the profile card — `wage_history` holds the last recorded value for anyone who had one,
+> which is where to look it up. Typing it back writes a fresh history row like any other rate change.
 
 ### Where pay is typed
 
@@ -201,7 +235,7 @@ sfp-staffing-master/
         ├── cost-lib.js         # Cost aggregation by cost class (pure), with
         │                       # small-bucket suppression
         ├── cost-report.js      # /api/cost-report — Manufacturing Costs
-        ├── pay-scope-lib.js    # which cost class may carry pay at all
+        ├── pay-scope-lib.js    # which cost class carries which pay column
         ├── preapproved-ot.js   # /api/preapproved-ot — standing OT allowance,
         │                       # one row per write, never replace-all
         ├── allocations.js      # /api/allocations — cost splits, sum-to-100

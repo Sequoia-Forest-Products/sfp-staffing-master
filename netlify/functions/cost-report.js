@@ -40,10 +40,11 @@
 // them.
 //
 // 2026-09-14: MANUFACTURING IS THE ONLY CLASS LEFT TO ASK ABOUT. The Overhead
-// tab is gone and pay-scope-lib holds compensation for Manufacturing alone, so
-// the other two classes are refused here rather than gated — there is no longer
-// a tier that could unlock them, because there is nothing behind them to
-// unlock. The suppression floor above is untouched and still answers to the
+// tab is gone and the other two classes are refused here rather than gated —
+// there is no longer a tier that could unlock them, because there is nothing
+// behind them to unlock. Unchanged by the 2026-09-15 narrowing that gave hourly
+// SG&A staff their rate back: that rate exists for the roster and for SG&A
+// overtime, and a cost report over SG&A is the analysis that stopped. The suppression floor above is untouched and still answers to the
 // reader's tier: a one-person Manufacturing bucket is still somebody's rate.
 
 const db = require('./db');

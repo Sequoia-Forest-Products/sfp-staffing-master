@@ -55,16 +55,22 @@
 //      data, and the difference is that one of them should be looked at.
 //      Blocking would stop a legitimate raise on a Friday afternoon.
 //
-//   7. ONLY MANUFACTURING CARRIES PAY. Added 2026-09-14, when SG&A and Mill
-//      Overhead stopped being analysed here. The rule itself lives in
-//      pay-scope-lib.js because data.js enforces the same thing for
-//      annual_salary, and two copies of one business rule is two rules.
+//   7. NOT EVERY COST CLASS CARRIES AN HOURLY RATE. Added 2026-09-14, when
+//      SG&A and Mill Overhead stopped being analysed here; narrowed to the
+//      hourly column on 2026-09-15, when SG&A got its rate back for hourly
+//      staff alone. The rule itself lives in pay-scope-lib.js because data.js
+//      enforces the salary half of it for annual_salary, and two copies of one
+//      business rule is two rules.
 //      Checked FIRST, before the salaried and employee-number refusals: those
-//      say "this rate cannot be recorded", and for somebody outside the costed
-//      class the truthful answer is that there is no rate to record.
+//      say "this rate cannot be recorded", and for somebody whose class does
+//      not carry the column the truthful answer is that there is no rate to
+//      record. Note the ORDER against rule 2 — carriesWage() is true for every
+//      Manufacturing person whatever their pay type, precisely so a salaried
+//      one falls through to rule 2 and gets the sentence about being counted
+//      twice rather than a false claim about their cost class.
 
 const { normalizeRate, isSalaried, changePercent, DEFAULT_THRESHOLD_PCT } = require('./wage-sync');
-const { carriesPay, payRefusal } = require('./pay-scope-lib');
+const { carriesWage, payRefusal } = require('./pay-scope-lib');
 
 // wage_history.source. 'bbsi' is the import's; this is the other one, and the
 // two are what tells a typed correction from a vendor observation.
@@ -128,10 +134,12 @@ function planWageEdit({ employee, value, editorEmail = null, now = new Date(),
   }
 
   // Rule 7, and first. The employee row must therefore be read WITH its
-  // cost_class — data.js's pre-read selects it. A row reaching here without the
-  // column reads as unclassified and is refused, which is the safe direction:
-  // it costs an edit and cannot silently price somebody who is not costed.
-  if (!carriesPay(emp)) {
+  // cost_class AND its pay_type — data.js's pre-read selects both, and pay_type
+  // matters here now that SG&A carries the column for hourly staff only. A row
+  // reaching here without the cost class reads as unclassified and is refused,
+  // which is the safe direction: it costs an edit and cannot silently price
+  // somebody who is not costed.
+  if (!carriesWage(emp)) {
     const r = payRefusal(emp, 'wage');
     return refuse(r.error, r.detail);
   }
