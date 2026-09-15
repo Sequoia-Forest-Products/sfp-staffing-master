@@ -463,6 +463,36 @@ test('the % of payroll card reports ALL OT, not net', () => {
   assert.match(html, /Net OT % of hourly payroll/, 'and the net card stays');
 });
 
+test('the payroll and weekend cards are gone, and what they carried is not', () => {
+  // Removed 2026-09-15. Both were answering questions this report does not get
+  // opened for, and both were duplicated elsewhere on the page in better shape.
+  const html = withOtReport(sandbox());
+
+  assert.ok(!/Total hourly payroll<\/div>/.test(html), 'the payroll card is back');
+  assert.ok(!/Weekend labor/.test(html), 'the weekend card is back');
+
+  // The payroll DOLLARS are still on screen — they are the denominator of the
+  // percentage cards, which name it inline because a bare percentage cannot be
+  // checked without it. Removing the card must not have removed the figure.
+  assert.match(html, /All OT % of hourly payroll/);
+  assert.match(html, /of \$[\d,]+/, 'the denominator no longer appears anywhere');
+
+  // And the week's size, which rode along in the removed card's sub-line.
+  assert.match(html, /hrs worked by \d+ hourly employees/,
+    'total hours and headcount went with the card instead of moving');
+});
+
+test('the summary still computes the payroll the cards no longer show', () => {
+  // The card went; summary.totalHourlyPayroll did not, and must not — the two
+  // percentages divide by it and the Monday email reads it directly.
+  const ctx = sandbox();
+  withOtReport(ctx);
+  assert.ok(Number(ctx.state.otReport.summary.totalHourlyPayroll) > 0);
+  const payload = ctx.otEmailPayload();
+  assert.ok(Number(payload.totalPayroll) > 0, 'the email lost its payroll figure');
+  assert.ok(Number(payload.employeeCount) > 0, 'and its headcount');
+});
+
 test('both percentage cards say they are on dollars', () => {
   // The cards show hours AND dollars, and a bare percentage does not say which
   // drives it. It is dollars, on both, and they now say so.
