@@ -65,17 +65,57 @@ function graceHoursFromSettingsRow(row) {
   return n;
 }
 
+// ---- the holiday list -------------------------------------------------
+//
+// Dates the mill did not run. Read from the same settings row and by the same
+// mechanism as the grace hours, because it is the same kind of thing: a policy
+// fact the client must not get a say in, only be told which value was used.
+//
+// Labor Day 2026 is why it exists — 508 hours of holiday pay counted as hours
+// worked, 24% of that week. See the partition in ot-report-lib.
+//
+// An empty list is the honest default. Guessing at holidays would be worse than
+// not having them: a wrongly excluded day removes real production from every
+// figure, which is the same failure this fixes, pointed the other way.
+function holidaysFromSettingsRow(row) {
+  let value = row && row.value;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return []; }
+  }
+  if (!value || typeof value !== 'object') return [];
+  if (!Array.isArray(value.holidays)) return [];
+
+  // Only well-formed dates survive. Anything else is dropped rather than passed
+  // through: a malformed entry that reached buildReport would simply never
+  // match a row, which is a silent no-op, and a holiday that silently does
+  // nothing is worse than one that was never saved.
+  const seen = new Set();
+  for (const entry of value.holidays) {
+    const raw = typeof entry === 'string' ? entry.trim()
+      : (entry && typeof entry === 'object' ? String(entry.date || '').trim() : '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) seen.add(raw);
+  }
+  return [...seen].sort();
+}
+
 // A settings table that is missing, unreachable or holding nonsense must not
 // take the report down with it: the report is the thing somebody is waiting for,
 // and the default is a defensible number to fall back to.
-async function loadGraceHours() {
+//
+// ONE READ, both settings. They live in the same row, and two queries for one
+// row is two chances for the report to fail on a settings table.
+async function loadReportSettings() {
   try {
     const rows = await db.query('settings', '?key=eq.emailSettings');
-    const configured = graceHoursFromSettingsRow(rows && rows[0]);
-    return configured === null ? DEFAULT_GRACE_HOURS : configured;
+    const row = rows && rows[0];
+    const grace = graceHoursFromSettingsRow(row);
+    return {
+      graceHoursPerEmployee: grace === null ? DEFAULT_GRACE_HOURS : grace,
+      holidays: holidaysFromSettingsRow(row)
+    };
   } catch (err) {
-    console.error('Grace hours settings read failed, using the default:', err.message);
-    return DEFAULT_GRACE_HOURS;
+    console.error('Report settings read failed, using defaults:', err.message);
+    return { graceHoursPerEmployee: DEFAULT_GRACE_HOURS, holidays: [] };
   }
 }
 
@@ -178,11 +218,12 @@ async function buildWeekReport({ weekStart, from = null, to = null, today, weekW
     : null;
   const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
 
-  const [standing, employees, graceHoursPerEmployee] = await Promise.all([
+  const [standing, employees, reportSettings] = await Promise.all([
     loadStandingAllowance(),
     payrollDb.fetchEmployees(),
-    loadGraceHours()
+    loadReportSettings()
   ]);
+  const { graceHoursPerEmployee, holidays } = reportSettings;
 
   // A delivery is expected for every day that has already happened — BBSI
   // sends the report seven days a week, so Saturday is owed one just like
@@ -199,7 +240,8 @@ async function buildWeekReport({ weekStart, from = null, to = null, today, weekW
     preApprovedRows: standing.rows,
     employees: employees || [],
     expectedDays,
-    graceHoursPerEmployee
+    graceHoursPerEmployee,
+    holidays
   });
 
   return {
@@ -295,6 +337,7 @@ exports.handler = async (event) => {
 // Exported so the settings-shape rule can be exercised without a handler around
 // it, the way send-ot-email.js exports managersFromSettingsRow.
 module.exports.graceHoursFromSettingsRow = graceHoursFromSettingsRow;
+module.exports.holidaysFromSettingsRow = holidaysFromSettingsRow;
 
 // Exported so the Monday manager email assembles its week through exactly this
 // code rather than through a second copy of it. See the note above

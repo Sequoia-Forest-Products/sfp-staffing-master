@@ -355,10 +355,18 @@ function withOtReport(ctx, over = {}) {
       weekendHours: 12, weekendDollars: 400, weekendOtHours: 2,
       weekendOtDollars: 60, weekendHeadcount: 3
     },
+    // BY DEPARTMENT since 2026-09-15. summary.weekend* above is still the Fri-Sun
+    // day cut and still feeds the Fri-Sun labour block — the two are different
+    // questions now and the fixture keeps them different numbers on purpose, so
+    // a test cannot pass by reading the wrong one.
     split: {
-      scheduled: otBlock({ hours: 88, earnings: 600, headcount: 9 }),
-      nonScheduled: otBlock({ hours: 12, otHours: 2, otDollars: 60, earnings: 400, headcount: 3 })
+      maintenance: otBlock({ hours: 30, otHours: 3, otDollars: 90, earnings: 700, headcount: 4 }),
+      production:  otBlock({ hours: 70, otHours: 2, otDollars: 10, earnings: 300, headcount: 6 }),
+      other:       otBlock({}),
+      maintenanceDepartments: ['Maintenance'],
+      productionDepartments: ['Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up']
     },
+    holidays: { dates: [], byDate: [], byDepartment: [], hours: 0, earnings: 0, headcount: 0, datesWithoutData: [] },
     departments: [], days: [], employees: [],
     preApproved: {
       byType: [], rows: [], unmatchedNames: [], withoutHoursThisWeek: [], rateMissing: [],
@@ -396,9 +404,11 @@ test('the OT report no longer calls Fri-Sun unscheduled', () => {
   assert.doesNotMatch(html, /Nobody is scheduled/,
     'a false claim about the operation, sitting above the numbers people act on');
 
-  assert.match(html, /Production days vs maintenance days/);
-  assert.match(html, /Production · Mon–Thu/);
-  assert.match(html, /Maintenance · Fri–Sun/);
+  // The split card moved to departments on 2026-09-15 and took its Mon-Thu
+  // heading with it; the Fri-Sun labour block below still carries the day one.
+  assert.match(html, /Maintenance vs production/);
+  assert.match(html, /Split by department, not by day/);
+  assert.match(html, /Maintenance-day labor · Friday to Sunday/);
 });
 
 test('the day badge names the kind of day, not who was rostered', () => {
@@ -415,12 +425,13 @@ test('every Maintenance heading says it names the day, not the department', () =
   // day block, this report reads as though production ran a weekend.
   const html = withOtReport(sandbox());
 
-  // Both sections that carry the label carry the disclaimer — the split block,
-  // and the Fri–Sun block that actually prints a Department column.
+  // ONE section carries the day label now. The split card went over to
+  // departments on 2026-09-15, so the only block left that says "Maintenance"
+  // and means the DAYS is the Fri-Sun labour block — which is also the one that
+  // prints a Department column, i.e. the one that always needed the line most.
   const notes = html.match(/that names the <strong>days<\/strong>, not the departments/g) || [];
-  assert.strictEqual(notes.length, 2,
-    'the split block and the Fri–Sun labour block each need it — a reader who ' +
-    'scrolls straight to the second one never saw the first');
+  assert.strictEqual(notes.length, 1,
+    'the Fri–Sun labour block prints a Department column and must say what its heading means');
 
   assert.match(html, /Production runs Mon–Thu/);
   assert.match(html, /still shows as Production, because that is where they work/);
@@ -437,16 +448,45 @@ test('the maintenance figures are labelled as the day block, not the department'
   assert.doesNotMatch(html, /<span>Maintenance OT \$<\/span>/);
 });
 
-test('renaming the blocks moved none of the figures', () => {
-  // The split is the point of the section. A rename that quietly swapped which
-  // side a number lands on would read as a tidy-up and be a reporting error.
+test('the split card reads the DEPARTMENT figures and the Fri-Sun block reads the DAY ones', () => {
+  // The two cuts are different numbers in the fixture precisely so this can
+  // fail if a block reads the wrong one. Department: maintenance 30 hrs / $700,
+  // production 70 hrs / $300. Day: Fri-Sun 12 hrs / $400.
   const html = withOtReport(sandbox());
+  const splitCard = html.slice(html.indexOf('Maintenance vs production'),
+                               html.indexOf('Maintenance-day labor · Friday to Sunday'));
 
-  // Mon-Thu: 88 hours, 9 people. Fri-Sun: 12 hours, 2 OT hours, $60 OT, $400 total, 3 people.
-  assert.match(html, /Production · Mon–Thu[\s\S]*?88\.00[\s\S]*?Maintenance · Fri–Sun/);
-  assert.match(html, /Maintenance · Fri–Sun[\s\S]*?12\.00/);
+  assert.match(splitCard, /Maintenance[\s\S]*?30\.00[\s\S]*?\$700/);
+  assert.match(splitCard, /Production[\s\S]*?70\.00[\s\S]*?\$300/);
+  assert.ok(!/12\.00/.test(splitCard), 'the split card is reading the Fri-Sun day figures');
+
+  // And the day block still reads summary.weekend*.
   assert.match(html, /Total maintenance-day labor \$<\/span><span>\$400/);
   assert.match(html, /Maintenance-day OT \$<\/span><span>\$60/);
+});
+
+test('the split names the departments on each side', () => {
+  // "Production" is five departments. A reader should not have to know which.
+  const html = withOtReport(sandbox());
+  assert.match(html, /Saw Filing, Shipping, Production, Log Yard, Clean-up/);
+});
+
+test('a third card appears only when something is in neither', () => {
+  // SG&A and Unassigned rows are findings. Folding them into production would
+  // hide a data problem inside a number people act on — but a clean week should
+  // not carry an empty card either.
+  const clean = withOtReport(sandbox());
+  assert.ok(!/Neither/.test(clean), 'an empty third card is noise');
+
+  const dirty = withOtReport(sandbox(), {
+    split: {
+      maintenance: otBlock({ hours: 30 }), production: otBlock({ hours: 70 }),
+      other: otBlock({ hours: 11, earnings: 250 }),
+      maintenanceDepartments: ['Maintenance'], productionDepartments: ['Production']
+    }
+  });
+  assert.match(dirty, /Neither/);
+  assert.match(dirty, /11\.00 hrs are in neither/);
 });
 
 // ---------------------------------------------------------------------------
@@ -963,4 +1003,38 @@ test('the cost report follows the same rules', async () => {
   ctx.costSetWeek(['Manufacturing'], '2026-08-24');
   assert.strictEqual(ctx.state.costFrom, '');
   assert.strictEqual(ctx.state.costTo, '');
+});
+
+// ---------------------------------------------------------------------------
+// Holiday pay on the report
+// ---------------------------------------------------------------------------
+
+test('a week with no holiday shows no holiday block', () => {
+  const html = withOtReport(sandbox());
+  assert.ok(!/Holiday pay/.test(html));
+});
+
+test('a holiday is reported as paid-not-worked, with the money kept visible', () => {
+  const html = withOtReport(sandbox(), {
+    holidays: {
+      dates: ['2026-09-07'],
+      byDate: [{ date: '2026-09-07', dayName: 'Monday', hours: 508, earnings: 12700, headcount: 52 }],
+      byDepartment: [{ department: 'Production', hours: 320, earnings: 8000, headcount: 32 }],
+      hours: 508, earnings: 12700, headcount: 52, datesWithoutData: []
+    }
+  });
+  assert.match(html, /Holiday pay/);
+  assert.match(html, /Paid, not worked/);
+  assert.match(html, /508\.00/);
+  assert.match(html, /\$12,700/);
+  assert.match(html, /Production 320\.00 hrs/);
+});
+
+test('a marked date with nothing imported says so instead of showing a zero', () => {
+  const html = withOtReport(sandbox(), {
+    holidays: { dates: [], byDate: [], byDepartment: [], hours: 0, earnings: 0,
+                headcount: 0, datesWithoutData: ['2026-08-26'] }
+  });
+  assert.match(html, /marked as a mill holiday and no hours were imported/);
+  assert.ok(!/Paid, not worked/.test(html), 'there is nothing to show as paid');
 });
