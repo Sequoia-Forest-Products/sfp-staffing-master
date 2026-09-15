@@ -358,15 +358,34 @@ function renderOTReport(){
   const dayDept=state.otDayDept||'all';
 
   // 1. Summary cards
+  //
+  // FIVE, not seven. 'Total hourly payroll' and 'Weekend labor (Fri-Sun)' were
+  // removed on 2026-09-15 — neither was a question this report gets opened to
+  // answer, and both were saying something another part of the page already
+  // says better.
+  //
+  // The payroll DOLLARS are still computed and still on screen: they are the
+  // denominator of the two percentage cards, which name it inline ("$X of $Y")
+  // because a bare percentage cannot be checked without it. summary
+  // .totalHourlyPayroll is untouched in ot-report-lib and the Monday email
+  // still reads it — see otEmailPayload above.
+  //
+  // The week's SIZE — total hours and headcount — rode along in that card's
+  // sub-line and would have gone with it, so it moved to the All OT card, where
+  // it is the thing an OT figure most needs next to it: 12 OT hours out of 430
+  // and 12 out of 60 are different weeks.
+  //
+  // Fri-Sun was already on this page TWICE more, in more useful shape: the
+  // Production/maintenance split card carries its hours, OT hours, OT dollars,
+  // total labor dollars and headcount, and the weekend section further down
+  // breaks it out by person. The card was the least informative of the three.
   const cards=`
     <div class="stat-row">
-      <div class="stat-card"><div class="stat-label">All OT</div><div class="stat-value">${fmtHrs(s.allOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.allOtDollars)}</div></div>
+      <div class="stat-card"><div class="stat-label">All OT</div><div class="stat-value">${fmtHrs(s.allOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.allOtDollars)} · of ${fmtHrs(s.totalHours)} hrs worked by ${s.headcount||0} hourly employees</div></div>
       <div class="stat-card"><div class="stat-label">Pre-approved OT</div><div class="stat-value">${fmtHrs(s.preApprovedHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.preApprovedDollars)} · ${fmtHrs(pa.standing&&pa.standing.hours)} OT table + ${fmtHrs(gr.hours)} clock grace</div></div>
       <div class="stat-card"><div class="stat-label">Net OT</div><div class="stat-value" style="color:${(s.netOtHours||0)>0?'var(--brick)':'#2a7a47'}">${fmtHrs(s.netOtHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.netOtDollars)}</div></div>
-      <div class="stat-card"><div class="stat-label">Total hourly payroll</div><div class="stat-value">${fmt$(s.totalHourlyPayroll)}</div><div class="stat-sub">${fmtHrs(s.totalHours)} hrs · ${s.headcount||0} hourly employees</div></div>
       <div class="stat-card"><div class="stat-label">All OT % of hourly payroll</div><div class="stat-value">${fmtPct(s.allOtPctOfPayroll)}</div><div class="stat-sub">by dollars · ${fmt$(s.allOtDollars)} of ${fmt$(s.totalHourlyPayroll)} · salaried staff are not in the denominator</div></div>
       <div class="stat-card"><div class="stat-label">Net OT % of hourly payroll</div><div class="stat-value" style="color:${(s.netOtDollars||0)>0?'var(--brick)':'#2a7a47'}">${fmtPct(s.netOtPctOfPayroll)}</div><div class="stat-sub">by dollars · how far past the approved allowance, not a cost share — negative in a light week</div></div>
-      <div class="stat-card"><div class="stat-label">Weekend labor (Fri–Sun)</div><div class="stat-value">${fmtHrs(s.weekendHours)}<span style="font-size:13px"> hrs</span></div><div class="stat-sub">${fmt$(s.weekendDollars)} · ${s.weekendHeadcount||0} people</div></div>
     </div>`;
 
   // 2. The overtime table carries no week and no dollars, so the number above is
