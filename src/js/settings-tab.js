@@ -185,14 +185,9 @@ function renderSettings(){
         </div>`}
 
         <div style="margin-bottom:20px">
-          ${editable?`
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
-            <input type="checkbox" ${state.emailSettings.autoSend?'checked':''} onchange="state.emailSettings.autoSend=this.checked;saveEmailSettings();render()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
-            <span style="font-size:14px;font-weight:600">Email the completed week to managers every Monday morning</span>
-          </label>`:`
-          <div style="font-size:14px;font-weight:600">Email the completed week to managers every Monday morning — ${
-            state.emailSettings.autoSend?'<span style="color:#4A7C59">on</span>':'<span style="color:var(--muted)">off</span>'}</div>`}
-          <div style="font-size:12px;color:var(--muted);margin-top:6px;${editable?'margin-left:26px':''}">Every Monday mid-morning, the Mon–Sun week that just finished is emailed to every manager below — after Sunday’s hours have arrived. A week missing a day is not sent at all; the alert address is told why instead. You can send any week by hand at any time from the OT Report tab.</div>
+          <div style="font-size:14px;font-weight:600">The completed week is emailed every Monday morning</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6">Every Monday mid-morning, the Mon–Sun week that just finished goes to <b>everybody on the access list</b>, after Sunday’s hours have arrived. A week missing a day is not sent at all; the alert address is told why instead. You can send any week by hand at any time from the OT Report tab.
+          <br><br><b>There is no switch.</b> It was removed on 2026-09-15: the people who could have turned it off are exactly the people who receive it, and a weekly report that stops arriving because somebody unticked a box a month ago is a failure nobody notices. To stop receiving it, come off the access list above.</div>
         </div>
 
         <div style="margin-bottom:20px">

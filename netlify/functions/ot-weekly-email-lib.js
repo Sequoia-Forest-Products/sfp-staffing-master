@@ -39,7 +39,7 @@ const { weekDates, weekStartFor } = require('./ot-report-lib');
 const { todayInZone, shiftDays } = require('./week-index-lib');
 const { loadWeekWindow, buildWeekReport, TIME_ZONE } = require('./payroll-report');
 const {
-  sendEmail, generateEmailHTML, resolveRecipients, managersFromSettingsRow
+  sendEmail, generateEmailHTML, resolveRecipients, loadManagers
 } = require('./send-ot-email');
 const { sendAlert } = require('./payroll-email-lib');
 
@@ -98,22 +98,19 @@ function otBudgetFromSettingsRow(row) {
   return n;
 }
 
-// The Settings tab's on/off switch. It used to gate a hook in the browser that
-// fired after a manual upload; it now gates this schedule, which is the only
-// automatic sender left.
+// THE ON/OFF SWITCH IS GONE, 2026-09-15. autoSendFromSettingsRow lived here and
+// gated this schedule; the Monday email now always sends, to everyone with
+// access, and there is no setting that can stop it.
 //
-// Unset means ON. Every row this app has written since the checkbox shipped
-// carries an explicit true or false, so "absent" can only be a row that predates
-// it or a value that got mangled — and for a weekly summary, defaulting a
-// damaged setting to silence is the failure nobody notices.
-function autoSendFromSettingsRow(row) {
-  let value = row && row.value;
-  if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return true; }
-  }
-  if (!value || typeof value !== 'object') return true;
-  return value.autoSend !== false;
-}
+// It was already leaning that way: "unset means ON", because for a weekly
+// summary a damaged setting defaulting to silence is the failure nobody
+// notices. A switch whose safe position is on, in an app where the people who
+// could flip it are exactly the people who receive the mail, was a control with
+// one correct setting — and a way to lose the report by accident.
+//
+// The email still refuses to send in the two cases that are not a preference:
+// an incomplete week, and nobody to send to. Those alert instead of going
+// quiet.
 
 // The `data` object send-ot-email.js's template renders. This is the server-side
 // twin of otEmailPayload() in src/js/ot-report.js; tests/ot-weekly-email.test.js
@@ -217,6 +214,9 @@ async function runWeeklyOtEmail({
   const _buildWeekReport = deps.buildWeekReport || buildWeekReport;
   const _sendEmail = deps.sendEmail || sendEmail;
   const _sendAlert = deps.sendAlert || sendAlert;
+  // Injected like the rest so a test can drive the recipient list without a
+  // database. The real one reads the access list — see send-ot-email.js.
+  const _loadManagers = deps.loadManagers || loadManagers;
 
   const today = todayInZone(now, TIME_ZONE);
   const weekStart = previousWeekStart(today);
@@ -259,18 +259,22 @@ async function runWeeklyOtEmail({
     return refuse('settings-unreadable', [`the settings row could not be read: ${err.message}`]);
   }
 
-  // Switched off deliberately is not a failure and gets no alert — an admin
-  // turned it off and knows. It is still logged, so a "why did nobody get the
-  // email" question has an answer in the function log.
-  if (!autoSendFromSettingsRow(settingsRow)) {
-    result.skipped = 'auto-send-off';
-    console.log(`Weekly OT email is switched off on the Settings tab — ${weekStart} – ${weekEnd} not sent.`);
-    return result;
+  // THE ACCESS LIST, through the same function the manual button uses.
+  //
+  // This path had its own copy of the rule — managersFromSettingsRow(settingsRow)
+  // — and kept reading the retired emailSettings.managers after the two lists
+  // merged on 2026-09-15. So the Monday email would have gone to the six
+  // addresses on the old list (including jefrey.cook@, one f) while the manual
+  // button went to the seven people with access. Two senders, two audiences,
+  // one of them wrong and nothing reporting it.
+  let managers;
+  try {
+    managers = await _loadManagers();
+  } catch (err) {
+    return refuse('recipients-unreadable', [`the access list could not be read: ${err.message}`]);
   }
-
-  const managers = managersFromSettingsRow(settingsRow);
   if (!managers.length) {
-    return refuse('no-recipients', ['no manager recipients are configured on the Settings tab']);
+    return refuse('no-recipients', ['nobody is on the access list — add somebody under Settings → Access']);
   }
 
   // null, not the manager list: the server owns the recipients here. There is no
@@ -348,7 +352,7 @@ module.exports = {
   runWeeklyOtEmail,
   buildOtEmailPayload,
   otBudgetFromSettingsRow,
-  autoSendFromSettingsRow,
+
   otWeekRangeLabel,
   previousWeekStart,
   incompleteReasons,

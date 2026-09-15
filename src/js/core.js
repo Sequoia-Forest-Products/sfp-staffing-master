@@ -25,7 +25,11 @@ if (user.picture) document.getElementById('userAvatar').src = user.picture;
 // figure on the OT report. Empty by default and never inferred — see the note
 // above addHoliday in settings-tab.js for why a wrong exclusion is worse than a
 // missing one.
-const EMAIL_SETTINGS_DEFAULTS={managers:[], autoSend:false, otBudgetPercent:10, graceHoursPerEmployee:0.5, holidays:[]};
+// autoSend is gone, 2026-09-15 — the Monday email always sends, to everybody on
+// the access list. Note what the default used to be: FALSE here and "absent
+// means on" on the server, so the two disagreed about a row that had never been
+// saved. That disagreement is the other reason the switch is not worth keeping.
+const EMAIL_SETTINGS_DEFAULTS={managers:[], otBudgetPercent:10, graceHoursPerEmployee:0.5, holidays:[]};
 
 // settings.js writes value as a raw object on insert and as a JSON string on
 // update, so both shapes come back from the same key.
