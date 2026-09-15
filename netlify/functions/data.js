@@ -2,7 +2,7 @@ const db = require('./db');
 const { verifySession, getCookies } = require('./session-lib');
 const perms = require('./permissions-lib');
 const { planWageEdit } = require('./wage-edit-lib');
-const { carriesPay, payRefusal, PAY_COLUMNS } = require('./pay-scope-lib');
+const { carriesPay, carriesSalary, payRefusal, PAY_COLUMNS } = require('./pay-scope-lib');
 
 // Tables this endpoint may touch. Until now `table` came off the query string
 // and went straight through to PostgREST, so any signed-in user could read any
@@ -223,9 +223,15 @@ const hasWage = body => body && Object.prototype.hasOwnProperty.call(body, 'wage
 //
 // The salaries tier decides WHO may write a salary. pay-scope-lib decides
 // whether the column applies to this PERSON at all: only the Manufacturing cost
-// class carries compensation since 2026-09-14, because SG&A and Mill Overhead
-// are no longer analysed here and pay nothing reads is a liability with no
-// benefit.
+// class carries an annual salary, because SG&A and Mill Overhead are no longer
+// analysed here and pay nothing reads is a liability with no benefit.
+//
+// THE TWO COLUMNS NO LONGER ANSWER THIS THE SAME WAY. Since 2026-09-15 SG&A
+// carries `wage` for hourly staff — SG&A overtime is still tracked and an
+// hourly person's overtime has a rate — while `annual_salary` stayed
+// Manufacturing-only. So every check below names its column: carriesSalary()
+// here, and carriesWage() inside wage-edit-lib for the other one. A single
+// person-level carriesPay() would now be answering a question nobody asked.
 //
 // The two questions are answered in that order and by different files on
 // purpose — a tier that let somebody write a salary onto an SG&A row would be
@@ -237,6 +243,9 @@ const hasWage = body => body && Object.prototype.hasOwnProperty.call(body, 'wage
 // makes it impossible is the state of the row.
 const hasSalary = body => body && Object.prototype.hasOwnProperty.call(body, 'annual_salary');
 const hasCostClass = body => body && Object.prototype.hasOwnProperty.call(body, 'cost_class');
+// pay_type joined cost_class as a fact that can make a pay column inapplicable
+// on 2026-09-15: an SG&A employee moved to Salaried stops carrying a wage.
+const hasPayType = body => body && Object.prototype.hasOwnProperty.call(body, 'pay_type');
 
 const scopeRefusal = (headers, employee, column) => ({
   statusCode: 409, headers, body: JSON.stringify(payRefusal(employee, column))
@@ -319,7 +328,7 @@ exports.handler = async (event) => {
       // A salary on a new row is scoped against the cost class being created
       // with it. There is no stored row to consult — the body IS the row.
       if (table === 'employees' && hasSalary(gated.body) && isSetting(gated.body.annual_salary)
-          && !carriesPay(gated.body)) {
+          && !carriesSalary(gated.body)) {
         return scopeRefusal(headers, gated.body, 'annual_salary');
       }
 
@@ -329,10 +338,12 @@ exports.handler = async (event) => {
           employee: { id: 'pending', name: gated.body.name, wage: null,
                       employee_number: gated.body.employee_number,
                       pay_type: gated.body.pay_type,
-                      // Rule 7 needs the class the row is being created in.
-                      // Absent here, every Add would read as unclassified and
-                      // be refused — including a production hire typed with a
-                      // rate in the same form.
+                      // Rule 7 needs the class the row is being created in —
+                      // and, since 2026-09-15, the pay type too, because SG&A
+                      // carries the column for hourly staff only. pay_type is
+                      // already passed above for rule 2. Absent, every Add
+                      // would read as unclassified and be refused, including a
+                      // production hire typed with a rate in the same form.
                       cost_class: gated.body.cost_class },
           value: gated.body.wage,
           editorEmail: session.email
@@ -374,36 +385,51 @@ exports.handler = async (event) => {
       // since, and a history row whose previous_rate was never the current rate
       // is worse than no history at all. Read ONCE and shared by the three
       // decisions below, all of which need the same row.
+      //
+      // hasPayType JOINED THE LIST ON 2026-09-15 and is not optional: a PATCH
+      // carrying nothing but pay_type can now make a column inapplicable — an
+      // SG&A employee moved to Salaried stops carrying a wage — and without the
+      // read there is no `found` to clear it from, so the stale rate survives
+      // silently. Costs nothing in practice: the profile save sends cost_class
+      // in the same body, so it was already reading this row.
       let found = null;
       if (table === 'employees'
-          && (hasWage(gated.body) || hasSalary(gated.body) || hasCostClass(gated.body))) {
+          && (hasWage(gated.body) || hasSalary(gated.body)
+              || hasCostClass(gated.body) || hasPayType(gated.body))) {
         const rows = await db.query('employees',
           `?id=eq.${encodeURIComponent(params.id)}` +
           `&select=id,name,employee_number,wage,pay_type,cost_class,annual_salary`);
         found = (rows || [])[0] || null;
       }
 
-      // THE CLASS THIS ROW WILL BE IN WHEN THE WRITE LANDS, not the one it is in
-      // now. A single PATCH can carry both the reclassification and the pay, and
-      // scoping against the stored class would judge the write by a fact it is
+      // THE ROW AS IT WILL BE WHEN THE WRITE LANDS, not as it is stored now. A
+      // single PATCH can carry both the reclassification and the pay, and
+      // scoping against the stored row would judge the write by a fact it is
       // itself changing — in both directions: it would refuse a rate on somebody
       // being moved INTO Manufacturing, and accept one on somebody being moved
       // out.
-      const nextCostClass = hasCostClass(gated.body)
-        ? { cost_class: gated.body.cost_class, name: (found && found.name) || gated.body.name }
-        : found;
+      //
+      // PAY TYPE IS PART OF THAT ROW SINCE 2026-09-15, for exactly the same
+      // reason the cost class always was: an SG&A employee carries a wage only
+      // while they are hourly, so a PATCH flipping them to Salaried and sending
+      // a rate in one body must be judged against Salaried. It also makes the
+      // opposite PATCH work — flipping somebody to Hourly and typing their rate
+      // in one save, which is how a person actually gets fixed.
+      const nextRow = found
+        ? { ...found,
+            ...(hasCostClass(gated.body) ? { cost_class: gated.body.cost_class } : {}),
+            ...(hasPayType(gated.body)   ? { pay_type:   gated.body.pay_type }   : {}) }
+        : (hasCostClass(gated.body) || hasPayType(gated.body) ? gated.body : null);
 
       if (table === 'employees' && hasSalary(gated.body) && isSetting(gated.body.annual_salary)
-          && !carriesPay(nextCostClass)) {
-        return scopeRefusal(headers, nextCostClass || gated.body, 'annual_salary');
+          && !carriesSalary(nextRow)) {
+        return scopeRefusal(headers, nextRow || gated.body, 'annual_salary');
       }
 
       if (table === 'employees' && hasWage(gated.body)) {
         const plan = planWageEdit({
-          // Scoped against the class this write lands in, for the reason above.
-          employee: found
-            ? { ...found, ...(hasCostClass(gated.body) ? { cost_class: gated.body.cost_class } : {}) }
-            : null,
+          // Scoped against the row this write lands in, for the reason above.
+          employee: found ? nextRow : null,
           value: gated.body.wage,
           editorEmail: session.email
         });
@@ -435,8 +461,21 @@ exports.handler = async (event) => {
         }
       }
 
-      // RECLASSIFYING SOMEBODY OUT OF MANUFACTURING TAKES THEIR PAY WITH IT,
-      // and the app does it rather than asking the caller to.
+      // A CHANGE THAT MAKES A PAY COLUMN INAPPLICABLE TAKES THAT COLUMN WITH
+      // IT, and the app does it rather than asking the caller to.
+      //
+      // Two changes can do that now. Reclassifying somebody out of Manufacturing
+      // always could. Since 2026-09-15 so can flipping an SG&A employee to
+      // Salaried, because SG&A carries the hourly column for hourly staff alone
+      // — and a wage left behind on somebody who cannot hold one is a figure no
+      // screen draws and no report reads, which is exactly the state this rule
+      // exists to prevent.
+      //
+      // COLUMN BY COLUMN, not all-or-nothing, which is the part the single
+      // person-level rule could not express. Moving an HOURLY person from
+      // Manufacturing to SG&A now clears their salary and KEEPS their rate:
+      // they still carry it, and nulling it would delete the number their
+      // overtime is priced at for no reason anybody asked for.
       //
       // Appended AFTER the tier gate on purpose. The rule belongs to the
       // application, not to the caller: a supervisor with no salaries tier must
@@ -449,10 +488,10 @@ exports.handler = async (event) => {
       // NULL, so a removal cannot be expressed in it at all, and the last row it
       // holds stays the record of what the rate was. Compare rule 4 in
       // wage-edit-lib — a rate cannot be CLEARED by typing an empty box, which
-      // is a different act from a reclassification that makes the column
-      // inapplicable.
-      if (table === 'employees' && hasCostClass(gated.body) && !carriesPay(nextCostClass) && found) {
+      // is a different act from a change that makes the column inapplicable.
+      if (table === 'employees' && found && (hasCostClass(gated.body) || hasPayType(gated.body))) {
         for (const col of PAY_COLUMNS) {
+          if (carriesPay(nextRow, col)) continue;
           if (found[col] !== null && found[col] !== undefined) gated.body[col] = null;
         }
       }

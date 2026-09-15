@@ -318,12 +318,14 @@ function smsCell(e) {
 // caller's tiers, see netlify/functions/data.js — so for everybody else there is
 // nothing to draw rather than something hidden.
 //
-// NEITHER IS DRAWN FOR SOMEBODY OUTSIDE THE MANUFACTURING COST CLASS, whatever
-// tier the reader holds. Compensation is only held for that class since
-// 2026-09-14 — see employeeCarriesPay() in core.js and pay-scope-lib.js on the
-// server. The card says so in place of the fields rather than omitting them
-// silently, because "no rate on file" and "this person does not have one" are
-// different facts and only one of them is somebody's to fix.
+// NEITHER IS DRAWN FOR SOMEBODY WHOSE COST CLASS DOES NOT CARRY THEIR COLUMN,
+// whatever tier the reader holds. An annual salary is held for Manufacturing
+// alone; an hourly rate is held for Manufacturing and for HOURLY SG&A staff,
+// whose overtime this app still tracks — see employeeCarriesWage() /
+// employeeCarriesSalary() in core.js and pay-scope-lib.js on the server. The
+// card says so in place of the fields rather than omitting them silently,
+// because "no rate on file" and "this person does not have one" are different
+// facts and only one of them is somebody's to fix.
 //
 // state.profile is {idx} and is separate from state.editing. Edit mode sets BOTH:
 // state.editing is what saveEdit() reads, and it clears it on success, which
@@ -726,23 +728,35 @@ function birthdayField(e){
 // So the history row is still written by the server, still written BEFORE the
 // rate it replaces, and still impossible to produce by accident.
 //
-// THREE QUESTIONS DECIDE WHAT IS DRAWN, and they are independent:
+// THREE QUESTIONS DECIDE WHAT IS DRAWN:
 //
-//   does this person carry pay?   cost class — employeeCarriesPay()
 //   which column applies?         pay type — isSalaried()
+//   does this person carry it?    cost class — employeeCarriesWage() /
+//                                 employeeCarriesSalary()
 //   may this reader see it?       tier — canSeeSalaries(), for the salary only
 //
-// Answered in that order. A salaried SG&A employee is not "a salary this reader
-// cannot see", they are somebody with no salary here at all, and saying the
-// wrong one of those sends a person looking for a grant that would not help.
+// Answered in that order, and the first two swapped places on 2026-09-15. They
+// used to be independent, because the cost class alone decided whether ANY pay
+// was held. It no longer does: SG&A carries the hourly column and not the
+// salaried one, so "does this person carry pay" has no answer until you know
+// which column is being asked about. employeeCarriesPay() still exists and
+// answers exactly that composed question — the column their pay type calls for.
+//
+// A salaried SG&A employee is still not "a salary this reader cannot see", they
+// are somebody with no salary here at all, and saying the wrong one of those
+// sends a person looking for a grant that would not help.
 
 // The one pay line the read-only card shows, as pf() rows. An array so the
 // caller splices it in and the no-pay case can be a single row rather than two.
 function profilePayRead(e){
   if(!employeeCarriesPay(e)){
-    return [pf('Pay',
-      `<span style="color:var(--muted)">not held for ${esc(String(e.costClass||'').trim()||'unclassified')} staff</span>`,
-      {html:true})];
+    const cls=String(e.costClass||'').trim();
+    // Salaried SG&A: the class carries a rate, just not for this person. Saying
+    // "not held for SG&A staff" would be false — their hourly colleague has one.
+    const why=(cls===HOURLY_ONLY_COST_CLASS&&isSalaried(e))
+      ? `not held for salaried ${esc(cls)} staff`
+      : `not held for ${esc(cls||'unclassified')} staff`;
+    return [pf('Pay',`<span style="color:var(--muted)">${why}</span>`,{html:true})];
   }
   if(!isSalaried(e)) return [pf('Hourly wage',fmtWage(e))];
   return [pf('Annual salary', canSeeSalaries()
@@ -814,11 +828,29 @@ function wageField(e){
   //    a tier to decide about.
   if(!employeeCarriesPay(state.editing)){
     const cls=String((state.editing&&state.editing.costClass)||'').trim();
+
+    // Salaried SG&A is its own case, and the remedy is a different control. The
+    // cost class is fine — SG&A carries an hourly rate, because SG&A overtime is
+    // still tracked — so pointing at the cost class select would send somebody
+    // to reclassify a person who is correctly classified.
+    if(cls===HOURLY_ONLY_COST_CLASS&&isSalaried(state.editing)){
+      return `
+      <div class="form-group full"><label class="form-label">Pay</label>
+        <div style="padding:8px 0;font-size:13px;color:var(--muted)">— not held for salaried ${esc(cls)} staff —</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.5">
+          ${esc(cls)} carries an <b>hourly rate</b> — the rate overtime is paid at — and nothing else.
+          A salaried ${esc(cls)} employee is dropped by the payroll file and earns no overtime hour,
+          so there is no figure for this app to hold. Switch <b>Pay type</b> above to Hourly if that
+          is wrong, and the rate field appears.</div></div>`;
+    }
+
     return `
       <div class="form-group full"><label class="form-label">Pay</label>
         <div style="padding:8px 0;font-size:13px;color:var(--muted)">— not held for ${esc(cls||'unclassified')} staff —</div>
         <div style="font-size:11px;color:var(--muted);line-height:1.5">
-          Compensation is only held for the <b>Manufacturing</b> cost class. ${cls
+          An annual salary is only held for the <b>Manufacturing</b> cost class; an hourly rate is
+          held for Manufacturing and for hourly <b>${esc(HOURLY_ONLY_COST_CLASS)}</b> staff, whose
+          overtime this app still tracks. ${cls
             ? esc(cls)+' staff are on the roster in full — hours, overtime, points, documents — with no wage or salary in this app.'
             : 'This person has no cost class yet.'}
           Change the cost class above if they really are production staff, and the field appears.</div></div>`;
@@ -896,9 +928,9 @@ function profileSalaryNote(e){
 // make impossible — and the costing report already reports a missing salary by
 // name rather than costing that person at zero.
 function profileSalaryForRow(draft, stored){
-  if(!canSeeSalaries()) return {send:false};           // not this reader's column
-  if(!employeeCarriesPay(draft)) return {send:false};  // not this person's column
-  if(!isSalaried(draft)) return {send:false};          // not this pay type's column
+  if(!canSeeSalaries()) return {send:false};              // not this reader's column
+  if(!employeeCarriesSalary(draft)) return {send:false};  // not this person's column
+  if(!isSalaried(draft)) return {send:false};             // not this pay type's column
 
   const parsed=parseSalary(draft&&draft.annualSalary);
   if(parsed===undefined){
@@ -924,12 +956,13 @@ function profileSalaryForRow(draft, stored){
 // round trip and reads as English.
 function profileWageForRow(draft, stored){
   // Rule 7's client mirror, and FIRST for the same reason it is first on the
-  // server: for somebody outside the costed cost class there is no rate to
-  // record, which is a different sentence from "this rate cannot be recorded".
-  // Dropped rather than refused, like the salaried case below — the field is
-  // not drawn, so anything still sitting in the draft is a leftover from before
-  // the cost class was changed, not something somebody just typed.
-  if(!employeeCarriesPay(draft)) return {send:false};
+  // server: for somebody whose class does not carry the hourly column there is
+  // no rate to record, which is a different sentence from "this rate cannot be
+  // recorded". Dropped rather than refused, like the salaried case below — the
+  // field is not drawn, so anything still sitting in the draft is a leftover
+  // from before the cost class or the pay type was changed, not something
+  // somebody just typed.
+  if(!employeeCarriesWage(draft)) return {send:false};
   if(isSalaried(draft)){
     // Rule 2. A rate typed before the pay type was flipped is not an error —
     // it is a field that no longer applies — so it is dropped rather than

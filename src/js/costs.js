@@ -5,10 +5,11 @@
 // IT WAS TWO TABS. The Overhead tab stacked the same report over Mill Overhead
 // and SG&A, behind the salaries tier, and it was removed on 2026-09-14 along
 // with the analysis it existed for: those two classes are not costed in this
-// app any more, pay-scope-lib.js holds compensation for Manufacturing alone,
-// and /api/cost-report refuses both classes outright rather than gating them —
-// there is nothing behind the gate to unlock. Their people are still on the
-// roster, still have hours, still have overtime; they have no pay here.
+// app any more, and /api/cost-report refuses both outright rather than gating
+// them — there is nothing behind the gate to unlock. Their people are still on
+// the roster, still have hours, still have overtime. Hourly SG&A staff carry an
+// hourly rate again since 2026-09-15, because SG&A overtime is still tracked
+// and is paid at one; it is not costed here and never reaches this page.
 //
 // NOTHING HERE COMPUTES A COST. Every figure arrives already aggregated, because
 // the browser cannot price a salaried person even in principle: annual_salary is

@@ -206,20 +206,54 @@ test('a cut past the threshold is flagged too, not only a rise', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rule 7 — only the Manufacturing cost class carries pay
+// rule 7 — which cost classes carry an hourly rate
 // ---------------------------------------------------------------------------
 //
-// Added 2026-09-14 with the removal of the Overhead tab. SG&A and Mill Overhead
-// are not analysed in this app any more and hold no compensation at all.
+// Added 2026-09-14 with the removal of the Overhead tab: SG&A and Mill Overhead
+// stopped being analysed here and held no compensation at all.
+//
+// Narrowed to the hourly column on 2026-09-15. SG&A overtime is still tracked —
+// it was the one thing deliberately kept — and an hourly person's overtime is
+// paid at an hourly rate, so the roster has to be able to say what it is. The
+// SALARY half of the original decision is untouched: see pay-scope-lib, and
+// data.js for the column it governs.
 
-test('a rate is refused for every cost class except Manufacturing', () => {
-  for (const cls of ['SG&A', 'Mill Overhead']) {
-    const p = plan({ cost_class: cls });
-    assert.strictEqual(p.ok, false, `${cls} must not accept a rate`);
-    assert.match(p.error, new RegExp(cls.replace('&', '&')));
-    // The remedy names the fix, not the symptom.
-    assert.match(p.detail, /cost class/i);
-  }
+test('a rate is refused for Mill Overhead and accepted for Manufacturing', () => {
+  const p = plan({ cost_class: 'Mill Overhead' });
+  assert.strictEqual(p.ok, false, 'Mill Overhead must not accept a rate');
+  assert.match(p.error, /Mill Overhead/);
+  // The remedy names the fix, not the symptom.
+  assert.match(p.detail, /cost class/i);
+});
+
+test('an HOURLY SG&A employee may have their rate set', () => {
+  // The case the rule was narrowed for. Axeri Ramirez is the only person in it:
+  // SG&A cost class, hourly, and the sole source of SG&A overtime.
+  const p = plan({ cost_class: 'SG&A', pay_type: 'Hourly', wage: '24.50' }, '26.00');
+  assert.strictEqual(p.ok, true, 'an hourly SG&A rate must be accepted');
+  assert.strictEqual(p.wage, '26.00');
+  // And it is recorded like any other rate change — the history is what makes
+  // the column safe to write at all.
+  assert.strictEqual(p.history.previous_rate, 24.5);
+  assert.strictEqual(p.history.rate, 26);
+});
+
+test('a SALARIED SG&A employee is still refused, and the pay type is named as the blocker', () => {
+  // "SG&A staff cannot have an hourly rate" would be false now — their hourly
+  // colleague has one — so the refusal has to point at the pay type instead, or
+  // it sends somebody to reclassify a correctly classified person.
+  const p = plan({ cost_class: 'SG&A', pay_type: 'Salaried' });
+  assert.strictEqual(p.ok, false);
+  assert.match(p.error, /salaried SG&A/i);
+  assert.match(p.detail, /pay type/i);
+  assert.doesNotMatch(p.detail, /change their cost class/i);
+});
+
+test('a blank pay type in SG&A reads as hourly, the same as everywhere else', () => {
+  // payTypeOf() shows 'Hourly' for a blank and the profile's select opens on
+  // it. A third state here would make this file disagree with every screen.
+  const p = plan({ cost_class: 'SG&A', pay_type: '', wage: '24.50' }, '26.00');
+  assert.strictEqual(p.ok, true);
 });
 
 test('an unclassified person is refused, and told to classify rather than to retype', () => {
@@ -233,13 +267,26 @@ test('an unclassified person is refused, and told to classify rather than to ret
 });
 
 test('rule 7 is checked BEFORE the salaried and employee-number refusals', () => {
-  // All three are true of this person. The cost class is the one that matters:
+  // All three are true of this person. The scope is the one that matters:
   // "this rate cannot be recorded" is the wrong sentence for somebody who has
   // no rate to record, and it points at a fix that would not work.
-  const p = plan({ cost_class: 'SG&A', pay_type: 'Salaried', employee_number: null });
+  const p = plan({ cost_class: 'Mill Overhead', pay_type: 'Salaried', employee_number: null });
   assert.strictEqual(p.ok, false);
-  assert.match(p.error, /SG&A/);
+  assert.match(p.error, /Mill Overhead/);
   assert.doesNotMatch(p.error, /salaried employee has no hourly rate/i);
+  assert.doesNotMatch(p.error, /no employee number/i);
+});
+
+test('a SALARIED MANUFACTURING person still gets rule 2, not a false claim about their class', () => {
+  // This is why carriesWage() is true for every Manufacturing person whatever
+  // their pay type. Rule 2's sentence is the useful one — their cost comes from
+  // annual_salary / 2,080 and a rate would be counted twice. Answering
+  // "Manufacturing carries no hourly rate" would be false and would send
+  // somebody to change a cost class that is already right.
+  const p = plan({ cost_class: 'Manufacturing', pay_type: 'Salaried' });
+  assert.strictEqual(p.ok, false);
+  assert.match(p.error, /salaried employee has no hourly rate/i);
+  assert.doesNotMatch(p.error, /Manufacturing/);
 });
 
 test('Manufacturing still accepts a rate, whatever else changed', () => {

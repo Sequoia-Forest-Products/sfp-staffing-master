@@ -314,8 +314,10 @@ test('a wage that cannot be recorded is refused, and nothing is written', async 
   // its own sentence rather than one generic rejection.
   const cases = [
     { employee: SALARIED_ROW,                          wage: '30.00', match: /salaried/i },
-    // The cost-class refusal, which is checked before all of them: there is no
-    // rate to record rather than a rate that cannot be recorded.
+    // The scope refusal, which is checked before all of them: there is no rate
+    // to record rather than a rate that cannot be recorded. EMPLOYEE_ROW is
+    // SALARIED SG&A — since 2026-09-15 an HOURLY SG&A employee carries a rate,
+    // so it is the pay type doing the refusing here, not the class on its own.
     { employee: EMPLOYEE_ROW,                          wage: '30.00', match: /SG&A/ },
     { employee: { ...HOURLY_ROW, employee_number: '' }, wage: '30.00', match: /employee number/i },
     { employee: HOURLY_ROW,                            wage: '',      match: /cannot be cleared/i },
@@ -407,6 +409,105 @@ test('a rate may be set on somebody being moved INTO Manufacturing by the same w
   assert.strictEqual(res.statusCode, 200, res.body);
   const write = calls.find(c => c.method === 'PATCH');
   assert.deepStrictEqual(write.body, { cost_class: 'Manufacturing', wage: '26.00' });
+});
+
+// ---------------------------------------------------------------------------
+// the scope is PER COLUMN since 2026-09-15
+// ---------------------------------------------------------------------------
+//
+// SG&A carries `wage` for hourly staff — SG&A overtime is still tracked here and
+// an hourly person's overtime is paid at a rate — and carries `annual_salary`
+// for nobody. Everything below is the second half of that: opening one column
+// must not have opened the other, and the two now clear independently.
+
+const SGA_HOURLY = {
+  ...EMPLOYEE_ROW, id: 'a1', name: 'Axeri Ramirez', employee_number: '1643',
+  pay_type: 'Hourly', wage: '24.50', annual_salary: null
+};
+
+test('an hourly SG&A employee may have their rate set', async () => {
+  const calls = stub({ grants: [], employee: SGA_HOURLY });
+  const res = await patch('a@sequoiafp.com', { wage: '26.00' }, 'a1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH' && /table=employees|employees\?/.test(c.url));
+  assert.strictEqual(write.body.wage, '26.00');
+  // And the change is recorded, which is what makes the column safe to write.
+  assert.ok(calls.some(c => c.method === 'POST' && /wage_history/.test(c.url)),
+    'a rate change on an SG&A employee must still write history');
+});
+
+test('opening the wage for SG&A did NOT open annual_salary alongside it', async () => {
+  // The half of the 2026-09-14 decision that stands. A salaries-tier holder is
+  // permitted to write the column and still cannot put one on this person.
+  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)], employee: SGA_HOURLY });
+  const res = await patch('ryley@sequoiafp.com', { annual_salary: 120000 }, 'a1');
+
+  assert.strictEqual(res.statusCode, 409, res.body);
+  assert.match(JSON.parse(res.body).error, /SG&A/);
+  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
+});
+
+test('a salaried SG&A employee is refused a rate, and told the pay type is why', async () => {
+  const calls = stub({ grants: [], employee: EMPLOYEE_ROW });   // SG&A, Salaried
+  const res = await patch('a@sequoiafp.com', { wage: '30.00' }, 'e1');
+
+  assert.strictEqual(res.statusCode, 409);
+  const payload = JSON.parse(res.body);
+  assert.match(payload.error, /salaried SG&A/i);
+  assert.match(payload.detail, /pay type/i);
+  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
+});
+
+test('moving an HOURLY person from Manufacturing to SG&A keeps the rate and clears the salary', async () => {
+  // The per-column clear. The all-or-nothing version nulled both, which would
+  // delete the rate this person's overtime is priced at — for a move that does
+  // not take the column away from them at all.
+  const calls = stub({ grants: [], employee: { ...HOURLY_ROW, wage: '24.50', annual_salary: 90000 } });
+  const res = await patch('nobody@sequoiafp.com', { cost_class: 'SG&A' }, 'h1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { cost_class: 'SG&A', annual_salary: null });
+  assert.ok(!('wage' in write.body), 'the rate must not be nulled — they still carry it');
+});
+
+test('flipping an SG&A employee to Salaried clears the rate they no longer carry', async () => {
+  // Pay type can now make a column inapplicable, so it triggers the same clear
+  // a reclassification does. A wage left on somebody who cannot hold one is a
+  // figure no screen draws and no report reads.
+  const calls = stub({ grants: [], employee: SGA_HOURLY });
+  const res = await patch('nobody@sequoiafp.com', { pay_type: 'Salaried' }, 'a1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { pay_type: 'Salaried', wage: null });
+});
+
+test('a rate may be set on an SG&A employee being made hourly by the same write', async () => {
+  // The mirror of the Manufacturing case above, for the other axis. Judging the
+  // write by the STORED pay type would refuse the one save that fixes somebody
+  // recorded as salaried who is not.
+  const calls = stub({ grants: [], employee: { ...EMPLOYEE_ROW, id: 'a2', employee_number: '1643',
+                                               wage: null, annual_salary: null } });
+  const res = await patch('nobody@sequoiafp.com', { pay_type: 'Hourly', wage: '24.50' }, 'a2');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { pay_type: 'Hourly', wage: '24.50' });
+});
+
+test('flipping a MANUFACTURING person to Salaried does not clear their rate', async () => {
+  // Manufacturing carries both columns whatever the pay type, so nothing became
+  // inapplicable here and nothing is cleared. Pinned because the per-column
+  // clear now runs on a pay_type change, and over-reaching would silently
+  // delete a production rate.
+  const calls = stub({ grants: [], employee: { ...HOURLY_ROW, wage: '24.50' } });
+  const res = await patch('nobody@sequoiafp.com', { pay_type: 'Salaried' }, 'h1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.deepStrictEqual(write.body, { pay_type: 'Salaried' });
 });
 
 test('a write response never carries a column the caller may not read', async () => {

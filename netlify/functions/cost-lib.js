@@ -35,10 +35,16 @@ const COST_CLASSES = ['Manufacturing', 'Mill Overhead', 'SG&A'];
 // THE ONES THIS APP COSTS. One, since 2026-09-14.
 //
 // SG&A and Mill Overhead stopped being analysed here on that date: the Overhead
-// tab is gone, their people stay on the roster with hours, overtime and points,
-// and pay-scope-lib refuses to hold compensation for either class — so there is
-// nothing left to build a cost report out of, and a report over a class with no
-// rates would be a page of gaps rather than a figure.
+// tab is gone and their people stay on the roster with hours, overtime and
+// points but no costing.
+//
+// SG&A REGAINED AN HOURLY RATE ON 2026-09-15 — pay-scope-lib holds `wage` for
+// hourly SG&A staff, because SG&A overtime is still tracked and that overtime
+// is paid at a rate. THAT DID NOT PUT SG&A BACK IN THIS LIST, and the
+// distinction is the whole point: holding the number somebody is paid is not
+// the same act as costing their department. buildCostReport filters its members
+// on cost_class === costClass and this list has one entry, so an SG&A rate
+// cannot reach a Manufacturing figure however it is set.
 //
 // Kept SEPARATE from COST_CLASSES rather than shrinking that list, because the
 // two answer different questions: what a person may be classified as, and what

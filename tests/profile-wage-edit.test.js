@@ -59,8 +59,13 @@ const HOURLY = [
     position: 'Former', department: 'Production', empNum: '0203', status: 'Inactive',
     costClass: 'Manufacturing' }
 ];
-// The people this app stopped costing. They are on the roster in full and carry
-// no pay at all — the database columns were nulled the same day.
+// The people this app stopped costing on 2026-09-14. They are on the roster in
+// full and their pay columns were nulled the same day.
+//
+// g1 IS NO LONGER ONE OF THEM for the hourly column. Axeri Ramirez is the real
+// person the 2026-09-15 narrowing was made for: SG&A, hourly, and the only
+// source of the SG&A overtime this app still tracks. She carries a wage again
+// and no salary. g2 — salaried, SG&A — still carries neither.
 const UNCOSTED = [
   { id: 'g1', name: 'Axeri Ramirez', payType: 'Hourly', wage: null, annualSalary: null,
     position: 'Administrative', department: 'Accounting', empNum: '1643', status: 'Active',
@@ -219,20 +224,43 @@ test('a salaried person WITHOUT the tier gets neither field, and a sentence', ()
 // the cost-class scope — added 2026-09-14 with the Overhead tab's removal
 // ---------------------------------------------------------------------------
 
-test('somebody outside Manufacturing gets no pay field at all, at any tier', () => {
+test('a SALARIED SG&A employee gets no pay field at all, at any tier', () => {
   for (const tiers of [['hourly_wages'], ['hourly_wages', 'salaries'], ['hourly_wages', 'salaries', 'admin']]) {
-    for (const id of ['g1', 'g2']) {
-      const ctx = sandbox({ tiers });
-      const html = editCard(ctx, id);
-      assert.ok(!/wageDraftSet|salaryDraftSet/.test(html),
-        `${id} at ${tiers.join('+')} must have no pay input`);
-      // esc()'d, because 'SG&A' carries an ampersand and everything that lands
-      // in HTML goes through it — the same round trip the department options
-      // have to survive.
-      assert.match(html, /not held for SG&amp;A staff/);
-      assert.match(html, /Manufacturing/);
-    }
+    const ctx = sandbox({ tiers });
+    const html = editCard(ctx, 'g2');
+    assert.ok(!/wageDraftSet|salaryDraftSet/.test(html),
+      `g2 at ${tiers.join('+')} must have no pay input`);
+    // esc()'d, because 'SG&A' carries an ampersand and everything that lands
+    // in HTML goes through it — the same round trip the department options
+    // have to survive.
+    assert.match(html, /not held for salaried SG&amp;A staff/);
+    // And the remedy is the PAY TYPE, not the cost class. Their class is right.
+    assert.match(html, /Pay type/);
+    assert.ok(!/Change the cost class above/.test(html),
+      'a salaried SG&A employee must not be sent to reclassify themselves');
   }
+});
+
+test('an HOURLY SG&A employee gets a rate field, at every tier', () => {
+  // The whole point of the 2026-09-15 narrowing. The rate is base-tier like
+  // every other hourly rate, so it is drawn for a reader holding nothing else.
+  for (const tiers of [['hourly_wages'], ['hourly_wages', 'salaries'], ['hourly_wages', 'salaries', 'admin']]) {
+    const ctx = sandbox({ tiers });
+    const html = editCard(ctx, 'g1');
+    assert.match(html, /wageDraftSet/, `g1 at ${tiers.join('+')} must have a rate input`);
+    assert.ok(!/not held for/.test(html), 'and no "not held" line');
+    // Never the salary field — SG&A carries the hourly column alone, and a
+    // salaries-tier reader must not be offered one here.
+    assert.ok(!/salaryDraftSet/.test(html), 'SG&A carries no annual salary at any tier');
+  }
+});
+
+test('a Mill Overhead employee still gets no pay field', () => {
+  const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
+  person(ctx, 'g1').costClass = 'Mill Overhead';
+  const html = editCard(ctx, 'g1');
+  assert.ok(!/wageDraftSet|salaryDraftSet/.test(html));
+  assert.match(html, /not held for Mill Overhead staff/);
 });
 
 test('an unclassified new arrival is told to classify, not that they lack a rate', () => {
@@ -246,8 +274,9 @@ test('an unclassified new arrival is told to classify, not that they lack a rate
 });
 
 test('a save on an uncosted person sends neither pay column', async () => {
+  // g2, the salaried SG&A employee — g1 carries a rate since 2026-09-15.
   const ctx = sandbox({ tiers: ['hourly_wages', 'salaries'] });
-  openEdit(ctx, 'g1');
+  openEdit(ctx, 'g2');
   ctx.state.editing.phone = '555-0199';
   await ctx.saveEdit();
   const w = patches(ctx).filter(c => /table=employees/.test(c.url));
@@ -260,15 +289,46 @@ test('a leftover draft from before a reclassification is dropped, not refused', 
   // Somebody types a rate, then changes the cost class in the same edit. The
   // field disappears; what was typed must not abort the save, and must not be
   // written either.
+  //
+  // Mill Overhead rather than SG&A since 2026-09-15: an HOURLY person moved to
+  // SG&A still carries a rate, so that move no longer makes the field disappear
+  // and would not exercise this at all.
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  openEdit(ctx, 'h1');
+  ctx.state.editing.wage = '31.00';
+  ctx.state.editing.costClass = 'Mill Overhead';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w.length, 1, 'the save still happens');
+  assert.ok(!('wage' in w[0].body));
+  assert.strictEqual(w[0].body.cost_class, 'Mill Overhead');
+  assert.notStrictEqual(lastToast(ctx).type, 'error');
+});
+
+test('moving an HOURLY person to SG&A keeps their typed rate — the field never went away', async () => {
+  // The other side of the test above, and the behaviour change itself. Before
+  // 2026-09-15 this dropped the rate on the floor.
   const ctx = sandbox({ tiers: ['hourly_wages'] });
   openEdit(ctx, 'h1');
   ctx.state.editing.wage = '31.00';
   ctx.state.editing.costClass = 'SG&A';
   await ctx.saveEdit();
   const w = patches(ctx).filter(c => /table=employees/.test(c.url));
-  assert.strictEqual(w.length, 1, 'the save still happens');
-  assert.ok(!('wage' in w[0].body));
+  assert.strictEqual(w.length, 1);
   assert.strictEqual(w[0].body.cost_class, 'SG&A');
+  assert.strictEqual(w[0].body.wage, '31.00', 'the rate follows them');
+  assert.notStrictEqual(lastToast(ctx).type, 'error');
+});
+
+test('a rate typed for an hourly SG&A employee is sent', async () => {
+  const ctx = sandbox({ tiers: ['hourly_wages'] });
+  openEdit(ctx, 'g1');
+  ctx.state.editing.wage = '27.75';
+  await ctx.saveEdit();
+  const w = patches(ctx).filter(c => /table=employees/.test(c.url));
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].body.wage, '27.75');
+  assert.ok(!('annual_salary' in w[0].body), 'and never a salary');
   assert.notStrictEqual(lastToast(ctx).type, 'error');
 });
 

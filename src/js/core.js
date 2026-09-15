@@ -203,10 +203,11 @@ function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 // these helpers were private to it each time; moving the fields is not a reason
 // to have two answers to "what counts as a rate".
 //
-// A THIRD RULE NOW GOVERNS BOTH COLUMNS, and it is not about tiers: only the
-// Manufacturing cost class carries pay at all. It is enforced server-side in
-// netlify/functions/pay-scope-lib.js and mirrored by employeeCarriesPay() below,
-// which is what decides whether either field is drawn.
+// A THIRD RULE GOVERNS BOTH COLUMNS, and it is not about tiers: the cost class
+// decides whether a column applies to this person at all. It is enforced
+// server-side in netlify/functions/pay-scope-lib.js and mirrored by
+// employeeCarriesWage() / employeeCarriesSalary() below, which is what decides
+// whether either field is drawn.
 //
 // A MIRROR OF THE SERVER, NOT A SECOND SET OF RULES.
 // netlify/functions/wage-edit-lib.js decides what an edit means and refuses
@@ -221,24 +222,54 @@ function payTypeOf(emp){return isSalaried(emp)?'Salaried':'Hourly';}
 const WAGE_FLAG_PCT = 20;
 
 // ------------------------------------------------------------------------
-// WHICH PEOPLE CARRY PAY AT ALL
+// WHICH PEOPLE CARRY WHICH PAY COLUMN
 // ------------------------------------------------------------------------
 //
-// The client mirror of netlify/functions/pay-scope-lib.js, and the same three
-// lines rather than a different reading of them. Compensation is held for the
-// Manufacturing cost class and for nobody else, decided 2026-09-14 when SG&A
-// and Mill Overhead stopped being analysed in this app.
+// The client mirror of netlify/functions/pay-scope-lib.js, and the same few
+// lines rather than a different reading of them:
 //
-// A blank cost class does NOT carry pay — a new arrival auto-created by the
-// BBSI import is unclassified, and classify-then-pay is the order the setup
-// task queues the work in.
+//   annual salary   Manufacturing, and nobody else.
+//   hourly wage     Manufacturing, plus SG&A WHEN THE PERSON IS HOURLY.
+//
+// The rule was one line until 2026-09-15 — Manufacturing carries pay, nobody
+// else does — and it was too blunt by exactly one case. SG&A overtime is still
+// tracked here, and an hourly person's overtime has an hourly rate. A salaried
+// SG&A employee still carries nothing: the payroll file drops them, so they
+// earn no overtime hour, and their salary is the figure the 2026-09-14 change
+// existed to stop holding.
+//
+// MANUFACTURING IS TRUE FOR THE WAGE WHATEVER THE PAY TYPE, deliberately. A
+// salaried Manufacturing person is turned away one step later, by isSalaried()
+// in wageField, whose answer is the useful one — their cost is annual_salary /
+// 2,080 and a rate would be double counting. Saying "Manufacturing carries no
+// hourly rate" here would be false.
+//
+// A blank cost class carries NOTHING — a new arrival auto-created by the BBSI
+// import is unclassified, and classify-then-pay is the order the setup task
+// queues the work in. A blank PAY TYPE reads as hourly, because isSalaried()
+// says so and payTypeOf() shows 'Hourly' for it everywhere else on the page.
 //
 // This decides what is DRAWN. The server decides what is written, and refuses
 // the same thing for the same reason; if the two ever disagree, the refusal
 // arrives as a sentence from wage-edit-lib or data.js and the server wins.
 const COSTED_COST_CLASS='Manufacturing';
+const HOURLY_ONLY_COST_CLASS='SG&A';
+function costClassOfEmployee(e){
+  return String((e&&(e.costClass!=null?e.costClass:e.cost_class))||'').trim();
+}
+function employeeCarriesWage(e){
+  const cls=costClassOfEmployee(e);
+  if(cls===COSTED_COST_CLASS) return true;
+  if(cls===HOURLY_ONLY_COST_CLASS) return !isSalaried(e);
+  return false;
+}
+function employeeCarriesSalary(e){
+  return costClassOfEmployee(e)===COSTED_COST_CLASS;
+}
+// Does this person carry the column their pay type calls for? The question the
+// profile asks when it decides between a pay field and a "none held" line.
 function employeeCarriesPay(e){
-  return String((e&&(e.costClass!=null?e.costClass:e.cost_class))||'').trim()===COSTED_COST_CLASS;
+  return isSalaried(e)?employeeCarriesSalary(e):employeeCarriesWage(e);
 }
 
 // Active only. A blank status reads as active, matching isActive() in
