@@ -44,12 +44,15 @@ const ALLOWED_TABLES = new Set(['employees', 'overtime', 'points']);
 // mechanism is unchanged and still the point: what a caller may not read is
 // never NAMED in the query, so it does not cross the wire even once.
 //
-// PHASE D: THE LIST NO LONGER LIVES HERE. permissions-lib.js is the one place
-// that decides who may see and write which columns, and the projection is built
-// from it per request out of the caller's tiers — see projectionsFor below. A
-// reader without the salaries tier gets a select that does not name
-// annual_salary at all: absent from the QUERY, not merely filtered out of the
-// answer, so the column never crosses the wire even once.
+// THE LIST DOES NOT LIVE HERE. permissions-lib.js is the one place that decides
+// which columns this endpoint serves at all, and the projection is built from
+// it — see projectionsFor below.
+//
+// IT NO LONGER VARIES BY CALLER. The tiers collapsed into one access list on
+// 2026-09-15: you are on it or you are not, and everyone on it sees the same
+// columns, annual_salary included. The projection survives the collapse because
+// it was never only about tiers — a select that names its columns is how a
+// column nobody thought about stays out of every browser.
 //
 // The three hardcoded lists that used to sit here are gone rather than kept
 // alongside it. A second copy of a permission list is not redundancy, it is a
@@ -85,8 +88,8 @@ function pickColumns(rows, columns) {
 // read annual_salary server-side to clear it and would have widened the same
 // hole. The projection is the one perms already computes for the GET, so the
 // two directions cannot disagree about what this caller may see.
-function projectEmployeeWrite(rows, tiers) {
-  const columns = perms.employeeReadColumns(tiers);
+function projectEmployeeWrite(rows) {
+  const columns = perms.EMPLOYEE_READ_COLUMNS;
   if (Array.isArray(rows)) return pickColumns(rows, columns);
   if (!rows || typeof rows !== 'object') return rows;
   return pickColumns([rows], columns)[0];
@@ -96,13 +99,7 @@ function isUndefinedColumnError(message) {
   return /\b42703\b|does not exist|could not find/i.test(String(message || ''));
 }
 
-// The projection ladder, built FROM the caller's permitted columns.
-//
-// Built from, not intersected with. The first version of this filtered the
-// hardcoded projection list down to what the tiers allowed — which can
-// only ever REMOVE columns, so annual_salary (never in that list) could not
-// appear for anybody, tier or no tier. The permitted set has to be the source
-// and the rungs have to subtract from it.
+// The projection ladder.
 //
 // Each rung drops exactly what the rung above it added, so a database missing
 // one migration costs the screens that use those columns and nothing else. The
@@ -114,10 +111,10 @@ const PHASE_D_COLUMNS = ['hire_date'];
 const PHASE_B_COLUMNS = ['position', 'address_street', 'address_city', 'address_state', 'address_postal_code'];
 const V2_COLUMNS      = ['pay_type', 'cost_class', 'position_group', 'annual_salary'];
 
-function projectionsFor(tiers) {
+function projectionsFor() {
   const without = (cols, drop) => cols.filter(c => !drop.includes(c));
 
-  const full      = perms.employeeReadColumns(tiers);
+  const full      = perms.EMPLOYEE_READ_COLUMNS;
   const preD      = without(full, PHASE_D_COLUMNS);
   const prePhaseB = without(preD, PHASE_B_COLUMNS);
   const preV2     = without(prePhaseB, V2_COLUMNS);
@@ -150,10 +147,10 @@ function projectionsFor(tiers) {
 //
 // Only `employees` is gated by column: it is the table that holds compensation.
 // overtime and points carry no pay and are left as they were.
-function gateWrite(table, body, tiers) {
+function gateWrite(table, body) {
   if (table !== 'employees') return { body };
 
-  const { permitted, refused } = perms.partitionWrite(body, tiers);
+  const { permitted, refused } = perms.partitionWrite(body);
   if (!refused.length) return { body: permitted };
 
   return {
@@ -163,13 +160,14 @@ function gateWrite(table, body, tiers) {
       body: JSON.stringify({
         error: 'Not permitted to write: ' + refused.join(', '),
         refused,
-        detail: 'This column requires a permission tier this account does not hold.'
+        detail: 'This endpoint does not write that column. It is not a permission — ' +
+                'nobody can set it here.'
       })
     }
   };
 }
 
-async function queryEmployees(tiers) {
+async function queryEmployees() {
   let lastErr = null;
 
   // Built ONCE, and indexed by position. projectionsFor returns fresh objects
@@ -177,7 +175,7 @@ async function queryEmployees(tiers) {
   // nothing, returns -1, and lands on rung 0 — whose `missing` is null. The
   // effect was not a crash but a silence: the console warning naming the
   // migration that had not been run would never have printed.
-  const ladder = projectionsFor(tiers);
+  const ladder = projectionsFor();
 
   for (let i = 0; i < ladder.length; i++) {
     const rung = ladder[i];
@@ -278,12 +276,17 @@ exports.handler = async (event) => {
   const session = verifySession(getCookies(event).sfp_session || '');
   if (!session) return { statusCode: 401, headers, body: JSON.stringify({ error: 'Unauthorized' }) };
 
-  // Resolved LAZILY and at most once per request. Two reasons it is not
-  // resolved up front: a request the table allowlist is about to refuse should
-  // not cost a permissions round-trip first, and the tables that carry no pay
-  // never need the answer at all.
-  let tiersPromise = null;
-  const callerTiers = () => (tiersPromise || (tiersPromise = perms.fetchTiers(session.email, db)));
+  // NO PER-REQUEST PERMISSION READ ANY MORE. The tiers collapsed into one
+  // access list on 2026-09-15 and that list gates SIGN-IN, in auth.js — a valid
+  // session is proof the holder was on it. Everyone on it sees the same columns,
+  // so there is nothing left for this endpoint to look up.
+  //
+  // The cost, stated: removing somebody takes effect when their session expires,
+  // within 8 hours (SESSION_MAX_AGE_SECONDS). Re-reading the list on every
+  // request of every endpoint would close that window and would put a database
+  // round-trip in front of every roster load to do it. Eight hours is the
+  // accepted answer; if it ever is not, the fix is one helper called from the
+  // fifteen handlers that verify a session, not a second tier system.
 
   const method = event.httpMethod;
   const params = event.queryStringParameters || {};
@@ -309,7 +312,7 @@ exports.handler = async (event) => {
       if (table === 'overtime') orderBy = '?order=ot_type.asc,hours.asc';
       if (table === 'points') orderBy = '?order=points.desc';
       const rows = table === 'employees'
-        ? await queryEmployees(await callerTiers())
+        ? await queryEmployees()
         : await db.query(table, orderBy);
       return { statusCode: 200, headers, body: JSON.stringify({ data: rows }) };
     }
@@ -317,7 +320,7 @@ exports.handler = async (event) => {
     // POST /api/data?table=employees — insert single row
     if (method === 'POST' && table) {
       const body = JSON.parse(event.body || '{}');
-      const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
+      const gated = gateWrite(table, body);
       if (gated.error) return gated.error;
 
       // A new person created WITH a rate. The app's Add form has no rate field,
@@ -369,7 +372,7 @@ exports.handler = async (event) => {
         await recordWageHistory({ ...wagePlan.history, employee_id: created.id });
       }
       const payload = table === 'employees'
-        ? projectEmployeeWrite(row, await callerTiers())
+        ? projectEmployeeWrite(row)
         : row;
       return { statusCode: 200, headers, body: JSON.stringify({ data: payload }) };
     }
@@ -377,7 +380,7 @@ exports.handler = async (event) => {
     // PATCH /api/data?table=employees&id=uuid — update single row
     if (method === 'PATCH' && table && params.id) {
       const body = JSON.parse(event.body || '{}');
-      const gated = gateWrite(table, body, table === 'employees' ? await callerTiers() : null);
+      const gated = gateWrite(table, body);
       if (gated.error) return gated.error;
 
       // The row as the DATABASE has it, not as the browser remembers it. A page
@@ -456,7 +459,7 @@ exports.handler = async (event) => {
           // every column — including the one this caller may not see.
           return {
             statusCode: 200, headers,
-            body: JSON.stringify({ data: projectEmployeeWrite(found, await callerTiers()) })
+            body: JSON.stringify({ data: projectEmployeeWrite(found) })
           };
         }
       }
@@ -498,7 +501,7 @@ exports.handler = async (event) => {
 
       const row = await db.update(table, params.id, gated.body);
       const updated = table === 'employees'
-        ? projectEmployeeWrite(row, await callerTiers())
+        ? projectEmployeeWrite(row)
         : row;
       return { statusCode: 200, headers, body: JSON.stringify({ data: updated }) };
     }

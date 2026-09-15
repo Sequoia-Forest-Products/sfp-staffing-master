@@ -208,16 +208,15 @@ test('a salaried person gets no HOURLY field — they get the salary instead', (
   assert.match(html, /value="105000"/, 'pre-filled — correcting 105 to 110 should not mean retyping');
 });
 
-test('a salaried person WITHOUT the tier gets neither field, and a sentence', () => {
-  // annual_salary is not in this reader's payload at all, so an input would
-  // start blank and saving the card would look like it had cleared somebody's
-  // salary. A sentence cannot do that.
+test('a salaried person gets the SALARY field and never the rate field', () => {
+  // The tier is gone — everyone signed in sees the salary — but rule 2 is not:
+  // their compensation is annual_salary and the costing report divides it by
+  // 2,080, so an hourly rate written onto them would be counted twice.
   const ctx = sandbox({ tiers: ['hourly_wages'] });
   const html = editCard(ctx, 's1');
-  assert.ok(!/wageDraftSet|salaryDraftSet/.test(html));
-  assert.match(html, /salaried/i);
-  assert.match(html, /salaries tier/);
-  assert.ok(!/105000|105,000/.test(html), 'and no figure');
+  assert.match(html, /salaryDraftSet/, 'the salary is editable by anybody signed in');
+  assert.ok(!/wageDraftSet/.test(html), 'and an hourly rate never is, for a salaried person');
+  assert.match(html, /105000|105,000/, 'the figure is shown, which is the reversal');
 });
 
 // ---------------------------------------------------------------------------

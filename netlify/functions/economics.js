@@ -266,15 +266,12 @@ exports.handler = async (event) => {
   if (method !== 'GET' && method !== 'PATCH') return fail(405, 'Method not allowed');
 
   try {
-    // Resolved from the same registry as every other gate, and failing closed to
-    // the base tier. All-or-nothing: every column here is part of one
-    // compensation view — the seat, who is in it, and the ceiling for it — so
-    // there is no useful subset to hand somebody without the tier.
-    const tiers = await perms.fetchTiers(session.email, db);
-    if (!perms.has(tiers, perms.TIER_SALARIES)) {
-      return fail(403, 'Not permitted to read the staffing plan',
-        { detail: 'This needs the salaries tier. An administrator can grant it under Settings → Access.' });
-    }
+    // THE SALARIES GATE IS GONE, 2026-09-15, with the tiers. This endpoint was
+    // all-or-nothing behind that tier because every column is part of one
+    // compensation view — the seat, who is in it, and the ceiling for it — and
+    // the alternative audience was the whole sequoiafp.com domain. Access is an
+    // explicit list now and everyone on it holds the same rights, so a signed-in
+    // caller is one who was already told yes.
 
     // Two rungs, the same shape as /api/data's ladder: ask for the key, and if
     // the column is not there yet drop to the projection without it. That is

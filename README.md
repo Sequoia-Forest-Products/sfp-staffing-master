@@ -26,11 +26,11 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
 
 - **Employees tab** — roster with search, filter, sort, the Add form, and the employee profile
   card, SMS reachability column, SMS opt-out toggle, Drive folder linking. **The hourly wage is
-  typed here**, on the profile card, at the base tier — see *Where pay is typed* below.
+  typed here**, on the profile card — see *Where pay is typed* below.
 - **Manufacturing Costs tab** — two sub-views, and the tab itself is open to everyone:
   - **Staffing Economics** — the budgeted staffing plan, 55 numbered seats with a per-seat rate
-    ceiling and the variance against it. Needs the **salaries** tier, so the sub-nav omits it for
-    everybody else. Was a tab of its own under this name, and was briefly the *Staff* and
+    ceiling and the variance against it. Open to anybody signed in since 2026-09-15 — it was behind
+    the salaries tier. Was a tab of its own under this name, and was briefly the *Staff* and
     *Staffing* views before taking its own name back. Its state key is `staffing`.
   - **Department & Group** — labour cost for `cost_class = 'Manufacturing'`, aggregated by
     department and position group, with burdened cost and cost per MBF. Aggregates only: no
@@ -40,7 +40,7 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
 
   Staffing Economics leads because the plan comes before the actuals. It is also the gated view, which is
   what makes leading with it safe: `state.costsView` starts **empty** and resolves to the first
-  view this reader can see, so the salaries tier opens the tab on Staffing and everybody else
+  view this reader can see. Nothing is gated since 2026-09-15, so it opens on Staffing for everybody
   opens it on Department & Group. A hardcoded default would have opened the tab on the second
   item for exactly the people who can read the first.
 - **Overtime tab** — two sub-views: the **OT Report** (All / Pre-Approved / Net OT,
@@ -53,8 +53,8 @@ Five top-level tabs. Three of them are containers with a sub-nav; none is gated 
   2026-09-15: points are not overtime, and sat under that tab only because Phase C needed
   somewhere to put them when it consolidated three tabs into one.
 - **Settings tab** — two sub-views:
-  - **General** — email settings, taxonomy values, and the admin **Access** section that grants
-    and revokes tiers.
+  - **General** — email settings, mill holidays, and the **Access** section: one list that decides
+    who may sign in, and who receives the weekly OT email. Everybody on it can edit it.
   - **Daily Hours** — the manual `.xlsx` payroll upload with preview-before-commit, imported-day
     history, department re-stamping, and the email pipeline's issue queue. It is the one screen
     that puts data *in* rather than reading it out, which is why it is administration rather than
@@ -164,13 +164,13 @@ the columns are:
 
 | Column | Who may set it | Applies to |
 |---|---|---|
-| `employees.wage` (hourly rate) | anyone signed in (base tier) | `cost_class = 'Manufacturing'`, hourly |
-| `employees.annual_salary` | the `salaries` tier | `cost_class = 'Manufacturing'`, salaried |
+| `employees.wage` (hourly rate) | anyone signed in | `cost_class = 'Manufacturing'`, hourly |
+| `employees.annual_salary` | anyone signed in (was the `salaries` tier until 2026-09-15) | `cost_class = 'Manufacturing'`, salaried |
 
-Three questions decide which field is drawn, in this order: does this person carry pay at all (cost
-class), which column applies (pay type), and may this reader see it (tier — the salary only). A
-salaried SG&A employee is not "a salary this reader cannot see", they are somebody with no salary
-here at all, and the card says so.
+Two questions decide which field is drawn, in this order: which column applies (pay type), and does
+this person carry it (cost class). There was a third — may this reader see it — and it went with the
+tiers on 2026-09-15. A salaried SG&A employee is not "a salary this reader cannot see", they are
+somebody with no salary here at all, and the card says so.
 
 Both columns were on one *Salaries & Wages* tab; it was split, the salary going to *Overhead →
 Salaries*, and came back here when that tab was removed. The card wins both times because the people
@@ -313,7 +313,7 @@ see below.
 `wage` is an **hourly rate and nothing else**, and it is **ours** — the record of truth behind
 every dollar this system computes. It is NULL for salaried people; the literal `'Salary'` sentinel
 was retired 2026-08-22. It is typed on the **employee profile card** by any signed-in user
-(`permissions-lib.js` allows it at the base tier), and every change is recorded in `wage_history`,
+(`permissions-lib.js` lists it as writable), and every change is recorded in `wage_history`,
 which is append-only — the server writes the history row **before** the rate, so a failure between
 the two leaves a record with no change rather than a change with no record.
 
@@ -380,62 +380,101 @@ There was **no automatic migration between the two** — the value sets do not c
 employee was assigned by hand. The one-off bulk back-fill screen that existed for that migration
 has been removed now that it is done; departments are set per employee in the edit modal.
 
-### user_permissions
-`id, email, tier, granted_by, granted_at, note` — `SCHEMA_PHASE_D_PERMISSIONS.sql`
+### user_permissions — THE ACCESS LIST
+`id, email, tier, granted_by, granted_at, note` — `SCHEMA_PHASE_D_PERMISSIONS.sql`,
+collapsed by `SCHEMA_ACCESS_LIST.sql`
 
-Who holds which permission tier. **Membership is data**: granting access is an INSERT, not a
-deploy. What a tier *means* — which columns it unlocks — is in `netlify/functions/permissions-lib.js`,
-because that is a decision about the shape of the app and belongs where it can be tested.
+**ONE LIST, NO ROLES, since 2026-09-15.** You are on it or you are not, and being on it means
+everything:
 
-| tier | stored? | unlocks |
-|---|---|---|
-| `hourly_wages` | **never** | the base. Every signed-in user holds it. `wage` is readable **and writable** by everyone by decision — see `employees` above. |
-| `salaries` | yes | `annual_salary`, read and write |
-| `admin` | yes | may grant and revoke the other two, and change everything on Settings. Does not by itself unlock compensation. |
+| being on the list means |
+|---|
+| you can **sign in** — the domain rule no longer admits anybody by itself |
+| you see and edit **every column**, `annual_salary` included |
+| you can change **every setting** — the OT budget, the timeclock grace, the holiday list |
+| you can **add and remove anyone**, including yourself |
+| you **receive the Monday OT email** — there is no separate recipient list |
 
-### READ THIS BEFORE GRANTING ANYBODY ACCESS
+**Membership is data**: access is an INSERT, not a deploy.
 
-**Adding someone to this app gives them the ability to change anyone's pay rate.**
+#### Why the tiers went
 
-That is a real change in what app access means, made deliberately on 2026-08-22, and it is
-stated here rather than left to be discovered. Since the daily file stopped carrying a rate,
-`employees.wage` is the record of truth behind every dollar the system computes, and it is
-writable at the base tier — no grant, no tier, nothing to configure. A new user's first login
-gives them a field on the profile card of every hourly employee in the company.
+Phase D built three — an implicit `hourly_wages` base, plus `salaries` and `admin` — because
+anybody with a sequoiafp.com Google account could sign in. The tiers were the only thing standing
+between a hundred mailboxes and `employees.annual_salary`.
+
+That premise is gone. Once you have to be *named* to get in at all, a second mechanism deciding what
+you may see once you are in is answering a question nobody asked: the list already said yes.
+
+#### What it costs, stated plainly
+
+- **Eduardo Rivera's salary is visible to everyone on the list.** He is salaried in Manufacturing
+  and his `annual_salary` IS held — Staffing Economics prices his seat from it. This is the
+  accepted trade, made knowingly: the list is short, everyone on it is a manager, and the
+  alternative was a tier system whose whole job was hiding one number from five people.
+- **Anyone on the list can change the OT budget and the grace allowance**, both of which change
+  what the weekly report says.
+- **Anyone can remove anyone**, including themselves.
+- **Removal takes up to 8 hours to bite.** The list is checked at sign-in, not per request, so a
+  removed person keeps their session until it expires (`SESSION_MAX_AGE_SECONDS`). Closing that
+  window would put a database round-trip in front of every roster load.
+
+#### The one refusal
+
+**The last entry cannot be removed.** That is not a role sneaking back in — it applies to everybody
+equally — and it exists because an empty list locks every account out and nothing inside the app
+could put one back. It is enforced in `netlify/functions/permissions.js`; the database-side
+last-admin trigger was dropped with the tier it guarded, so a hand-written `DELETE` in the SQL
+editor can still empty the table.
+
+#### Failing closed, and the one place it must not
+
+A failed permissions read means **no access** everywhere except sign-in. At sign-in an unreachable
+table would lock out the whole company with no way in, so `auth.js` falls back to `ALLOWED_DOMAIN`
+there **and only there** — logged loudly, because running on the domain rule is a temporary state
+somebody has to notice. An *empty* list falls back the same way, for the same reason.
+
+`fetchAccessList()` **throws** rather than returning `[]` on a failure: an empty list and an
+unreachable table mean opposite things at sign-in, and a function that returned `[]` for both would
+turn a database hiccup into "nobody has access".
+
+#### READ THIS BEFORE GIVING ANYBODY ACCESS
+
+**It gives them the ability to change anyone's pay — both columns.**
+
+Since the daily file stopped carrying a rate, `employees.wage` is the record of truth behind every
+dollar the system computes, and since the tiers collapsed `annual_salary` sits beside it. A new
+user's first sign-in gives them a field on the profile card of every employee in the company.
 
 What that is bounded by:
 
-- **Nothing is silent.** Every change writes a `wage_history` row carrying the previous rate,
-  the new one, the percentage move, and the email of whoever typed it. The table is append-only,
-  enforced by a trigger the service key cannot bypass, so the record cannot be edited away.
+- **Hourly changes are never silent.** Every one writes a `wage_history` row carrying the previous
+  rate, the new one, the percentage move, and the email of whoever typed it. The table is
+  append-only, enforced by a trigger the service key cannot bypass.
 - **A large move is flagged**, not blocked — `WAGE_CHANGE_ALERT_PCT`, default 20%.
-- **The blast radius is one row at a time.** There is no bulk rate writer in the app; the one
-  that existed was deleted for exactly this reason.
-- **`annual_salary` is not included.** That stays behind the `salaries` tier in both directions.
+- **The blast radius is one row at a time.** There is no bulk rate writer in the app; the one that
+  existed was deleted for exactly this reason.
+- **`annual_salary` has no history table**, so a change to it leaves no record. That is the sharpest
+  edge of the collapse and the thing to fix first if this decision is ever revisited.
 
-The alternative was gating rates behind a tier, which would have meant the two accounts holding
-`salaries` doing every rate correction for the whole mill. That was rejected knowingly. If the
-roster of app users ever widens beyond people who should see and set pay, this is the decision
-to revisit first.
+`email` is stored lowercased and trimmed, enforced by a CHECK, and unique per `(email, tier)`.
+`tier` is still NOT NULL and new rows carry `'access'`; **nothing reads it**. It survives so the
+migration is additive, reversible, and leaves the old grants legible as a record of who held what.
 
-A missing row means the base tier, **not no access** — which is why `hourly_wages` is refused by a
-CHECK rather than merely ignored by the code. A row asserting it would make presence and absence
-mean the same thing. `email` is stored lowercased and trimmed, enforced by a CHECK, and unique per
-(email, tier); Ryley and Peter each hold two tiers, so two rows.
+RLS is enabled with **no policies** — the intended state, not a gap: with none defined, RLS denies
+everything to every role subject to it. The Netlify functions reach Supabase with the service key,
+which bypasses RLS; no browser talks to PostgREST directly.
 
-RLS is enabled with **no policies** — that is the intended state, not a gap: with none defined, RLS
-denies everything to every role subject to it. The Netlify functions reach Supabase with the service
-key, which bypasses RLS; no browser talks to PostgREST directly.
+#### The two lists that became one
 
-**The last admin cannot be revoked.** A statement-level trigger refuses it, and refuses `TRUNCATE`
-separately, because a delete trigger does not fire on TRUNCATE. Handing over means grant first, then
-revoke — each statement is judged on its own. `DROP TABLE` is the one case no trigger can cover, and
-§7 of the migration documents the recovery: one INSERT in the Supabase SQL editor. There is
-deliberately **no hardcoded fallback admin** in the code, because a permanent grant no revoke can
-reach is a worse failure than the one it prevents.
+`emailSettings.managers` was a second list of the same people, edited on its own panel of the
+Settings tab. They drifted, and nothing could notice: the live data had **`jeffrey.cook@`** holding
+a permission grant and **`jefrey.cook@`** — one `f` — on the recipient list. One of those has been
+wrong for as long as both lists existed.
 
-Resolution **fails closed** in every mode — no grant row, no table, or a read that errors all give
-the base tier. That costs an admin their admin until it recovers, which is the correct trade.
+So there is one list. `send-ot-email.js` reads it directly; `emailSettings.managers` is retained,
+unwritten, as a **fallback only** — sending the week's per-person dollars to nobody is worse than
+sending them to the list that was correct yesterday.
 
 ### economics
 `id, num, section, seat, name, max_wage, created_at, updated_at`
@@ -491,10 +530,10 @@ the table removed in the first place.
 
 | | |
 |---|---|
-| `GET /api/economics` | every seat, in `num` order. Needs the **salaries tier**, all-or-nothing — unlike the employees projection, which narrows a row, every column here is part of the same compensation view. |
-| `PATCH /api/economics` `{id, employeeId}` | assign or unassign **one** seat. Needs the salaries tier. |
-| `PATCH /api/economics` `{id, maxWage}` | set **one** seat's position rate. Needs the salaries tier. |
-| `GET /api/economics?history=<seat uuid>` | that seat's recorded changes, newest first, up to 50. Needs the salaries tier. |
+| `GET /api/economics` | every seat, in `num` order. Open to anybody signed in since 2026-09-15 — it was all-or-nothing behind the salaries tier, and there is no tier. |
+| `PATCH /api/economics` `{id, employeeId}` | assign or unassign **one** seat. |
+| `PATCH /api/economics` `{id, maxWage}` | set **one** seat's position rate. |
+| `GET /api/economics?history=<seat uuid>` | that seat's recorded changes, newest first, up to 50. |
 
 **Two columns are writable: the occupant and `max_wage`, the position rate.** `num`, `section` and
 `seat` are the plan's *shape* — changing those resizes or retitles the plan — and a body naming one
@@ -505,9 +544,8 @@ that did not happen. There is no create and no delete.
 rather than a staffing one. What that produced in practice was a figure nobody could move: the
 number the entire variance column is measured against was editable only by writing SQL against a
 live table, which is both a worse audit trail than an app write and a standing reason for the plan
-to drift out of date. So it is typed on the page now. The gate is unchanged — the endpoint already
-needs the salaries tier to *read* a ceiling, so the people who can set one are exactly the people
-who could already see one.
+to drift out of date. So it is typed on the page now. Anybody who can read a ceiling can set one,
+which since 2026-09-15 is anybody signed in.
 
 **One column per request.** A body naming both `employeeId` and `maxWage` is refused: they are
 unrelated facts and one response cannot report both honestly.

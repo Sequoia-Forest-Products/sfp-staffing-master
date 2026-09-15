@@ -134,76 +134,60 @@ test('an admin can still save', async () => {
 // gate routed around through a different endpoint, which is exactly how this
 // file survived the /api/data fix in the first place.
 
-test('a non-admin POST is refused, and NOTHING reaches the database', async () => {
+// ---------------------------------------------------------------------------
+// THE ADMIN GATE IS GONE, 2026-09-15
+// ---------------------------------------------------------------------------
+//
+// It refused a POST from anybody without the admin tier, above any parsing or
+// database access, because sign-in was the whole sequoiafp.com domain and these
+// settings change what the weekly report says and who receives it.
+//
+// Access is an explicit list now and everyone on it holds the same rights, so
+// the gate would be a role and the model has none. What that opens is real and
+// was accepted knowingly: anyone on the list can move the timeclock grace
+// allowance and the OT budget. The list is short and everyone on it is a
+// manager.
+//
+// The recipient list is no longer among the things this endpoint can change at
+// all — it IS the access list, edited through /api/permissions.
+
+test('anybody signed in may save a setting', async () => {
   const urls = stubFetch([{ id: 7, key: 'emailSettings' }], { grants: [] });
   const res = await call('POST', {
-    body: JSON.stringify({ key: 'emailSettings', value: { managers: ['anyone@sequoiafp.com'] } }),
+    body: JSON.stringify({ key: 'emailSettings', value: { otBudgetPercent: 12 } }),
     headers: { cookie: cookie('nobody@sequoiafp.com') }
   });
 
-  assert.strictEqual(res.statusCode, 403);
-  assert.match(JSON.parse(res.body).error, /administrator/i);
+  assert.strictEqual(res.statusCode, 200, res.body);
+  assert.ok(settingsCalls(urls).length > 0, 'the save must reach the settings table');
+});
 
-  // Not "no write" — NO REQUEST AT ALL against the settings table. The check
-  // sits above the body parse and above the existence lookup, so a refusal
-  // cannot even read the current value back.
+test('an UNAUTHENTICATED POST is still refused, and reaches nothing', async () => {
+  // The session check survived the tier it used to sit above. It is the only
+  // gate left on this endpoint, and it is the one that matters: these settings
+  // change what managers are told is over budget.
+  const urls = stubFetch([{ id: 7, key: 'emailSettings' }], { grants: [] });
+  const res = await call('POST', {
+    body: JSON.stringify({ key: 'emailSettings', value: { otBudgetPercent: 99 } }),
+    headers: {}
+  });
+
+  assert.strictEqual(res.statusCode, 401);
   assert.deepStrictEqual(settingsCalls(urls), [],
     'a refused save still touched the settings table');
 });
 
-test('the refusal covers every setting on the page, not just the recipients', async () => {
-  for (const value of [{ managers: ['x@sequoiafp.com'] },
-                       { graceHoursPerEmployee: 8 },
-                       { otBudgetPercent: 99 },
-                       { autoSend: false }]) {
-    const urls = stubFetch([{ id: 7, key: 'emailSettings' }], { grants: [] });
-    const res = await call('POST', {
-      body: JSON.stringify({ key: 'emailSettings', value }),
-      headers: { cookie: cookie('nobody@sequoiafp.com') }
-    });
-    assert.strictEqual(res.statusCode, 403, JSON.stringify(value));
-    assert.deepStrictEqual(settingsCalls(urls), [], JSON.stringify(value));
-  }
-});
-
-test('the salaries tier does not unlock settings either', async () => {
-  // Admin grants access; it is a different tier from the one that reads pay,
-  // and this endpoint is about who may change what the report says.
-  const urls = stubFetch([{ id: 7, key: 'emailSettings' }],
-    { grants: [{ email: 'ryley@sequoiafp.com', tier: 'salaries' }] });
-  const res = await call('POST', {
-    body: JSON.stringify({ key: 'emailSettings', value: { otBudgetPercent: 12 } }),
-    headers: { cookie: cookie('ryley@sequoiafp.com') }
-  });
-
-  assert.strictEqual(res.statusCode, 403);
-  assert.deepStrictEqual(settingsCalls(urls), []);
-});
-
-test('a settings key nobody has thought of is gated too', async () => {
-  // The gate is on the METHOD, not on the key. A future setting is protected
-  // the day it is added rather than the day somebody remembers to list it.
-  const urls = stubFetch([], { grants: [] });
-  const res = await call('POST', {
-    body: JSON.stringify({ key: 'somethingNew', value: { x: 1 } }),
-    headers: { cookie: cookie('nobody@sequoiafp.com') }
-  });
-  assert.strictEqual(res.statusCode, 403);
-  assert.deepStrictEqual(settingsCalls(urls), []);
-});
-
-test('a failed permissions read fails CLOSED', async () => {
-  // An admin loses the ability to change a setting when the tier lookup breaks.
-  // That is the right way round: the alternative is a broken lookup handing
-  // everybody the recipient list.
+test('saving no longer costs a permissions read', async () => {
+  // It resolved the caller's tiers before parsing the body. A permissions table
+  // that is down cannot stop somebody changing a setting now.
   const urls = stubFetch([{ id: 7, key: 'emailSettings' }], { permsFail: true });
   const res = await call('POST', {
     body: JSON.stringify({ key: 'emailSettings', value: { otBudgetPercent: 12 } }),
     headers: { cookie: cookie(ADMIN) }
   });
 
-  assert.strictEqual(res.statusCode, 403);
-  assert.deepStrictEqual(settingsCalls(urls), []);
+  assert.strictEqual(res.statusCode, 200, res.body);
+  assert.strictEqual(urls.filter(c => c.url.includes('user_permissions')).length, 0);
 });
 
 test('reads stay open to everybody — the figures are on every report anyway', async () => {

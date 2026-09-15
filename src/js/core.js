@@ -821,13 +821,20 @@ function render(){
   // disciplinary flags are not overtime, and sat under it only because Phase C
   // needed somewhere to put them.
   //
-  // 'overhead' was a tab and is gone — see the note in public/app.html. A stale
-  // state.tab of 'overhead' renders nothing at all, which is why
-  // applyTabVisibility() bounces it to Employees.
   else if(state.tab==='costs')el.innerHTML=renderCostsTab();
   else if(state.tab==='points')el.innerHTML=renderPoints();
   else if(state.tab==='overtime')el.innerHTML=renderOvertime();
   else if(state.tab==='settings')el.innerHTML=renderSettingsTab();
+  // ANY OTHER KEY BOUNCES, rather than leaving the tab content as it was with
+  // nothing explaining why. 'overhead' is the one that exists: it was a tab
+  // until 2026-09-14 and a session open across that deploy — or a hand-typed
+  // switchTab() in the console — still holds it.
+  //
+  // This used to live in applyTabVisibility(), which was removed on 2026-09-15
+  // with the permission tiers it was built for. The bounce is not about
+  // permissions and never was, so it belongs here, in the dispatch that knows
+  // which keys it can actually draw.
+  else goToTab('employees');
 }
 
 

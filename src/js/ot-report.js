@@ -122,8 +122,11 @@ function otEmailPayload(){
 
 async function sendOTReportEmail(opts){
   const auto=!!(opts&&opts.auto);
-  const managers=state.emailSettings.managers||[];
-  if(!managers.length){ if(!auto) toast('No managers configured in Settings','error'); return false; }
+  // The ACCESS LIST, since 2026-09-15 — everyone who can use the app receives
+  // the report. The server reads it again for itself and does not trust this;
+  // the count is here only to stop offering a button that would fail.
+  const managers=state.perms.list||[];
+  if(!managers.length){ if(!auto) toast('Nobody is on the access list — add somebody under Settings → Access','error'); return false; }
   const data=otEmailPayload();
   if(!data){ toast('Load the OT report before emailing it','error'); return false; }
   state.otEmailSending=true; render();
@@ -319,9 +322,9 @@ function otPeriodNote(r){
 
 function renderOTReport(){
   const weeks=state.otReportWeeks||[];
-  const mgrs=(state.emailSettings.managers||[]).length;
-  const emailBlocked=state.otEmailSending?'Sending…':(!mgrs?'Add manager recipients on the Settings tab first':(!state.otReport?'Load a week before emailing it':''));
-  const emailBtn=`<button class="btn btn-outline btn-sm" onclick="sendOTReportEmail()" ${emailBlocked?'disabled':''} title="${esc(emailBlocked||('Email this week to '+mgrs+' manager'+(mgrs===1?'':'s')))}">${state.otEmailSending?'Sending…':'Email managers'}</button>`;
+  const mgrs=(state.perms.list||[]).length;
+  const emailBlocked=state.otEmailSending?'Sending…':(!mgrs?'Nobody is on the access list — add somebody under Settings → Access':(!state.otReport?'Load a week before emailing it':''));
+  const emailBtn=`<button class="btn btn-outline btn-sm" onclick="sendOTReportEmail()" ${emailBlocked?'disabled':''} title="${esc(emailBlocked||('Email this week to '+mgrs+' '+(mgrs===1?'person':'people')+' with access'))}">${state.otEmailSending?'Sending…':'Email managers'}</button>`;
   const picker=`
     <div class="ot-bar">
       <label class="ot-bar-label">Work week (Mon–Sun)</label>

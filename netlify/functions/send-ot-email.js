@@ -1,4 +1,5 @@
 const db = require('./db');
+const perms = require('./permissions-lib');
 const { verifySession, getCookies } = require('./session-lib');
 
 const GMAIL_USER = process.env.GMAIL_USER;
@@ -17,9 +18,13 @@ function normalizeAddress(v) {
 }
 
 // Pure so tests can exercise the rule without a network or a database.
-// `proposed` is whatever the client sent; `managers` is the saved list read
-// server-side. An address passes only if it is a saved manager or sits on the
+// `proposed` is whatever the client sent; `managers` is the ACCESS LIST, read
+// server-side. An address passes only if it is on that list or sits on the
 // company domain. Anything else names itself in the error.
+//
+// The parameter is still called `managers` because that is what the list means
+// here — everyone with access to this app is a manager of it, and since
+// 2026-09-15 there is no separate recipient list to be one of instead.
 function resolveRecipients(proposed, managers, opts) {
   const domain = ((opts && opts.allowedDomain) || ALLOWED_DOMAIN).toLowerCase();
   const max = (opts && opts.maxRecipients) || MAX_RECIPIENTS;
@@ -42,8 +47,23 @@ function resolveRecipients(proposed, managers, opts) {
   return { ok: true, recipients };
 }
 
-// settings.js writes this row two different ways (object on insert, JSON string on
-// update), so accept either shape rather than trusting one of them.
+// THE RECIPIENTS ARE THE ACCESS LIST, since 2026-09-15.
+//
+// There used to be a separate emailSettings.managers array, edited on its own
+// panel of the Settings tab. Two lists both meaning "the managers" is one list
+// and one thing that drifts: the live data had `jeffrey.cook@` holding a
+// permission grant and `jefrey.cook@` — one f — on the recipient list, and
+// nothing in the app could notice that those are not the same person.
+//
+// So there is one list. Being given access to this app subscribes you to the
+// Monday report, and that is said on the Settings tab rather than left to be
+// discovered.
+//
+// managersFromSettingsRow survives as a READER ONLY, for the rows written
+// before the merge. Nothing writes emailSettings.managers any more. It is kept
+// because the fallback below needs something to fall back TO: an access list
+// that cannot be read must not silently send the week's per-person dollars to
+// nobody, and the old list is a better answer than an empty one.
 function managersFromSettingsRow(row) {
   let value = row && row.value;
   if (typeof value === 'string') {
@@ -52,9 +72,28 @@ function managersFromSettingsRow(row) {
   return (value && Array.isArray(value.managers)) ? value.managers : [];
 }
 
+async function loadLegacyManagers() {
+  try {
+    const rows = await db.query('settings', '?key=eq.emailSettings');
+    return managersFromSettingsRow(rows && rows[0]);
+  } catch {
+    return [];
+  }
+}
+
+// The access list, falling back to the pre-merge recipient list if it cannot be
+// read. Logged either way, because sending the weekly report to a list nobody
+// chose is exactly the kind of thing that should not happen quietly.
 async function loadManagers() {
-  const rows = await db.query('settings', '?key=eq.emailSettings');
-  return managersFromSettingsRow(rows && rows[0]);
+  try {
+    const list = await perms.fetchAccessList(db);
+    if (list.length) return list;
+    console.warn('The access list is empty — falling back to the pre-merge recipient list.');
+  } catch (err) {
+    console.warn('The access list could not be read (' + err.message +
+      ') — falling back to the pre-merge recipient list.');
+  }
+  return loadLegacyManagers();
 }
 
 async function sendEmail(to, subject, htmlBody) {

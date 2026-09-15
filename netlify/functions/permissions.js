@@ -1,49 +1,37 @@
-// /api/permissions — who holds which tier, and the admin surface for changing it.
+// /api/permissions — the access list.
 //
-//   GET                      the CALLER's own tiers, always. Plus the whole
-//                            grant list, but only if the caller is an admin.
-//   POST   {email, tier}     grant. Admin only.
-//   DELETE ?email=&tier=     revoke. Admin only.
+//   GET                  the whole list, plus whether the caller is on it.
+//   POST   {email}       add.
+//   DELETE ?email=       remove.
 //
-// MEMBERSHIP IS DATA — that is the point of this endpoint existing. Before it,
-// adding somebody to the salaries tier meant somebody opening the Supabase SQL
-// editor, which is a thing exactly one person does and nobody else can audit.
+// ONE LIST, NO ROLES. Being on it means everything: sign in, every column, the
+// settings, this endpoint, and the weekly OT email. Anyone on it may add or
+// remove anyone, including themselves. That is the model chosen on 2026-09-15 —
+// see the note at the top of permissions-lib.js for what it replaced and what
+// it costs.
 //
-// WHAT THIS ENDPOINT IS NOT. It is not the gate. /api/data enforces the column
-// rules on every read and write of `employees`, from the same registry, and it
-// does so whether or not anybody asked this endpoint anything. What GET returns
-// is what the UI needs in order to stop OFFERING a control that would be
-// refused — a courtesy, not a control. A caller who lies to themselves about
-// their tiers gets exactly the same 403 from /api/data.
+// THE ONE REFUSAL is the last entry. It is not a role sneaking back in: it
+// applies to everybody equally, and it exists because an empty list locks every
+// account out of the app and nothing inside the app could put one back.
 //
-// THE ADMIN CHECK IS ON THE WRITE PATHS, NOT ON THE READ. Anyone signed in may
-// ask what they themselves hold; that is not a disclosure, they could find out
-// by trying. Reading OTHER people's grants is admin-only, because the grant list
-// is a list of who can see salaries.
+// WHAT THIS ENDPOINT IS NOT. It is not the gate. auth.js checks the list at
+// SIGN-IN, and it does so whether or not anybody asked this endpoint anything.
+// A caller who lies to themselves about being on the list still cannot get a
+// session.
+//
+// THE LIST IS ALSO THE EMAIL RECIPIENT LIST. send-ot-email.js reads it directly
+// rather than keeping a second list beside it — two lists meaning "the managers"
+// is one list and one thing that drifts out of date. Adding somebody here
+// subscribes them to the Monday report; that is stated on the Settings tab
+// rather than left to be discovered.
 
 const db = require('./db');
 const perms = require('./permissions-lib');
 const { verifySession, getCookies } = require('./session-lib');
 
-const TABLE = 'user_permissions';
-
 const MIGRATION_HINT =
-  'The user_permissions table does not exist yet — run SCHEMA_PHASE_D_PERMISSIONS.sql. ' +
-  'Until it does, everybody resolves to the base tier and no salary is visible to anyone, ' +
-  'which is the same behaviour as before Phase D.';
-
-function isMissingTableError(err) {
-  return /\b404\b|PGRST205|could not find the table|does not exist/i.test(
-    String((err && err.message) || ''));
-}
-
-// The database refuses the last admin's removal with a plpgsql exception. It is
-// a good message and it is written for a person, so it is passed through rather
-// than replaced with a generic 409 — but it arrives wrapped in PostgREST's
-// envelope, so the readable part is dug out.
-function isLastAdminError(err) {
-  return /last administrator/i.test(String((err && err.message) || ''));
-}
+  'The user_permissions table does not exist yet — run SCHEMA_ACCESS_LIST.sql. ' +
+  'Until it does, sign-in falls back to the email domain and this list cannot be edited.';
 
 function readableDbError(err) {
   const raw = String((err && err.message) || '');
@@ -51,6 +39,8 @@ function readableDbError(err) {
   if (!m) return raw;
   try { return JSON.parse('"' + m[1] + '"'); } catch { return m[1]; }
 }
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -60,119 +50,96 @@ exports.handler = async (event) => {
   const session = verifySession(getCookies(event).sfp_session || '');
   if (!session) return fail(401, 'Unauthorized');
 
-  const callerEmail = perms.normalizeEmail(session.email);
   const method = event.httpMethod;
+  const params = event.queryStringParameters || {};
+  const caller = perms.normalizeEmail(session.email);
 
+  // The current list, read once and shared by every branch below. Every branch
+  // needs it: GET returns it, POST checks for a duplicate, DELETE counts what
+  // would be left.
+  let list;
   try {
-    // Resolved through the same fetchTiers every other gate uses, so an admin
-    // here is an admin there. Fails closed to the base tier, which means a
-    // broken permissions read costs an admin the ability to grant — correct,
-    // and the reason the recovery path in the migration is plain SQL.
-    const tiers = await perms.fetchTiers(callerEmail, db);
-    const isAdmin = perms.has(tiers, perms.TIER_ADMIN);
-
-    if (method === 'GET') {
-      let grants = null;
-      if (isAdmin) {
-        try {
-          const rows = await db.query(TABLE, '?select=id,email,tier,granted_by,granted_at,note&order=email.asc,tier.asc');
-          grants = rows || [];
-        } catch (err) {
-          if (!isMissingTableError(err)) throw err;
-          grants = [];
-        }
-      }
-      return {
-        statusCode: 200, headers,
-        body: JSON.stringify({
-          ok: true,
-          email: callerEmail,
-          tiers: Array.from(tiers),
-          grantableTiers: perms.GRANTABLE_TIERS,
-          // null, not []. An admin with no grants to show and a non-admin who
-          // may not see them are different answers and the page renders them
-          // differently — an empty table versus no table at all.
-          grants,
-          isAdmin
-        })
-      };
+    list = await perms.fetchAccessList(db);
+  } catch (err) {
+    if (perms.isMissingTable(err)) {
+      return method === 'GET'
+        ? { statusCode: 200, headers, body: JSON.stringify({
+            ok: true, list: [], hasAccess: false, unavailable: true, detail: MIGRATION_HINT }) }
+        : fail(503, MIGRATION_HINT);
     }
+    return fail(500, 'The access list could not be read.', { detail: readableDbError(err) });
+  }
 
-    if (method !== 'POST' && method !== 'DELETE') {
-      return fail(405, 'Method not allowed');
-    }
+  if (method === 'GET') {
+    return { statusCode: 200, headers, body: JSON.stringify({
+      ok: true, list, hasAccess: list.includes(caller), caller
+    }) };
+  }
 
-    // ---- everything below is a write, and writes are admin-only ----
-    if (!isAdmin) {
-      return fail(403, 'Only an administrator may grant or revoke access.');
-    }
+  // WRITES. A valid session already proves the caller was on the list when they
+  // signed in — that is what auth.js checks — and there are no roles above it,
+  // so there is nothing further to test here. Somebody removed mid-session keeps
+  // their session until it expires, within 8 hours; see the note in data.js.
 
-    const params = event.queryStringParameters || {};
-    const body = method === 'POST' ? JSON.parse(event.body || '{}') : {};
-    const email = perms.normalizeEmail(method === 'POST' ? body.email : params.email);
-    const tier  = String((method === 'POST' ? body.tier : params.tier) || '').trim().toLowerCase();
+  if (method === 'POST') {
+    let body;
+    try { body = JSON.parse(event.body || '{}'); }
+    catch { return fail(400, 'Body must be JSON.'); }
 
+    const email = perms.normalizeEmail(body.email);
     if (!email) return fail(400, 'An email address is required.');
-    // Checked here as well as by the CHECK constraint, because the database's
-    // answer is a constraint violation and this one says what to do about it.
-    if (!/^[^@\s]+@[^@\s]+$/.test(email)) {
+    if (!EMAIL_RE.test(email)) {
       return fail(400, `"${email}" is not an email address.`);
     }
-    if (!perms.GRANTABLE_TIERS.includes(tier)) {
-      return fail(400,
-        `"${tier}" is not a grantable tier. Choose one of: ${perms.GRANTABLE_TIERS.join(', ')}.`,
-        // Named explicitly, because "hourly_wages" is the guess somebody will
-        // make and the reason it is refused is not obvious from the list.
-        { detail: tier === perms.TIER_HOURLY_WAGES
-            ? 'Hourly wages are the base tier. Everybody signed in already has it, and it is ' +
-              'deliberately not stored — a row saying so would make having one and not having ' +
-              'one mean the same thing.'
-            : undefined });
+    // Not an error. Asking for a state the system is already in has been
+    // honoured, and answering 409 would make the Settings tab report a failure
+    // for a list that says exactly what the caller wanted it to say.
+    if (list.includes(email)) {
+      return { statusCode: 200, headers, body: JSON.stringify({
+        ok: true, list, added: false, detail: `${email} already has access.` }) };
     }
 
-    if (method === 'POST') {
-      try {
-        const rows = await db.query(TABLE,
-          `?select=id&email=eq.${encodeURIComponent(email)}&tier=eq.${encodeURIComponent(tier)}`);
-        if (rows && rows.length) {
-          // Not an error. Granting a tier somebody already holds is a no-op and
-          // saying "already granted" is more use than a 409 the page has to
-          // interpret.
-          return { statusCode: 200, headers,
-                   body: JSON.stringify({ ok: true, email, tier, alreadyHeld: true }) };
-        }
-        const inserted = await db.insert(TABLE, {
-          email, tier, granted_by: callerEmail, note: 'granted in the app'
-        });
-        return { statusCode: 200, headers,
-                 body: JSON.stringify({ ok: true, email, tier, granted: inserted }) };
-      } catch (err) {
-        if (isMissingTableError(err)) return fail(503, MIGRATION_HINT);
-        throw err;
-      }
-    }
-
-    // ---- DELETE ----
     try {
-      const rows = await db.query(TABLE,
-        `?select=id&email=eq.${encodeURIComponent(email)}&tier=eq.${encodeURIComponent(tier)}`);
-      if (!rows || !rows.length) {
-        return { statusCode: 200, headers,
-                 body: JSON.stringify({ ok: true, email, tier, notHeld: true }) };
-      }
-      await db.remove(TABLE, rows[0].id);
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, email, tier, revoked: true }) };
+      // `tier` is still NOT NULL on the table — the migration is additive and
+      // the old rows stay readable — so a value is written and nothing reads it.
+      await db.insert(perms.ACCESS_TABLE,
+        { email, tier: 'access', granted_by: caller });
     } catch (err) {
-      if (isMissingTableError(err)) return fail(503, MIGRATION_HINT);
-      // The last-admin trigger. Its message is written for a person and says
-      // what to do — grant somebody else first — so it is surfaced rather than
-      // flattened into "conflict".
-      if (isLastAdminError(err)) return fail(409, readableDbError(err));
-      throw err;
+      return fail(500, 'The access could not be granted.', { detail: readableDbError(err) });
+    }
+    return { statusCode: 200, headers, body: JSON.stringify({
+      ok: true, list: [...list, email].sort(), added: true }) };
+  }
+
+  if (method === 'DELETE') {
+    const email = perms.normalizeEmail(params.email);
+    if (!email) return fail(400, 'An email address is required.');
+    if (!list.includes(email)) {
+      return { statusCode: 200, headers, body: JSON.stringify({
+        ok: true, list, removed: false, detail: `${email} is not on the list.` }) };
+    }
+    // THE ONE REFUSAL. Counted against the list as read a moment ago rather
+    // than trusted from the client, so two people removing the last two entries
+    // at once cannot both be told they were the second-to-last.
+    if (list.length <= 1) {
+      return fail(409, perms.LAST_ENTRY_REFUSAL.error, { detail: perms.LAST_ENTRY_REFUSAL.detail });
     }
 
-  } catch (err) {
-    console.error('permissions error:', err.message);
-    return fail(500, err.message);
+    try {
+      // EVERY row for this address, not the first. The old tier model let one
+      // person hold two rows (salaries and admin) and the migration leaves them
+      // in place, so removing one id would leave the other behind and the
+      // person still on the list — access that looks revoked and is not.
+      const rows = await db.query(perms.ACCESS_TABLE,
+        '?select=id&email=eq.' + encodeURIComponent(email));
+      for (const row of rows || []) await db.remove(perms.ACCESS_TABLE, row.id);
+    } catch (err) {
+      return fail(500, 'The access could not be revoked.', { detail: readableDbError(err) });
+    }
+    return { statusCode: 200, headers, body: JSON.stringify({
+      ok: true, list: list.filter(e => e !== email), removed: true,
+      self: email === caller }) };
   }
+
+  return fail(405, `Method ${method} is not supported here.`);
 };

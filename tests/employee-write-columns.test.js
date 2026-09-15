@@ -103,9 +103,9 @@ function sandbox() {
 const writesTo = (ctx, table) => ctx.__calls.filter(
   c => c.method !== 'GET' && c.url.includes('table=' + table));
 
-// The base tier — no grant row at all, which is what every employee holds and
-// therefore the only set these two writers may rely on.
-const BASE_WRITABLE = perms.employeeWriteColumns(new Set([perms.TIER_HOURLY_WAGES]));
+// Everything /api/data will write. One list since 2026-09-15 — the tiers
+// collapsed and everyone on the access list holds the same rights.
+const BASE_WRITABLE = perms.EMPLOYEE_WRITE_COLUMNS;
 
 // ---------------------------------------------------------------------------
 // the roster modal / profile card save
@@ -281,22 +281,30 @@ test('the profile card takes a wage and still refuses the salary', () => {
 // the reason the whole thing exists
 // ---------------------------------------------------------------------------
 
-test('wage is readable AND writable by everyone through /api/data', () => {
-  // The reversal. Phase D refused `wage` for every tier because BBSI overwrote
-  // it every morning and a value typed in the app would not have survived the
-  // night. The import stopped reading the file's rate on 2026-08-22, so
-  // employees.wage is the record of truth and somebody has to be able to set
-  // it. Base tier, deliberately: the people who correct a rate are supervisors.
-  const base = new Set([perms.TIER_HOURLY_WAGES]);
-  assert.ok(perms.employeeReadColumns(base).includes('wage'),
-    'hourly rates stay visible to every signed-in user');
-  assert.ok(perms.employeeWriteColumns(base).includes('wage'),
-    'and are now writable at the base tier, with no grant');
+test('both pay columns are readable AND writable through /api/data', () => {
+  // Two reversals, two years apart in reasoning and both recorded here.
+  //
+  // `wage` was refused for every tier because BBSI overwrote it every morning
+  // and a typed value would not have survived the night. The import stopped
+  // reading the file's rate on 2026-08-22, so employees.wage became the record
+  // of truth and somebody had to be able to set it.
+  //
+  // `annual_salary` was behind the salaries tier because sign-in was the whole
+  // sequoiafp.com domain. Access is an explicit list since 2026-09-15 and
+  // everyone on it holds the same rights, so the tier had nothing left to
+  // protect the column from.
+  for (const col of ['wage', 'annual_salary']) {
+    assert.ok(perms.EMPLOYEE_READ_COLUMNS.includes(col), `${col} is not readable`);
+    assert.ok(perms.EMPLOYEE_WRITE_COLUMNS.includes(col), `${col} is not writable`);
+  }
 
-  // The reversal is `wage` and nothing else. annual_salary moved in neither
-  // direction, which is the whole point of the two lists being separate.
-  assert.ok(!perms.employeeReadColumns(base).includes('annual_salary'));
-  assert.ok(!perms.employeeWriteColumns(base).includes('annual_salary'));
+  // The two lists are still SEPARATE, and that is not redundancy. Readable and
+  // writable are different questions, and conflating them is how `wage` once
+  // ended up writable by everyone while being carefully projected on the way
+  // out. Nothing should set these three through this endpoint.
+  for (const col of ['id', 'created_at', 'updated_at']) {
+    assert.ok(!perms.EMPLOYEE_WRITE_COLUMNS.includes(col), `${col} is writable`);
+  }
 });
 
 // ---------------------------------------------------------------------------

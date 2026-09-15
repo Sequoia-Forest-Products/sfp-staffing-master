@@ -22,21 +22,11 @@
 //
 // Shares one global scope with the other files in src/js (see core.js).
 
-async function addManager(){
-  const input=document.getElementById('newManagerEmail');
-  const email=input.value.trim();
-  if(!email){toast('Please enter a valid email','error');return;}
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('Invalid email format','error');return;}
-  if(state.emailSettings.managers.includes(email)){toast('This email is already added','warning');return;}
-  state.emailSettings.managers.push(email);
-  // The success toast is BEHIND the save, not beside it. This list is who
-  // receives a report carrying per-person dollars; "Manager added and saved"
-  // after a refusal is the worst sentence this page could produce.
-  if(!await saveEmailSettings()) return;
-  input.value='';
-  render();
-  toast('Manager added and saved','success');
-}
+// addManager / removeManager are gone, 2026-09-15. The recipient list merged
+// into the access list — see renderAccessSection in permissions.js, which is
+// now the only place either is edited. emailSettings.managers is still WRITTEN
+// to the settings row by nothing and READ by send-ot-email.js only as a fallback
+// for a week where the access list cannot be reached.
 
 // The clock-grace rate. Every hourly employee may clock in 7.5 minutes early and
 // out 7.5 minutes late, which accrues to half an hour a week; that time is
@@ -102,26 +92,17 @@ async function removeHoliday(date){
   toast(fmtDate(date)+' is no longer a holiday','success');
 }
 
-async function removeManager(idx){
-  state.emailSettings.managers.splice(idx,1);
-  if(!await saveEmailSettings()) return;
-  render();
-  toast('Manager removed','success');
-}
-
 // EVERY CONTROL BELOW IS ADMIN-ONLY, and the page does not offer the ones it
 // cannot save.
 //
-// /api/settings refuses a POST from anybody without the admin tier, above any
-// parsing or database access. That is the gate. This is the courtesy: a field
-// that looks live and 403s on save teaches people the app is broken, and a
-// checkbox that flips back is worse than one that never moved.
+// THE ADMIN TIER IS GONE, 2026-09-15, and with it this gate. Being signed in is
+// being on the access list, and everyone on that list holds the same rights.
 //
-// So a non-admin sees the same figures, rendered as text with a line saying who
-// can change them. The values are not hidden — they are on every report that
-// uses them, and hiding the settings that produce them would make those reports
-// less legible while protecting nothing.
-const canEditSettings = () => isPermAdmin();
+// Kept as a named function rather than deleted and inlined at a dozen call
+// sites: it is the sentence "may this person change this setting", the read-only
+// rendering below it is real code that works, and if a reason to say no ever
+// comes back this is the one line that has to change.
+const canEditSettings = () => true;
 
 // A read-only figure, styled to sit where its input would have been.
 const settingValue = (text) =>
@@ -262,30 +243,15 @@ function renderSettings(){
         </div>
 
         <div style="margin-top:24px">
-          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Manager Recipients</div>
-          ${editable?`
-          <div style="display:flex;gap:8px;margin-bottom:16px">
-            <input type="email" id="newManagerEmail" placeholder="manager@company.com" style="flex:1;font-family:var(--font);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:8px 12px">
-            <button class="btn btn-primary btn-sm" onclick="addManager()" style="padding:8px 16px">+ Add Manager</button>
-          </div>`:''}
-
-          ${state.emailSettings.managers.length > 0 ? `
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Email Address</th><th style="width:50px">${editable?'Action':''}</th></tr></thead>
-                <tbody>
-                  ${state.emailSettings.managers.map((email,i)=>`<tr>
-                    <td style="font-size:13px;padding:12px">${esc(email)}</td>
-                    <td style="text-align:center;padding:12px">${editable?`<button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted);padding:4px 8px;cursor:pointer" onclick="removeManager(${i})">Remove</button>`:'<span style="font-size:12px;color:var(--muted)">—</span>'}</td>
-                  </tr>`).join('')}
-                </tbody>
-              </table>
-            </div>
-          ` : `
-            <div style="font-size:13px;color:var(--muted);padding:16px;background:var(--surface2);border-radius:4px;text-align:center">
-              ${editable?'No managers configured yet. Add email addresses above to receive OT reports.':'Nobody is on the recipient list, so the weekly report is not being emailed to anyone.'}
-            </div>
-          `}
+          <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Report Recipients</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">
+            <b>Everyone on the access list receives the Monday OT email.</b> There is no separate
+            recipient list to keep in step — there were two, and the live data had
+            <span style="font-family:var(--mono,monospace)">jeffrey.cook@</span> holding a permission
+            and <span style="font-family:var(--mono,monospace)">jefrey.cook@</span> on the recipient
+            list, one letter apart, with nothing in the app able to notice they were not the same
+            person. Add or remove people under <b>Access</b> above; that is the whole list.
+          </div>
         </div>
       </div>
     </div>

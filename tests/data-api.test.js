@@ -75,7 +75,12 @@ const get = (table, extra = {}) => data.handler({
 // The projection
 // ============================================================
 
-test('the employees read names its columns, and annual_salary is not one of them', async () => {
+test('the employees read NAMES its columns', async () => {
+  // annual_salary IS asked for now — the tiers collapsed into one access list
+  // on 2026-09-15 and everyone signed in sees it. What survives, and is the
+  // point of this test, is that the select names its columns at all: without
+  // one PostgREST returns every column, and a column added to the table would
+  // reach every browser the moment it was created.
   const urls = stubFetch([]);
   const res = await get('employees');
 
@@ -84,7 +89,7 @@ test('the employees read names its columns, and annual_salary is not one of them
 
   const url = urls[0];
   assert.match(url, /employees\?select=/, 'no projection means PostgREST returns every column');
-  assert.ok(!/annual_salary/.test(url), `annual_salary must not be requested: ${url}`);
+  assert.match(url, /\bannual_salary\b/, 'the salary is part of the one list now');
 
   // The columns the frontend actually maps, so a projection that is too narrow
   // fails here rather than silently blanking a field in the app.
@@ -99,15 +104,19 @@ test('the employees read names its columns, and annual_salary is not one of them
   }
 });
 
-test('annual_salary never reaches the response body, even if the database returns it', async () => {
-  // Belt and braces: if the row somehow carries the column, assert on what the
-  // caller actually receives rather than only on what was requested.
-  stubFetch([{ id: '1', name: 'A B', wage: '24.50', annual_salary: 104000 }]);
+test('a column outside the list never reaches the response, even if the database returns it', async () => {
+  // Belt and braces, and it outlived the tiers because it was never about them:
+  // the select above is a single string in a single place, and picking the
+  // response apart against the same list makes the guarantee structural rather
+  // than dependent on the request staying correct.
+  stubFetch([{ id: '1', name: 'A B', wage: '24.50', annual_salary: 104000,
+               some_future_column: 'do not ship this' }]);
   const res = await get('employees');
   const body = res.body;
 
-  assert.ok(!/annual_salary/.test(body), 'annual_salary key is in the response');
-  assert.ok(!/104000/.test(body), 'the salary VALUE is in the response');
+  assert.ok(!/some_future_column/.test(body), 'an ungoverned key is in the response');
+  assert.ok(!/do not ship this/.test(body), 'its VALUE is in the response');
+  assert.match(body, /104000/, 'and the salary, which IS on the list, survived');
 });
 
 // The roster still renders an hourly rate per person, on the Employees tab. That
@@ -163,7 +172,7 @@ test('a database without the Phase B columns keeps the v2 classification', async
   assert.ok(!/address_street/.test(landed), 'the rung that lands drops the address columns');
   assert.ok(/pay_type/.test(landed), 'but KEEPS pay_type — this is the whole point of the middle rung');
   assert.ok(/cost_class/.test(landed) && /position_group/.test(landed), 'and the other two axes');
-  assert.ok(!/annual_salary/.test(landed), 'and still never asks for annual_salary');
+  assert.ok(/annual_salary/.test(landed), 'and keeps annual_salary, which is a v2 column not a Phase B one');
 });
 
 test('a database without the v2 columns falls all the way back rather than taking the app down', async () => {

@@ -72,7 +72,10 @@ function reportFixture(overrides = {}) {
   };
 }
 
-function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
+// `tiers` is gone — one access list since 2026-09-15, and everyone on it sees
+// every view and every figure. The parameter is not replaced by an equivalent:
+// there is nothing left for a caller of this sandbox to vary.
+function sandbox({ costBody } = {}) {
   const calls = { fetches: [] };
   const ctx = {
     console,
@@ -94,8 +97,8 @@ function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
       calls.fetches.push({ url: String(url), opts });
       if (String(url).startsWith('/api/permissions')) {
         return { ok: true, status: 200, json: async () => ({
-          ok: true, email: 'me@sequoiafp.com', tiers,
-          isAdmin: tiers.includes('admin'), grants: null }) };
+          ok: true, caller: 'me@sequoiafp.com',
+          list: ['me@sequoiafp.com'], hasAccess: true }) };
       }
       if (String(url).startsWith('/api/cost-report')) {
         const body = costBody || {
@@ -109,8 +112,10 @@ function sandbox({ costBody, tiers = ['hourly_wages'] } = {}) {
           // Mirrors what the endpoint reports: the floor it actually applied.
           // The money in `report` is nulled or not by the SERVER; this only
           // says which happened.
-          disclosure: { minBucketHeadcount: tiers.includes('salaries') ? 1 : 3,
-                        suppressionLifted: tiers.includes('salaries'), tiers }
+          // Mirrors the endpoint since suppression stopped being tiered: the
+          // floor is 1 for everybody. A test that wants a suppressed bucket
+          // passes its own costBody.
+          disclosure: { minBucketHeadcount: 1, suppressionLifted: true }
         };
         return { ok: true, status: 200, json: async () => body };
       }
@@ -200,7 +205,11 @@ test('the one gated tab ships HIDDEN, and the ungated ones do not', () => {
 
 test('opening Manufacturing Costs loads the Manufacturing cost class, once', async () => {
   const ctx = sandbox();
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
 
   const costCalls = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/cost-report'));
@@ -208,7 +217,11 @@ test('opening Manufacturing Costs loads the Manufacturing cost class, once', asy
   assert.match(costCalls[0].url, /class=Manufacturing/);
 
   // Re-opening the tab does not re-fetch; Refresh is how a reader asks again.
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
   assert.strictEqual(ctx.__calls.fetches.filter(f => f.url.startsWith('/api/cost-report')).length, 1);
 });
@@ -218,7 +231,11 @@ test('burden and MBF/hr go to the server, because the browser cannot apply them'
   const ctx = sandbox();
   ctx.state.burden = 0.44;
   ctx.state.mhr = 15;
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
 
   const url = ctx.__calls.fetches.find(f => f.url.startsWith('/api/cost-report')).url;
@@ -229,7 +246,11 @@ test('burden and MBF/hr go to the server, because the browser cannot apply them'
 
 test('changing burden re-asks the server rather than recomputing locally', async () => {
   const ctx = sandbox();
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
   const before = ctx.__calls.fetches.filter(f => f.url.startsWith('/api/cost-report')).length;
 
@@ -247,7 +268,11 @@ test('a per-class view holds only the class it asked about', async () => {
   // Overhead tab went; the key is what made that safe and is kept for the same
   // reason a fourth class would need it.
   const ctx = sandbox();
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
   assert.ok(ctx.state.cost.Manufacturing);
   assert.deepStrictEqual(Object.keys(ctx.state.cost), ['Manufacturing'],
@@ -259,7 +284,11 @@ test('a per-class view holds only the class it asked about', async () => {
 // ---------------------------------------------------------------------------
 
 async function renderedCosts(ctx) {
+  // Department & Group explicitly. Manufacturing Costs now OPENS on Staffing
+  // Economics — that view was behind the salaries tier until 2026-09-15, so the
+  // tab used to land here for a base-tier reader and these tests relied on it.
   ctx.switchTab('costs', null);
+  ctx.switchCostsView('deptgroup');
   await new Promise(r => setImmediate(r));
   return ctx.renderCosts();
 }

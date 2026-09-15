@@ -1,18 +1,23 @@
-// Phase D — the permission gate.
+// The projection, and what /api/data will and will not write.
 //
-// Written before the pages that consume it, because the hard part is not
-// showing a salary, it is that the figure never reaches a browser that should
-// not have it.
+// THE TIERS ARE GONE, 2026-09-15. Phase D built three of them to hold
+// annual_salary back from a company-wide sign-in; access is an explicit list
+// now and everyone on it sees everything, so there is no tier left to test.
+// What survives is the half of Phase D that was never about tiers:
+//
+//   THE PROJECTION. /api/data still names its columns, in the query and again
+//   on the way out, so a column added to `employees` reaches nobody until
+//   somebody edits permissions-lib.js. That was the right default when it
+//   protected pay from the company and it is still right now that it protects
+//   the app from a column added without thinking.
+//
+//   THE WRITE GATE. It still REFUSES rather than silently dropping, because a
+//   200 for a write that discarded half the body reports success for something
+//   that did not happen.
 //
 // EVERY TEST HERE ASSERTS AGAINST A REAL RESPONSE, not against a template's
-// intent. The distinction is the whole point: Phase C's suppression work found
-// a live leak precisely because a test checked rendered output instead of the
-// payload, and Phase B's projection exists because a tab that declines to
-// render a figure still ships it.
-//
-// The negative case is the one that matters. "A user with the tier sees the
-// salary" failing is an inconvenience; "a user without it does not" failing is
-// the thing this phase exists to prevent.
+// intent. Phase C's suppression work found a live leak precisely because a test
+// checked rendered output instead of the payload.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -25,9 +30,7 @@ process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 const perms = require('../netlify/functions/permissions-lib');
 const data = require('../netlify/functions/data');
 
-const {
-  TIER_HOURLY_WAGES, TIER_SALARIES, TIER_ADMIN, GRANTABLE_TIERS
-} = perms;
+const { EMPLOYEE_READ_COLUMNS, EMPLOYEE_WRITE_COLUMNS } = perms;
 
 // ---------------------------------------------------------------------------
 // harness
@@ -118,97 +121,48 @@ const SALARIED_ROW = {
 };
 
 // ---------------------------------------------------------------------------
-// THE negative case, on a real response
+// the projection, on a real response
 // ---------------------------------------------------------------------------
 
-test('a user without the salaries tier gets a payload with annual_salary ABSENT', async () => {
+test('everybody signed in gets annual_salary — one list, no tiers', async () => {
+  // The reversal. Until 2026-09-15 this column was absent unless the caller
+  // held the salaries tier. Access is an explicit list now: being signed in
+  // means somebody put you on it, and everyone on it sees the same columns.
   stub({ grants: [] });
-  const res = await get('nobody@sequoiafp.com');
+  const res = await get('anybody@sequoiafp.com');
   assert.strictEqual(res.statusCode, 200);
-
-  const row = JSON.parse(res.body).data[0];
-  // Absent, not null, not empty string. `in` rather than a truthiness check:
-  // a present key holding null is still a key that says the column exists.
-  assert.ok(!('annual_salary' in row), 'the key is present in the payload');
-  // And nothing that looks like the figure survived anywhere in the bytes.
-  assert.ok(!res.body.includes('250000'), 'the salary value is in the response');
-  assert.ok(!res.body.includes('annual_salary'), 'the column name is in the response');
+  assert.strictEqual(JSON.parse(res.body).data[0].annual_salary, 250000);
 });
 
-test('the column is never even ASKED FOR without the tier', async () => {
-  // Filtering the answer is not enough on its own. The select= must not name
-  // the column, so it does not travel from the database to the function either
-  // — which is what makes a later mistake in the response filter survivable.
+test('the select NAMES its columns, and nothing outside the list is asked for', async () => {
+  // The projection is not about tiers and never only was. A select that names
+  // its columns is how a column added to `employees` reaches nobody until
+  // somebody edits permissions-lib.js — the deny-by-default that survived the
+  // collapse.
   const calls = stub({ grants: [] });
-  await get('nobody@sequoiafp.com');
+  await get('anybody@sequoiafp.com');
   const q = calls.find(c => c.url.includes('employees') && c.url.includes('select='));
   assert.ok(q, 'no employees query was made');
-  assert.ok(!q.url.includes('annual_salary'), `select named the column: ${q.url}`);
+
+  const asked = /select=([^&]+)/.exec(q.url)[1].split(',');
+  assert.ok(asked.includes('annual_salary'));
+  for (const col of asked) {
+    assert.ok(EMPLOYEE_READ_COLUMNS.includes(col), `select asked for an ungoverned column: ${col}`);
+  }
 });
 
-test('a user WITH the salaries tier gets it', async () => {
-  stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)] });
-  const row = JSON.parse((await get('ryley@sequoiafp.com')).body).data[0];
-  assert.strictEqual(row.annual_salary, 250000);
+test('a column the list does not name never reaches the browser', async () => {
+  // The second layer. The select above is a single string in a single place;
+  // picking the response apart against the same list makes the guarantee
+  // structural rather than dependent on the request staying correct.
+  stub({ grants: [], employee: { ...EMPLOYEE_ROW, secret_note: 'do not ship this' } });
+  const res = await get('anybody@sequoiafp.com');
+  assert.ok(!res.body.includes('secret_note'));
+  assert.ok(!res.body.includes('do not ship this'));
 });
 
-test('the grant matches regardless of how the email was capitalised', async () => {
-  // A grant typed by hand on the admin page will not be canonical, and one that
-  // fails to match on a capital letter is a grant that looks made and is not.
-  stub({ grants: [grant('  Ryley@SequoiaFP.com ', TIER_SALARIES)] });
-  const row = JSON.parse((await get('ryley@sequoiafp.com')).body).data[0];
-  assert.strictEqual(row.annual_salary, 250000);
-});
-
-test('one person\'s grant does not leak to anybody else', async () => {
-  stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)] });
-  const row = JSON.parse((await get('someone.else@sequoiafp.com')).body).data[0];
-  assert.ok(!('annual_salary' in row));
-});
-
-test('the admin tier does not by itself unlock compensation', async () => {
-  // Admin grants access; it does not read pay. Conflating the two would make
-  // every future administrator a salary reader by side effect.
-  stub({ grants: [grant('admin@sequoiafp.com', TIER_ADMIN)] });
-  const row = JSON.parse((await get('admin@sequoiafp.com')).body).data[0];
-  assert.ok(!('annual_salary' in row));
-});
-
-// ---------------------------------------------------------------------------
-// fail closed
-// ---------------------------------------------------------------------------
-
-test('a permissions table that does not exist yet leaves everybody on the base tier', async () => {
-  // Lets the code deploy before the migration. In that window annual_salary is
-  // hidden from everyone, which is exactly the pre-Phase-D behaviour.
-  stub({ grants: [], permsFail: { status: 404, message: 'PGRST205 could not find the table' } });
-  const res = await get('ryley@sequoiafp.com');
-  assert.strictEqual(res.statusCode, 200);
-  assert.ok(!('annual_salary' in JSON.parse(res.body).data[0]));
-});
-
-test('a permissions read that ERRORS denies rather than grants', async () => {
-  // A database that cannot be reached must not be an open door. It costs an
-  // admin their admin until it recovers; that is the correct trade, and is why
-  // the migration documents a plain-SQL recovery path.
-  stub({ grants: [], permsFail: { status: 500, message: 'connection refused' } });
-  const res = await get('ryley@sequoiafp.com');
-  assert.strictEqual(res.statusCode, 200, 'the roster still loads');
-  assert.ok(!('annual_salary' in JSON.parse(res.body).data[0]));
-});
-
-test('an unrecognised tier in the table grants nothing and does not throw', async () => {
-  stub({ grants: [grant('x@sequoiafp.com', 'salarys'), grant('x@sequoiafp.com', 'SALARIES ')] });
-  const row = JSON.parse((await get('x@sequoiafp.com')).body).data[0];
-  // 'SALARIES ' normalises and IS honoured; 'salarys' is a typo and is not.
-  assert.strictEqual(row.annual_salary, 250000);
-
-  stub({ grants: [grant('y@sequoiafp.com', 'salarys'), grant('y@sequoiafp.com', 'superuser')] });
-  assert.ok(!('annual_salary' in JSON.parse((await get('y@sequoiafp.com')).body).data[0]));
-});
-
-test('a session with no email gets the base tier, not a crash', async () => {
-  stub({ grants: [grant('', TIER_SALARIES)] });
+test('a session with no email still gets a projected payload, not a crash', async () => {
+  stub({ grants: [] });
   const b64 = Buffer.from(JSON.stringify({ exp: Date.now() + 3600000 })).toString('base64url');
   const sig = createHmac('sha256', process.env.SESSION_SECRET).update(b64).digest('base64url');
   const res = await data.handler({
@@ -216,24 +170,33 @@ test('a session with no email gets the base tier, not a crash', async () => {
     queryStringParameters: { table: 'employees' }
   });
   assert.strictEqual(res.statusCode, 200);
-  assert.ok(!('annual_salary' in JSON.parse(res.body).data[0]));
+});
+
+test('the roster no longer costs a permissions read at all', async () => {
+  // The tiers were resolved per request, against user_permissions, before every
+  // roster load. Access is checked once at SIGN-IN now — see auth.js — so this
+  // endpoint has nothing left to look up, and a permissions table that is down
+  // cannot take the roster with it.
+  const calls = stub({ grants: [] });
+  const res = await get('anybody@sequoiafp.com');
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(calls.filter(c => c.url.includes('user_permissions')).length, 0);
 });
 
 // ---------------------------------------------------------------------------
 // THE WRITE GATE — the direction that was completely open
 // ---------------------------------------------------------------------------
 
-test('a user without the tier cannot WRITE annual_salary, and nothing reaches the database', async () => {
-  // Before Phase D this returned 200 and forwarded the column straight to
-  // PostgREST. The read gate was the only gate, so any signed-in account could
-  // set anybody's salary — a column it could not itself read back.
-  const calls = stub({ grants: [] });
-  const res = await patch('nobody@sequoiafp.com', { name: 'Legit', annual_salary: 999999 });
+test('anybody signed in can write annual_salary — one list, no tiers', async () => {
+  // The reversal, on the write side. It is the accepted cost of the collapse:
+  // Eduardo's salary is held and everyone on the access list can now change it.
+  const calls = stub({ grants: [], employee: SALARIED_ROW });
+  const res = await patch('anybody@sequoiafp.com', { annual_salary: 110000 }, 'm1');
 
-  assert.strictEqual(res.statusCode, 403);
-  assert.match(JSON.parse(res.body).error, /Not permitted to write: annual_salary/);
-  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0,
-    'a write reached the database despite the refusal');
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const writes = calls.filter(c => c.method === 'PATCH');
+  assert.strictEqual(writes.length, 1);
+  assert.deepStrictEqual(writes[0].body, { annual_salary: 110000 });
 });
 
 test('anybody can write `wage`, with no grant at all', async () => {
@@ -335,31 +298,23 @@ test('a wage that cannot be recorded is refused, and nothing is written', async 
   }
 });
 
-test('`wage` being writable did not open `annual_salary` alongside it', async () => {
-  // The two live in the same body on the same page. A base-tier account sending
-  // both must have the salary refused and — because a refusal is a refusal —
-  // the wage not written either.
-  const calls = stub({ grants: [] });
-  const res = await patch('nobody@sequoiafp.com', { wage: '99.00', annual_salary: 250000 });
-
-  assert.strictEqual(res.statusCode, 403);
-  assert.match(JSON.parse(res.body).error, /Not permitted to write: annual_salary/);
-  assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
-});
-
 test('a refusal is a REFUSAL, not a silent drop of the offending column', async () => {
   // Returning 200 having discarded half the body reports success for a write
-  // that did not happen. The permitted half must not be written either.
+  // that did not happen. The permitted half must not be written either. This
+  // outlived the tiers because it was never about them: the question "is this
+  // column writable through this endpoint at all" still has a real answer, and
+  // it is not "any column PostgREST will accept".
   const calls = stub({ grants: [] });
-  const res = await patch('nobody@sequoiafp.com', { name: 'Changed', annual_salary: 1 });
+  const res = await patch('anybody@sequoiafp.com', { name: 'Changed', created_at: 'now' });
   assert.strictEqual(res.statusCode, 403);
+  assert.match(JSON.parse(res.body).error, /Not permitted to write: created_at/);
   assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0,
     'the permitted columns were written while the request was refused');
 });
 
-test('a user WITH the tier can write annual_salary, and only that column goes', async () => {
-  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)], employee: SALARIED_ROW });
-  const res = await patch('ryley@sequoiafp.com', { annual_salary: 260000, name: 'Eduardo Rivera' }, 'm1');
+test('annual_salary and name go together in one write', async () => {
+  const calls = stub({ grants: [], employee: SALARIED_ROW });
+  const res = await patch('anybody@sequoiafp.com', { annual_salary: 260000, name: 'Eduardo Rivera' }, 'm1');
   assert.strictEqual(res.statusCode, 200, res.body);
 
   const write = calls.find(c => c.method === 'PATCH');
@@ -374,9 +329,12 @@ test('a user WITH the tier can write annual_salary, and only that column goes', 
 // column applies to this PERSON at all. Holding the grant does not create a
 // salary for somebody the app does not cost.
 
-test('the salaries tier cannot set a salary on somebody outside Manufacturing', async () => {
-  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)] });   // EMPLOYEE_ROW is SG&A
-  const res = await patch('ryley@sequoiafp.com', { annual_salary: 260000 });
+test('nobody can set a salary on somebody outside Manufacturing', async () => {
+  // pay-scope-lib, not a permission. The tiers decided WHO could write the
+  // column; this decides whether the column applies to this PERSON at all, and
+  // it survived the collapse untouched because it was never the same question.
+  const calls = stub({ grants: [] });   // EMPLOYEE_ROW is SG&A
+  const res = await patch('anybody@sequoiafp.com', { annual_salary: 260000 });
 
   assert.strictEqual(res.statusCode, 409);
   assert.match(JSON.parse(res.body).error, /SG&A/);
@@ -438,10 +396,10 @@ test('an hourly SG&A employee may have their rate set', async () => {
 });
 
 test('opening the wage for SG&A did NOT open annual_salary alongside it', async () => {
-  // The half of the 2026-09-14 decision that stands. A salaries-tier holder is
-  // permitted to write the column and still cannot put one on this person.
-  const calls = stub({ grants: [grant('ryley@sequoiafp.com', TIER_SALARIES)], employee: SGA_HOURLY });
-  const res = await patch('ryley@sequoiafp.com', { annual_salary: 120000 }, 'a1');
+  // The half of the 2026-09-14 decision that stands. Everyone may write the
+  // column now and still cannot put one on this person.
+  const calls = stub({ grants: [], employee: SGA_HOURLY });
+  const res = await patch('anybody@sequoiafp.com', { annual_salary: 120000 }, 'a1');
 
   assert.strictEqual(res.statusCode, 409, res.body);
   assert.match(JSON.parse(res.body).error, /SG&A/);
@@ -535,23 +493,37 @@ test('an ordinary profile save is unaffected', async () => {
 });
 
 test('POST is gated the same way as PATCH', async () => {
-  // A new employee created with a salary would be the same hole through a
-  // different verb.
+  // A column nobody lists is not writable through a different verb either.
   const calls = stub({ grants: [] });
   const res = await data.handler({
-    httpMethod: 'POST', headers: { cookie: cookie('nobody@sequoiafp.com') },
+    httpMethod: 'POST', headers: { cookie: cookie('anybody@sequoiafp.com') },
+    queryStringParameters: { table: 'employees' },
+    body: JSON.stringify({ name: 'New Hire', some_future_column: 'x' })
+  });
+  assert.strictEqual(res.statusCode, 403);
+  assert.strictEqual(calls.filter(c => c.method === 'POST').length, 0);
+});
+
+test('a new hire created with a salary is scoped by cost class, not by a tier', async () => {
+  // The other half of the POST path. Unclassified carries no pay, so this is
+  // refused for everybody — and it is a 409 about the row, not a 403 about the
+  // caller.
+  const calls = stub({ grants: [] });
+  const res = await data.handler({
+    httpMethod: 'POST', headers: { cookie: cookie('anybody@sequoiafp.com') },
     queryStringParameters: { table: 'employees' },
     body: JSON.stringify({ name: 'New Hire', annual_salary: 500000 })
   });
-  assert.strictEqual(res.statusCode, 403);
+  assert.strictEqual(res.statusCode, 409);
+  assert.match(JSON.parse(res.body).error, /cost class/i);
   assert.strictEqual(calls.filter(c => c.method === 'POST').length, 0);
 });
 
 test('a column nobody has heard of is refused rather than forwarded', async () => {
   // Deny by default, applied to writes. A column added to the table is not
   // writable through this endpoint until somebody lists it.
-  const calls = stub({ grants: [grant('r@sequoiafp.com', TIER_SALARIES)] });
-  const res = await patch('r@sequoiafp.com', { some_future_column: 'x' });
+  const calls = stub({ grants: [] });
+  const res = await patch('anybody@sequoiafp.com', { some_future_column: 'x' });
   assert.strictEqual(res.statusCode, 403);
   assert.strictEqual(calls.filter(c => c.method === 'PATCH').length, 0);
 });
@@ -573,32 +545,46 @@ test('tables that hold no pay are not column-gated', async () => {
 // the registry itself
 // ---------------------------------------------------------------------------
 
-test('read and write lists cannot drift apart on a gated column', async () => {
-  // The asymmetry this phase was built to fix: annual_salary was carefully kept
-  // out of the read projection while being freely writable. Any column gated in
-  // one direction must be gated in the other.
-  for (const col of perms.gatedColumns()) {
-    const base = perms.resolveTiers('x@y.com', []);
-    assert.ok(!perms.employeeReadColumns(base).includes(col),
-      `${col} is gated for writing but readable by the base tier`);
-    assert.ok(!perms.employeeWriteColumns(base).includes(col),
-      `${col} is gated for reading but writable by the base tier`);
+test('every writable column is also readable', async () => {
+  // The asymmetry Phase D was built to fix: annual_salary was carefully kept
+  // out of the read projection while being freely writable. The tiers are gone
+  // but the shape of that failure is not — a column somebody can set and then
+  // cannot see is a value nobody can check.
+  for (const col of EMPLOYEE_WRITE_COLUMNS) {
+    assert.ok(EMPLOYEE_READ_COLUMNS.includes(col),
+      `${col} can be written and never read back`);
   }
 });
 
-test('the base tier is implicit and is never a stored grant', async () => {
-  // Storing it would invite the reading that a missing row means no access at
-  // all, when it means exactly the base.
-  assert.ok(!GRANTABLE_TIERS.includes(TIER_HOURLY_WAGES));
-  assert.deepStrictEqual(Array.from(GRANTABLE_TIERS), [TIER_SALARIES, TIER_ADMIN]);
-  assert.ok(perms.resolveTiers('x@y.com', []).has(TIER_HOURLY_WAGES));
+test('both pay columns are in both lists, which is the whole collapse', async () => {
+  for (const col of ['wage', 'annual_salary']) {
+    assert.ok(EMPLOYEE_READ_COLUMNS.includes(col), `${col} is not readable`);
+    assert.ok(EMPLOYEE_WRITE_COLUMNS.includes(col), `${col} is not writable`);
+  }
 });
 
-test('hourly wages are the base tier by decision, and that is pinned', async () => {
-  // `wage` being readable by everyone is a state Peter accepted, not an
-  // oversight. Pinned so that changing it is deliberate.
-  const base = perms.resolveTiers('x@y.com', []);
-  assert.ok(perms.employeeReadColumns(base).includes('wage'));
+test('the columns nothing should set through this endpoint are absent from the write list', async () => {
+  for (const col of ['id', 'created_at', 'updated_at']) {
+    assert.ok(!EMPLOYEE_WRITE_COLUMNS.includes(col), `${col} is writable through /api/data`);
+  }
+});
+
+test('the access list is resolved case-insensitively and deduplicated', async () => {
+  // An entry that fails to match because of a capital letter is access that
+  // looks granted and is not, and nothing would ever report it. Peter holds two
+  // rows from the tier model; he is one person.
+  const rows = [
+    { email: '  Peter.Stroble@SequoiaFP.com ' },
+    { email: 'peter.stroble@sequoiafp.com' },
+    { email: 'ryley.stanley@sequoiafp.com' },
+    { email: '' },
+    { email: null }
+  ];
+  assert.deepStrictEqual(perms.resolveAccessList(rows),
+    ['peter.stroble@sequoiafp.com', 'ryley.stanley@sequoiafp.com']);
+  assert.strictEqual(perms.hasAccess('PETER.STROBLE@sequoiafp.com', rows), true);
+  assert.strictEqual(perms.hasAccess('nobody@sequoiafp.com', rows), false);
+  assert.strictEqual(perms.hasAccess('', rows), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -610,8 +596,7 @@ test('PUT is refused on employees, and replaceAll never runs', async () => {
   // is the wrong instrument against that: refusing annual_salary in the payload
   // still leaves a request that drops every employee row and rebuilds the
   // roster from whatever the browser was holding. So the method is closed.
-  const calls = stub({ grants: [grant('admin@sequoiafp.com', TIER_ADMIN),
-                               grant('admin@sequoiafp.com', TIER_SALARIES)] });
+  const calls = stub({ grants: [] });
   const res = await data.handler({
     httpMethod: 'PUT', headers: { cookie: cookie('admin@sequoiafp.com') },
     queryStringParameters: { table: 'employees' },
@@ -679,23 +664,17 @@ test('a missing hire_date costs hire_date and nothing else, and says so out loud
 // ---------------------------------------------------------------------------
 // the bootstrap seed, read out of the migration itself
 // ---------------------------------------------------------------------------
+// the migration's seed, checked against the resolver that will read it
+// ---------------------------------------------------------------------------
 
-test('the seeded grants resolve to the tiers they were written for', () => {
-  // Parsed from SCHEMA_PHASE_D_PERMISSIONS.sql rather than restated here. A
-  // seed and a test that agree because somebody typed them both the same way
-  // agree about nothing; this fails if the migration is edited and the intent
-  // is not.
-  //
-  // The near-miss this guards against is real and already happened once, in
-  // the good direction: the pattern two of these three follow gives
-  // jeff.cook@, and Jeff's actual address is jeffrey.cook@. §0c of the
-  // migration caught it before the insert was written. A wrong address inserts
-  // cleanly, grants nothing, and is never reported by anything — so the seed is
-  // worth pinning.
+test('the access-list seed is the UNION of both old lists, and resolves', () => {
+  // Taking either list alone would silently drop people: the grant list alone
+  // unsubscribes four managers from the weekly report, and the recipient list
+  // alone locks Ryley out of the app.
   const fs = require('node:fs');
   const path = require('node:path');
   const sql = fs.readFileSync(
-    path.join(__dirname, '..', 'SCHEMA_PHASE_D_PERMISSIONS.sql'), 'utf8');
+    path.join(__dirname, '..', 'SCHEMA_ACCESS_LIST.sql'), 'utf8');
 
   const block = /insert into user_permissions[^;]*?values([\s\S]*?)on conflict/i.exec(sql);
   assert.ok(block, 'the seed insert is still in the migration');
@@ -704,29 +683,63 @@ test('the seeded grants resolve to the tiers they were written for', () => {
   for (const m of block[1].matchAll(/\(\s*'([^']+)'\s*,\s*'([^']+)'/g)) {
     rows.push({ email: m[1], tier: m[2] });
   }
-  assert.strictEqual(rows.length, 5, 'five grants across three people');
 
-  const tiersOf = (email) => Array.from(perms.resolveTiers(email, rows)).sort();
+  const list = perms.resolveAccessList(rows);
+  assert.deepStrictEqual(list, [
+    'cyle.coburn@sequoiafp.com',
+    'eduardo.rivera@sequoiafp.com',
+    'jeffrey.cook@sequoiafp.com',
+    'peter.stroble@sequoiafp.com',
+    'ryley.stanley@sequoiafp.com',
+    'tony.griffith@sequoiafp.com',
+    'travis.vance@sequoiafp.com'
+  ]);
 
-  assert.deepStrictEqual(tiersOf('peter.stroble@sequoiafp.com'),
-    ['admin', 'hourly_wages', 'salaries']);
-  assert.deepStrictEqual(tiersOf('ryley.stanley@sequoiafp.com'),
-    ['admin', 'hourly_wages', 'salaries']);
-  assert.deepStrictEqual(tiersOf('jeffrey.cook@sequoiafp.com'),
-    ['hourly_wages', 'salaries'], 'Jeff gets salaries and NOT admin');
+  // Everyone who held a grant.
+  for (const email of ['peter.stroble@sequoiafp.com', 'ryley.stanley@sequoiafp.com',
+                       'jeffrey.cook@sequoiafp.com']) {
+    assert.ok(perms.hasAccess(email, rows), `${email} held a grant and lost access`);
+  }
+  // Everyone who was receiving the weekly report.
+  for (const email of ['tony.griffith@sequoiafp.com', 'travis.vance@sequoiafp.com',
+                       'cyle.coburn@sequoiafp.com', 'eduardo.rivera@sequoiafp.com']) {
+    assert.ok(perms.hasAccess(email, rows), `${email} was a recipient and lost the email`);
+  }
 
-  // The guess, kept as a live assertion rather than a comment: it must resolve
-  // to the base tier and nothing more.
-  assert.deepStrictEqual(tiersOf('jeff.cook@sequoiafp.com'), ['hourly_wages']);
-  assert.deepStrictEqual(tiersOf('someone.else@sequoiafp.com'), ['hourly_wages']);
+  // THE TYPO IS NOT SEEDED, and that is a decision rather than an omission.
+  // The recipient list carried jefrey.cook@ with one f while user_permissions
+  // carried jeffrey.cook@ with two — one person under two spellings, and
+  // nothing in the app could ever have noticed. Seeding both would put them on
+  // the list twice, one of those under an address that may not receive mail.
+  assert.ok(!perms.hasAccess('jefrey.cook@sequoiafp.com', rows),
+    'the one-f spelling was seeded; it should be added by hand if it is the right one');
 
-  // Every seeded row satisfies the constraints the migration puts on the column,
-  // so the file cannot be edited into an insert the database would reject.
+  assert.ok(!perms.hasAccess('someone.else@sequoiafp.com', rows));
+
+  // Every seeded row satisfies the constraints the table puts on the column.
   for (const r of rows) {
     assert.strictEqual(r.email, r.email.trim().toLowerCase(),
       `${r.email} violates user_permissions_email_canonical`);
     assert.match(r.email, /.@./, `${r.email} violates user_permissions_email_shape`);
-    assert.ok(GRANTABLE_TIERS.includes(r.tier),
+    assert.ok(['access', 'salaries', 'admin'].includes(r.tier),
       `${r.tier} violates user_permissions_tier_check`);
   }
+});
+
+test('the migration widens the tier CHECK before it seeds', () => {
+  // The seed writes tier='access', which the Phase D constraint rejects. The
+  // order in the file is load-bearing: §2 before §3.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const sql = fs.readFileSync(
+    path.join(__dirname, '..', 'SCHEMA_ACCESS_LIST.sql'), 'utf8');
+
+  const widen = sql.indexOf("check (tier in ('access'");
+  const seed  = sql.search(/insert into user_permissions/i);
+  assert.ok(widen > -1, 'the CHECK is not widened');
+  assert.ok(widen < seed, 'the seed runs before the constraint accepts it');
+
+  // And the last-admin trigger goes with the tier it guarded.
+  assert.match(sql, /drop trigger if exists user_permissions_keep_an_admin on/);
+  assert.match(sql, /drop trigger if exists user_permissions_keep_an_admin_truncate on/);
 });
