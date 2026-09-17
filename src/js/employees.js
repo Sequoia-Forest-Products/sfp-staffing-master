@@ -505,9 +505,107 @@ function needsDriveLookup(e){
 function driveLinkBlock(e){
   if(e.driveFolderId){
     const url='https://drive.google.com/drive/folders/'+encodeURIComponent(e.driveFolderId);
-    return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">Open HR file in Drive</a>`;
+    return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none">Open HR file in Drive</a>
+      <button type="button" onclick="showDriveAttachInput('${jsStr(e.name||'')}','${jsStr(e.id||'')}')" style="background:none;border:none;padding:0;margin-left:10px;font:inherit;font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer">Wrong folder?</button>`;
   }
-  return '<span style="color:var(--muted)">No folder yet — one is created for a new employee automatically, or on the first upload in Drive.</span>';
+  return driveAttachBlock(e.name, e.id, null);
+}
+
+// What the card shows when no folder is on file — and the way out of it.
+//
+// It used to say a folder "is created for a new employee automatically". It is
+// not, and was not: the only automatic step is a LOOKUP BY NAME, and a read
+// stopped creating anything on 2026-09-15. HR read that sentence, created the
+// folders by hand in Drive, and waited a day for a pairing that was never
+// coming. So this says what is true and offers the two things that resolve it.
+//
+// NO INPUT IS RENDERED HERE. Read mode on this card renders no inputs at all
+// and carries exactly one primary button, which is Edit — a paste box sitting
+// in it would read as another thing to fill in. The box is injected by
+// showDriveAttachInput() when somebody asks for it.
+function driveAttachBlock(name, id, reason){
+  const why = reason ||
+    ('No folder yet. The app looks for one named exactly "' + (name||'') + '" inside Employee Files.');
+  const head = `<div style="font-size:12px;color:var(--muted);line-height:1.5">${esc(why)}</div>`;
+  if(!id) return head;
+  return head + `
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn btn-outline btn-sm" type="button" onclick="retryDriveLookup('${jsStr(name||'')}','${jsStr(id)}')">Look again</button>
+      <button class="btn btn-outline btn-sm" type="button" onclick="showDriveAttachInput('${jsStr(name||'')}','${jsStr(id)}')">Attach a folder…</button>
+    </div>`;
+}
+
+// The paste box, injected on request — including from a card that already shows
+// a link. Round 15's reconciliation found four people whose folder carried
+// somebody else's name, so "it shows a link" and "it shows the RIGHT link" are
+// not the same thing, and there was no way to correct one.
+function showDriveAttachInput(name, id){
+  const el=document.getElementById('driveLinkArea');
+  if(!el||!id) return;
+  el.innerHTML=`
+    <div style="font-size:12px;color:var(--muted);line-height:1.5">Open the folder in Drive, copy the address bar, and paste it here.</div>
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      <input id="driveAttachInput" type="text" placeholder="https://drive.google.com/drive/folders/…"
+        style="flex:1;min-width:220px;font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 8px">
+      <button class="btn btn-outline btn-sm" type="button" onclick="attachDriveFolder('${jsStr(id)}')">Attach</button>
+      <button class="btn btn-outline btn-sm" type="button" onclick="cancelDriveAttach('${jsStr(name||'')}','${jsStr(id)}')">Cancel</button>
+    </div>
+    <div id="driveAttachMsg" style="font-size:11px;margin-top:6px;color:var(--muted)"></div>`;
+}
+
+function cancelDriveAttach(name, id){
+  const el=document.getElementById('driveLinkArea');
+  if(!el) return;
+  const person=(state.employees||[]).find(e=>String(e.id)===String(id));
+  el.innerHTML=person?driveLinkBlock(person):driveAttachBlock(name,id,null);
+}
+
+function retryDriveLookup(name, id){
+  loadDriveLink(name, id);
+}
+
+// Accepts what somebody actually copies: the address bar of an open folder, the
+// "Copy link" menu item, or a bare id. A /file/d/ link is a FILE and is refused
+// rather than stored — saving one produces a link that opens the wrong thing.
+function driveFolderIdFromInput(raw){
+  const s=String(raw||'').trim();
+  if(!s) return '';
+  if(/\/file\/d\//.test(s)) return '';
+  const folders=s.match(/\/folders\/([A-Za-z0-9_-]+)/);
+  if(folders) return folders[1];
+  const idParam=s.match(/[?&]id=([A-Za-z0-9_-]+)/);
+  if(idParam) return idParam[1];
+  if(/^[A-Za-z0-9_-]{15,}$/.test(s)) return s;
+  return '';
+}
+
+function attachDriveFolder(id){
+  const input=document.getElementById('driveAttachInput');
+  const msg=document.getElementById('driveAttachMsg');
+  const say=(text,color)=>{ if(msg){ msg.textContent=text; msg.style.color=color||'var(--muted)'; } };
+  if(!input) return;
+
+  const folderId=driveFolderIdFromInput(input.value);
+  if(!folderId){
+    say('That is not a Drive FOLDER link. Open the folder itself and copy the address bar — it has /folders/ in it.','#b8860b');
+    return;
+  }
+  const person=(state.employees||[]).find(e=>String(e.id)===String(id));
+  if(!person){ say('Could not find this employee to attach it to.','#c0392b'); return; }
+
+  say('Attaching…');
+  fetch('/api/data?table=employees&id='+encodeURIComponent(id),{
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({drive_folder_id:folderId})
+  }).then(r=>{
+    if(!r.ok) throw new Error('refused');
+    person.driveFolderId=folderId;
+    toast('HR folder attached','success');
+    render();
+  }).catch(()=>{
+    say('Could not save it — the folder was NOT attached.','#c0392b');
+  });
 }
 
 function profileReadBody(e){
@@ -549,7 +647,7 @@ function profileReadBody(e){
             {html:true,empty:'not set'})
     ])}
     ${profileGroup('Files',[
-      pf('HR file',`<span id="driveLinkArea">${driveLinkBlock(e)}</span>`,{html:true})
+      pf('HR file',`<div id="driveLinkArea">${driveLinkBlock(e)}</div>`,{html:true})
     ])}
 `;
 }
@@ -1279,9 +1377,22 @@ async function saveEdit(){
     setSyncStatus('idle');
     toast('Saved','success');
 
-    // Auto-create Drive folder for new employees in the background
-    if(isNew && e.name){
+    // Pair a new employee with their Drive folder, if HR made one first.
+    //
+    // THIS USED TO THROW THE ANSWER AWAY. It fired the same lookup and ignored
+    // the response entirely, so drive_folder_id was never written and the card
+    // kept saying there was no folder — while its own text promised the pairing
+    // would happen by itself. The comment above it said "Auto-create", which
+    // stopped being true when a GET stopped creating folders on 2026-09-15.
+    // Three people added this week had folders sitting in Drive, named exactly
+    // right, that nothing ever looked at the result of.
+    //
+    // A read still does not create. If the folder is not there yet, nothing
+    // happens and the card offers the attach controls.
+    if(isNew && e.id && e.name){
       fetch('/api/documents?employee='+encodeURIComponent(e.name))
+        .then(r=>r.json())
+        .then(d=>{ if(d && d.folderId) rememberDriveFolder(e.id, d.folderId); })
         .catch(()=>{});
     }
     render();
@@ -1467,10 +1578,9 @@ function loadDriveLink(employeeName, id) {
         // The REASON, not "No folder found". The old wording read as "there
         // isn't one" when the usual truth is "it is named something else" —
         // which sends somebody to make a folder that already exists.
-        const why = data.reason
-          ? esc(data.reason)
-          : 'No folder found — one is created on the first upload.';
-        el.innerHTML = `<div style="font-size:12px;color:var(--muted);line-height:1.5">${why}</div>`;
+        // The REASON *and* a way out. Rendering the reason alone left the
+        // person reading it with nothing to press.
+        el.innerHTML = driveAttachBlock(employeeName, id, data.reason || null);
       }
     })
     .catch(() => {
