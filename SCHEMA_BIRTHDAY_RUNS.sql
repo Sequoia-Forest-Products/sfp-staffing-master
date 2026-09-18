@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS public.birthday_runs (
   status      text        NOT NULL,   -- sent | partly-sent | delivery-failed | no-birthdays | no-run-day
   people      text[]      NOT NULL DEFAULT '{}',
   recipients  integer     NOT NULL DEFAULT 0,
+  attempted   integer     NOT NULL DEFAULT 0,   -- < recipients means the run was cut short
   sent        integer     NOT NULL DEFAULT 0,
   failed      integer     NOT NULL DEFAULT 0,
   detail      text
