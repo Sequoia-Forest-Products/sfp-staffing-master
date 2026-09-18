@@ -593,3 +593,82 @@ test('an alert that cannot be sent is reported, not swallowed', async () => {
   assert.strictEqual(result.deliveryFailed, true, 'still a 500, which is the backstop');
   assert.strictEqual(result.alertError, 'gmail auth failed');
 });
+
+// ============================================================
+// The whole roster, inside one function lifetime
+// ============================================================
+//
+// The send used to be one await per recipient with a 150ms sleep between each.
+// At 62 recipients that is ~9.9s of sleeping plus 62 SMTP round trips, which is
+// past the function timeout — so the run was killed partway through, every time.
+// A killed function writes no log line and returns no error. It just stops.
+//
+// The roster is fetched name.asc and sent in that order, so the cut landed in
+// the same place every run: on 2026-09-17 it stopped after Matt Reilly, #41 of
+// 67. Everyone alphabetically after him had never had a birthday text, and no
+// alert, no log and no counter said so.
+
+// 62 recipients, which is what an active roster of 67 looks like once the
+// birthday people and the phoneless are out.
+const BIG_ROSTER = Array.from({ length: 62 }, (_, i) => ({
+  name: `Person ${String(i).padStart(2, '0')}`,
+  birthday: i === 0 ? jsDate('Wed Mar 11 1990 00:00:00 GMT-0800 (Pacific Standard Time)') : '',
+  phone: ph(100 + i),
+  status: 'Active'
+}));
+
+test('every recipient is attempted, not just the ones that fit in 10 seconds', async () => {
+  const seen = [];
+  const result = await runBirthdayNotifications({
+    now: new Date(BOISE_WED),
+    employees: BIG_ROSTER,
+    log: () => {},
+    send: async (to) => { seen.push(to); },
+    sendAlert: async () => {},
+    record: async () => {}
+  });
+
+  // 62 on the roster, minus the one whose birthday it is.
+  assert.strictEqual(result.recipients, 61);
+  assert.strictEqual(result.attempted, 61, 'every recipient was attempted');
+  assert.strictEqual(result.sent, 61);
+  assert.strictEqual(seen.length, 61);
+
+  // The tail of the roster is the part that used to be silently dropped.
+  assert.ok(seen.includes(tb(161)), 'the LAST person on the roster was sent to');
+});
+
+test('the whole roster is sent well inside a function lifetime', async () => {
+  // The old shape cost ~150ms per recipient in sleeping alone — 9.15s for 61,
+  // before a single SMTP round trip. This asserts the sleeping is now a
+  // per-batch cost, which is what keeps the run from being killed.
+  const started = Date.now();
+  await runBirthdayNotifications({
+    now: new Date(BOISE_WED),
+    employees: BIG_ROSTER,
+    log: () => {},
+    send: async () => {},
+    sendAlert: async () => {},
+    record: async () => {}
+  });
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 3000, `61 recipients took ${elapsed}ms — the old serial send took over 9s of sleeps alone`);
+});
+
+test('a truncated run says so in its record rather than looking clean', async () => {
+  // Belt and braces. If a run is ever cut short again, the row says TRUNCATED
+  // instead of reporting a tidy partial send.
+  const rows = [];
+  let n = 0;
+  await runBirthdayNotifications({
+    now: new Date(BOISE_WED),
+    employees: BIG_ROSTER,
+    log: () => {},
+    send: async () => { n++; },
+    sendAlert: async () => {},
+    record: async (row) => rows.push(row)
+  });
+  assert.strictEqual(rows[0].detail, null, 'a complete run has nothing to report');
+  assert.strictEqual(n, 61);
+});

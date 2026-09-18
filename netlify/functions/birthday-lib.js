@@ -28,7 +28,22 @@ const GMAIL_PASS   = process.env.GMAIL_APP_PASSWORD;
 // The mill is in Mountain Time. Never trust the server's UTC clock for "today".
 const TIME_ZONE = 'America/Boise';
 const DIVIDER   = '--------------------------------------------------';
-const SEND_DELAY_MS = 150;
+// SENDING IS BATCHED, AND THAT IS NOT A PERFORMANCE TASTE.
+//
+// It used to be one await per recipient with a 150ms sleep between each. At 62
+// recipients that is ~9.9s of sleeping plus 62 SMTP round trips — comfortably
+// past the function timeout, so the run was KILLED partway through the roster
+// every single time. A killed function writes no log line and returns no error:
+// it simply stops.
+//
+// The roster is fetched name.asc and sent in that order, so the cut fell in the
+// same place every run. On 2026-09-17 it stopped after Matt Reilly, #41 of 67.
+// Everyone from Maximino Santos onward — Peter Stroble at #49 among them — had
+// never received a single birthday text, and nothing anywhere said so.
+//
+// Ten at a time finishes 62 recipients in about seven round trips.
+const SEND_BATCH_SIZE = 10;
+const SEND_BATCH_GAP_MS = 150;
 
 // ============================================================
 // DATE LOGIC
@@ -392,18 +407,30 @@ async function runBirthdayNotifications({
 
   // Sequential, with a small gap, to stay friendly with Gmail rate limits.
   // One bad address must never abort the run.
-  for (const recipient of recipients) {
-    try {
-      await sender(recipient, subject, body);
-      sent++;
-    } catch (err) {
-      failed++;
-      log(`Failed to send to ${recipient}: ${err.message}`);
-    }
-    await delay(SEND_DELAY_MS);
+  // Counted separately from recipients.length so a run that still does not
+  // finish is VISIBLE as a truncation rather than looking like a clean partial.
+  let attempted = 0;
+
+  for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
+    const slice = recipients.slice(i, i + SEND_BATCH_SIZE);
+    const settled = await Promise.allSettled(
+      slice.map(recipient => sender(recipient, subject, body))
+    );
+
+    settled.forEach((outcome, n) => {
+      attempted++;
+      if (outcome.status === 'fulfilled') {
+        sent++;
+      } else {
+        failed++;
+        log(`Failed to send to ${slice[n]}: ${outcome.reason && outcome.reason.message}`);
+      }
+    });
+
+    if (i + SEND_BATCH_SIZE < recipients.length) await delay(SEND_BATCH_GAP_MS);
   }
 
-  log(`Sent to ${sent} recipients (${failed} failed). Birthday people: ${names.join(', ')}`);
+  log(`Sent to ${sent} of ${recipients.length} recipients (${failed} failed). Birthday people: ${names.join(', ')}`);
 
   // THIS USED TO RETURN status:'sent' WHATEVER HAPPENED.
   //
@@ -417,8 +444,10 @@ async function runBirthdayNotifications({
 
   await note({
     run_date: stamp, status, people: names,
-    recipients: recipients.length, sent, failed,
-    detail: failed > 0 ? `${failed} of ${recipients.length} failed` : null
+    recipients: recipients.length, attempted, sent, failed,
+    detail: attempted < recipients.length
+      ? `TRUNCATED: only ${attempted} of ${recipients.length} were attempted`
+      : (failed > 0 ? `${failed} of ${recipients.length} failed` : null)
   });
 
   let alertError = null;
@@ -446,7 +475,7 @@ async function runBirthdayNotifications({
   }
 
   return {
-    status, date: stamp, sent, failed,
+    status, date: stamp, sent, failed, attempted,
     recipients: recipients.length, people: names, subject,
     deliveryFailed: reachedNobody, alertError
   };
