@@ -483,3 +483,113 @@ test('the parser accepts both formats at once, which is what makes a mid-deploy 
   assert.deepStrictEqual(migrated, unmigrated);
   assert.deepStrictEqual(migrated, { month: 11, day: 12 });
 });
+
+// ============================================================
+// A run that reaches nobody is not a success
+// ============================================================
+//
+// Asked on 2026-09-18 why an active employee was not getting the birthday text,
+// nothing could answer it. The job returned status:'sent' whatever happened —
+// sent:0 with failed:66 produced the same shape as a clean run, and the handler
+// turned that into a 200. Netlify alerts on a non-2xx and never on a log line,
+// so the schedule looked green every Mon-Thu while nothing reached a phone. And
+// because no run left a record, "did it run at all" was unanswerable too.
+
+const BOISE_WED = '2026-03-11T14:00:00Z';   // Wednesday — Ana and Ben have birthdays
+
+// Injects the two new seams and captures what they were asked to do.
+function watched(iso, roster = ROSTER, { sendFails = null, recordThrows = false } = {}) {
+  const alerts = [];
+  const rows = [];
+  const sends = [];
+  return runBirthdayNotifications({
+    now: new Date(iso),
+    employees: roster,
+    log: () => {},
+    send: async (to, subject, body) => {
+      if (sendFails && sendFails(to)) throw new Error('550 gateway refused');
+      sends.push({ to, subject, body });
+    },
+    sendAlert: async (subject, body) => { alerts.push({ subject, body }); },
+    record: async (row) => {
+      if (recordThrows) throw new Error('supabase unreachable');
+      rows.push(row);
+    }
+  }).then(result => ({ result, alerts, rows, sends }));
+}
+
+test('every send failing is reported as a failure, not as a send', async () => {
+  const { result, alerts } = await watched(BOISE_WED, ROSTER, { sendFails: () => true });
+
+  assert.strictEqual(result.status, 'delivery-failed', 'this is the status that used to say "sent"');
+  assert.strictEqual(result.sent, 0);
+  assert.ok(result.failed > 0);
+  assert.strictEqual(result.deliveryFailed, true, 'the handler turns this into a 500');
+
+  assert.strictEqual(alerts.length, 1, 'somebody is told');
+  assert.match(alerts[0].subject, /reached NOBODY/);
+  assert.match(alerts[0].body, /transport problem, not a roster one/);
+});
+
+test('a partial failure alerts but is not a total failure', async () => {
+  // Some of the mill hears and some does not, which is invisible from either end.
+  const { result, alerts } = await watched(BOISE_WED, ROSTER, {
+    sendFails: to => to === tb(3)
+  });
+
+  assert.strictEqual(result.status, 'partly-sent');
+  assert.ok(result.sent > 0);
+  assert.strictEqual(result.failed, 1);
+  assert.strictEqual(result.deliveryFailed, false, 'a 500 here would hide that most of it worked');
+  assert.strictEqual(alerts.length, 1);
+  assert.match(alerts[0].subject, /partly undelivered/);
+});
+
+test('a clean run says sent and alerts nobody', async () => {
+  const { result, alerts } = await watched(BOISE_WED);
+  assert.strictEqual(result.status, 'sent');
+  assert.strictEqual(result.failed, 0);
+  assert.strictEqual(result.deliveryFailed, false);
+  assert.deepStrictEqual(alerts, []);
+});
+
+test('every run leaves a record, including the quiet ones', async () => {
+  // "Nobody had a birthday" and "the job never ran" look identical from the
+  // outside, and only one of them is fine.
+  const quiet = await watched('2026-01-07T14:00:00Z');   // a Wednesday with no birthdays
+  assert.strictEqual(quiet.result.status, 'no-birthdays');
+  assert.strictEqual(quiet.rows.length, 1);
+  assert.strictEqual(quiet.rows[0].status, 'no-birthdays');
+  assert.strictEqual(quiet.rows[0].run_date, '2026-01-07');
+
+  const weekend = await watched('2026-03-14T14:00:00Z'); // a Saturday — not a send day
+  assert.strictEqual(weekend.rows[0].status, 'no-run-day');
+
+  const busy = await watched(BOISE_WED);
+  assert.strictEqual(busy.rows.length, 1);
+  assert.strictEqual(busy.rows[0].status, 'sent');
+  assert.ok(busy.rows[0].recipients > 0);
+  assert.deepStrictEqual(busy.rows[0].people, ['Ana', 'Ben']);
+});
+
+test('a run whose bookkeeping fails has still sent the texts', async () => {
+  // The log row is evidence, not the job. Failing the run because the evidence
+  // could not be written would turn a working Wednesday into a red one.
+  const { result, sends } = await watched(BOISE_WED, ROSTER, { recordThrows: true });
+  assert.strictEqual(result.status, 'sent');
+  assert.strictEqual(result.deliveryFailed, false);
+  assert.ok(sends.length > 0, 'the texts went out regardless');
+});
+
+test('an alert that cannot be sent is reported, not swallowed', async () => {
+  const result = await runBirthdayNotifications({
+    now: new Date(BOISE_WED),
+    employees: ROSTER,
+    log: () => {},
+    send: async () => { throw new Error('550 gateway refused'); },
+    sendAlert: async () => { throw new Error('gmail auth failed'); },
+    record: async () => {}
+  });
+  assert.strictEqual(result.deliveryFailed, true, 'still a 500, which is the backstop');
+  assert.strictEqual(result.alertError, 'gmail auth failed');
+});

@@ -299,6 +299,28 @@ function createGmailSender() {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// EVERY RUN LEAVES A ROW. Asked on 2026-09-18 why somebody was not receiving
+// the birthday text, there was no way to answer it: the job logs to Netlify and
+// returns, so "did it run", "who was on the list" and "did anything actually
+// leave" were all unanswerable after the fact. Seven weeks of that is what made
+// the question expensive.
+//
+// Best-effort on purpose. A run that sends 66 texts and then cannot write its
+// own log row has still sent 66 texts, and must not report itself as failed.
+async function recordRun(row) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  await fetch(`${SUPABASE_URL}/rest/v1/birthday_runs`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal'
+    },
+    body: JSON.stringify(row)
+  });
+}
+
 // ============================================================
 // RUNNER
 // ============================================================
@@ -310,8 +332,20 @@ async function runBirthdayNotifications({
   dryRun = false,
   employees = null,
   send = null,
-  log = console.log
+  log = console.log,
+  sendAlert = null,
+  record = null
 } = {}) {
+  // Required lazily: payroll-email-lib pulls in the IMAP stack, and a dry run or
+  // a unit test must not need it. Both are injectable for the same reason.
+  const _sendAlert = sendAlert || ((subject, body) => require('./payroll-email-lib').sendAlert(subject, body));
+  const _record    = record    || recordRun;
+
+  // A run must never fail because its own bookkeeping failed.
+  const note = async (row) => {
+    try { await _record(row); }
+    catch (err) { log(`Could not record the birthday run: ${err.message}`); }
+  };
   const today = calendarDateInZone(now);
   const stamp = `${today.year}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}`;
 
@@ -320,6 +354,7 @@ async function runBirthdayNotifications({
   const window = buildTargetDates(today);
   if (!window) {
     log(`Birthday run skipped: ${stamp} is not a send day in ${TIME_ZONE} (Mon-Thu only).`);
+    await note({ run_date: stamp, status: 'no-run-day' });
     return { status: 'no-run-day', date: stamp, sent: 0, failed: 0, recipients: 0, people: [] };
   }
 
@@ -328,6 +363,9 @@ async function runBirthdayNotifications({
 
   if (todayPeople.length === 0 && upcomingPeople.length === 0) {
     log(`No birthdays for ${stamp} (looking ahead ${window.daysToLookAhead} day(s)).`);
+    // Recorded too. "Nobody had a birthday" and "the job did not run" look
+    // identical from the outside, and only one of them is fine.
+    await note({ run_date: stamp, status: 'no-birthdays' });
     return { status: 'no-birthdays', date: stamp, sent: 0, failed: 0, recipients: 0, people: [] };
   }
 
@@ -367,9 +405,50 @@ async function runBirthdayNotifications({
 
   log(`Sent to ${sent} recipients (${failed} failed). Birthday people: ${names.join(', ')}`);
 
+  // THIS USED TO RETURN status:'sent' WHATEVER HAPPENED.
+  //
+  // sent:0, failed:66 returned the same shape, and the handler turned it into a
+  // 200. Netlify alerts on a function error, never on a log line, so a run where
+  // every single message failed was indistinguishable from a run that worked —
+  // from the outside, from the dashboard, and from the database. That is how
+  // this went unnoticed: nobody gets a text, and nothing anywhere says so.
+  const reachedNobody = recipients.length > 0 && sent === 0;
+  const status = reachedNobody ? 'delivery-failed' : (failed > 0 ? 'partly-sent' : 'sent');
+
+  await note({
+    run_date: stamp, status, people: names,
+    recipients: recipients.length, sent, failed,
+    detail: failed > 0 ? `${failed} of ${recipients.length} failed` : null
+  });
+
+  let alertError = null;
+  if (failed > 0) {
+    const headline = reachedNobody
+      ? `Birthday text reached NOBODY on ${stamp}`
+      : `Birthday text partly undelivered on ${stamp}`;
+    try {
+      await _sendAlert(headline, [
+        `Birthday people: ${names.join(', ')}`,
+        `Sent to ${sent} of ${recipients.length} recipients (${failed} failed).`,
+        '',
+        reachedNobody
+          ? 'Not one message left. That is a transport problem, not a roster one —'
+          : 'Some of the mill heard and some did not, which is invisible from either end.',
+        reachedNobody
+          ? 'check GMAIL_USER / GMAIL_APP_PASSWORD and whether the SMS gateway still'
+          : 'The failures are named in the Netlify log for this run.',
+        reachedNobody ? 'accepts mail from that account.' : ''
+      ].filter(Boolean).join('\n'));
+    } catch (err) {
+      alertError = err.message;
+      log(`Could not send the birthday alert: ${err.message}`);
+    }
+  }
+
   return {
-    status: 'sent', date: stamp, sent, failed,
-    recipients: recipients.length, people: names, subject
+    status, date: stamp, sent, failed,
+    recipients: recipients.length, people: names, subject,
+    deliveryFailed: reachedNobody, alertError
   };
 }
 
@@ -386,5 +465,6 @@ module.exports = {
   composeMessage,
   fetchActiveEmployees,
   createGmailSender,
+  recordRun,
   runBirthdayNotifications
 };
