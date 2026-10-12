@@ -385,6 +385,31 @@ test('dollars and hours arrive as text with currency formatting without breaking
   assert.deepStrictEqual(r.flags, []);
 });
 
+test('a day of 16+ hours imports, but is flagged long_day and reported as an anomaly', () => {
+  // The real shape: an unclosed punch capped at 24 hours, booked 10 + 14.
+  const result = importFrom([
+    row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 14,   24,    0),
+    row('0063', 'Smith',       'Ana',    'No', 30,   10, 5.99, 15.99, 0),
+    row('0771', 'Smith',       'Dale',   'No', 28,   10, 6,    16,    0)
+  ]);
+
+  assert.strictEqual(result.rows.length, 3, 'a long day is still imported');
+  assert.strictEqual(result.rows[0].total_hours, 24);
+  assert.ok(flagsFor(result, '0319').includes('long_day'));
+  assert.ok(flagsFor(result, '0771').includes('long_day'), '16 exactly is the threshold');
+  assert.ok(!flagsFor(result, '0063').includes('long_day'), 'just under 16 is a long shift, not a missed punch');
+
+  const longDays = result.anomalies.filter(a => a.type === 'long_day');
+  assert.deepStrictEqual(longDays.map(a => a.employeeNumber), ['0319', '0771']);
+  assert.match(longDays[0].detail, /24 hours/);
+  assert.strictEqual(longDays[0].name, 'Miguel Acosta Ruiz');
+});
+
+test('long_day reads regular + OT when the file\'s Total Hours undercounts them', () => {
+  const result = importFrom([row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, 14, 0, 0)]);
+  assert.ok(flagsFor(result, '0319').includes('long_day'));
+});
+
 test('a blank number is zero, but an unreadable one is an anomaly rather than a silent zero', () => {
   const result = importFrom([
     row('0319', 'Acosta Ruiz', 'Miguel', 'No', 24.5, 10, null, 10, 245),
