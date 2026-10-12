@@ -239,6 +239,40 @@ test('a good message imports and stamps the email provenance on every row', asyn
   assert.strictEqual(record.notified_at, null);
 });
 
+test('a long day imports but alerts, naming the person and the hours', async () => {
+  const longDayImport = (args) => ({
+    workDate: args.workDate,
+    fileHash: sha256(args.fileBuffer),
+    uploadBatchId: args.uploadBatchId,
+    rows: [
+      { work_date: args.workDate, employee_number: '0101', total_hours: 24, flags: ['long_day'] },
+      { work_date: args.workDate, employee_number: '0202', total_hours: 10, flags: [] }
+    ],
+    anomalies: [{ employeeNumber: '0101', name: 'Everardo Gonzalez', type: 'long_day',
+                  detail: 'Emp # 0101 reported 24 hours on 2026-08-18 (10 regular, 14 OT).' }],
+    counts: { totalRows: 2, imported: 2 },
+    totals: { totalHours: 34 }
+  });
+  const { result, calls } = await harness([message()], { buildImport: longDayImport });
+
+  assert.strictEqual(result.results[0].status, 'imported');
+  assert.strictEqual(calls.upserts[0].length, 2, 'the day is still written');
+  assert.ok(!calls.upserts[0][1].flags.includes('long_day'), 'only the long row carries the flag');
+
+  assert.strictEqual(calls.alerts.length, 1);
+  assert.match(calls.alerts[0].body, /Everardo Gonzalez/);
+  assert.match(calls.alerts[0].body, /24 hours/);
+
+  assert.ok(calls.ledger[0].flags.includes('long_day'));
+  assert.ok(calls.ledger[0].notified_at);
+});
+
+test('a clean import with no long day stays quiet', async () => {
+  const { calls } = await harness([message()]);
+  assert.strictEqual(calls.alerts.length, 0);
+  assert.ok(!calls.ledger[0].flags.includes('long_day'));
+});
+
 test('a message from the wrong sender is rejected and never parsed', async () => {
   const { result, calls } = await harness([
     message({ id: '<spam-1@example.com>', from: 'Accounts <billing@customer.example>' })

@@ -52,6 +52,13 @@ const EXPECTED_HEADERS = [
 const DEPARTMENTS = ['Maintenance', 'Saw Filing', 'Shipping', 'Production', 'Log Yard', 'Clean-up'];
 const UNASSIGNED = 'Unassigned';
 
+// A day this long is not a shift, it is a punch nobody closed. The timeclock
+// caps an open punch at 24 hours and books all of it to the day it started —
+// 10 regular and 14 OT, with the next day reading 0 — and that lands in the OT
+// report looking exactly like real overtime. The row is still imported (the
+// file is the file), but flagged and reported so a person corrects the punch.
+const LONG_DAY_HOURS = 16;
+
 // NAMING: the constant is NON_PRODUCTION and the value is 'SG&A'. That is not a
 // mistake. SG&A IS the non-production bucket — the constant names the ROLE, the
 // string is the label the database CHECK constraint now uses for it. The label
@@ -528,6 +535,20 @@ function buildImport({
       }
     }
 
+    const dayHours = Math.max(numbers.totalHours, round2(numbers.regularHours + numbers.otHours));
+    if (dayHours >= LONG_DAY_HOURS) {
+      flags.push('long_day');
+      anomalies.push({
+        employeeNumber,
+        name: displayName(employee, { lastName, firstName }),
+        type: 'long_day',
+        detail: `Emp # ${employeeNumber} reported ${dayHours} hours on ${dateInfo.date} ` +
+                `(${numbers.regularHours} regular, ${numbers.otHours} OT). A day of ` +
+                `${LONG_DAY_HOURS}+ hours is almost always a missed clock-out. Imported as-is — ` +
+                `correct the punch in the timeclock and re-send the day.`
+      });
+    }
+
     // Column names are the daily_hours columns, so this object POSTs as-is.
     // is_scheduled_day is a generated column — never send it.
     rows.push({
@@ -657,6 +678,7 @@ module.exports = {
   validateWorkDate,
   EXPECTED_SHEET,
   EXPECTED_HEADERS,
+  LONG_DAY_HOURS,
   // Shared with payroll-db.js / payroll-import.js so the department bucket and
   // the timezone default have exactly one definition. DEPARTMENTS is the
   // production breakdown; ASSIGNABLE_DEPARTMENTS is every value a person may be

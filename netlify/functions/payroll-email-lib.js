@@ -620,6 +620,10 @@ function describeItem(item) {
   ];
   if (item.flags.length) lines.push(`  Flags   : ${item.flags.join(', ')}`);
   if (item.error) lines.push(`  Detail  : ${item.error}`);
+  if (item.longDays && item.longDays.length) {
+    lines.push(`  LONG DAYS — imported, but the punches need correcting:`);
+    for (const line of item.longDays) lines.push(`    ${line}`);
+  }
   lines.push(...describeWageSync(item.wageSync));
   return lines.join('\n');
 }
@@ -1045,6 +1049,14 @@ async function runPayrollIngest({
       });
 
       const rows = mergeRowFlags(built.rows || [], item.flags);
+      // A long day imports, but somebody has to fix the punch behind it, and
+      // nothing else about a clean import would ever reach a person.
+      const longDays = (built.anomalies || []).filter(a => a.type === 'long_day');
+      if (longDays.length) {
+        addFlag(item, 'long_day');
+        item.longDays = longDays.map(a => `${a.name || '#' + a.employeeNumber}: ${a.detail}`);
+        item.alert = true;
+      }
       item.uploadBatchId = uploadBatchId;
       item.fileHash = built.fileHash || item.fileHash;
       item.counts = built.counts || null;
