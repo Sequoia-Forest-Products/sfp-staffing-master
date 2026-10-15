@@ -187,15 +187,24 @@ function otEditOpen(date, employeeNumber){
   const day=((state.otReport&&state.otReport.days)||[]).find(d=>d.date===date);
   const w=day&&(day.workers||[]).find(x=>x.employeeNumber===employeeNumber);
   if(!w) return;
+  const flags=w.flags||[];
   state.otEdit={date, employeeNumber, name:w.name||('#'+employeeNumber),
-    regularHours:String(w.regularHours??''), otHours:String(w.otHours??''), note:'', saving:false};
+    regularHours:String(w.regularHours??''), otHours:String(w.otHours??''), note:'', saving:false,
+    wasRegular:w.regularHours, wasOt:w.otHours, wasTotal:w.hours,
+    long:flags.includes('long_day')&&!flags.includes('manual_edit')};
   render();
 }
 
 function otEditCancel(){ state.otEdit=null; render(); }
 
 // No render on input: re-rendering would rebuild the field and drop focus.
-function otEditSet(field, value){ if(state.otEdit) state.otEdit[field]=value; }
+function otEditSet(field, value){
+  const e=state.otEdit;
+  if(!e) return;
+  e[field]=value;
+  const el=document.getElementById('ot-edit-total');
+  if(el) el.textContent='New total: '+fmtHrs((Number(e.regularHours)||0)+(Number(e.otHours)||0))+' hrs';
+}
 
 async function otEditSave(){
   const e=state.otEdit;
@@ -220,29 +229,68 @@ async function otEditSave(){
   }
 }
 
-function otEditor(date){
+// The dialog. Rendered once at the end of the report, so it floats over the
+// page whatever day it was opened from.
+function otEditModal(){
   const e=state.otEdit;
-  if(!e||e.date!==date) return '';
-  const inp=(field,width)=>`<input type="number" step="0.01" min="0" max="24" value="${esc(e[field])}" oninput="otEditSet('${field}',this.value)" style="width:${width}px" ${e.saving?'disabled':''}>`;
-  return `<div class="ot-edit">
-    <strong>${esc(e.name)}</strong><span style="color:var(--muted)"> · ${fmtDate(date)}</span>
-    <label>Regular ${inp('regularHours',70)}</label>
-    <label>OT ${inp('otHours',70)}</label>
-    <label>Note <input type="text" maxlength="500" value="${esc(e.note)}" oninput="otEditSet('note',this.value)" placeholder="e.g. missed clock-out" style="width:220px" ${e.saving?'disabled':''}></label>
-    <button class="btn btn-sm" onclick="otEditSave()" ${e.saving?'disabled':''}>${e.saving?'Saving…':'Save'}</button>
-    <button class="btn btn-outline btn-sm" onclick="otEditCancel()" ${e.saving?'disabled':''}>Cancel</button>
-  </div>`;
+  if(!e) return '';
+  const dis=e.saving?'disabled':'';
+  const total=(Number(e.regularHours)||0)+(Number(e.otHours)||0);
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)otEditCancel()">
+      <div class="modal" style="max-width:440px">
+        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
+          <span>Correct hours — ${esc(e.name)}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px">${esc(dayNameOf(e.date))} ${fmtDate(e.date)}${e.employeeNumber?' · #'+esc(e.employeeNumber):''}</div></span>
+          <button class="close-btn" onclick="otEditCancel()" ${dis}>×</button>
+        </div>
+        <div class="modal-body">
+          <div class="ot-edit-was">As imported now: <strong>${fmtHrs(e.wasRegular)}</strong> regular · <strong>${fmtHrs(e.wasOt)}</strong> OT · <strong>${fmtHrs(e.wasTotal)}</strong> total${e.long?' <span class="ot-flag-long">16+ hour day</span>':''}</div>
+          <div class="form-grid">
+            <div class="form-group"><label class="form-label">Regular hours</label>
+              <input type="number" step="0.01" min="0" max="24" value="${esc(e.regularHours)}" oninput="otEditSet('regularHours',this.value)" ${dis}></div>
+            <div class="form-group"><label class="form-label">OT hours</label>
+              <input type="number" step="0.01" min="0" max="24" value="${esc(e.otHours)}" oninput="otEditSet('otHours',this.value)" ${dis}></div>
+            <div class="form-group full"><label class="form-label">Note</label>
+              <input type="text" maxlength="500" value="${esc(e.note)}" oninput="otEditSet('note',this.value)" placeholder="e.g. missed clock-out" ${dis}></div>
+          </div>
+          <div id="ot-edit-total" class="ot-edit-total">New total: ${fmtHrs(total)} hrs</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">Saved with your name and the note. A corrected file from payroll for this day replaces the edit.</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="otEditCancel()" ${dis}>Cancel</button>
+          <button class="btn btn-primary" onclick="otEditSave()" ${dis}>${e.saving?'Saving…':'Save'}</button>
+        </div>
+      </div>
+    </div>`;
 }
 
-function otWorkerChip(date, w){
+// One row per person on the day. Clickable when it has a payroll number to
+// correct it by; a row without one is shown but cannot be edited.
+function otWorkerRow(date, w){
   const flags=w.flags||[];
-  const long=flags.includes('long_day');
   const edited=flags.includes('manual_edit')||flags.some(f=>String(f).startsWith('normalized_'));
-  const label=`${esc(w.name||('#'+w.employeeNumber))} · ${fmtHrs(w.hours)}h${(w.otHours||0)>0?' · OT '+fmtHrs(w.otHours)+'h':''} · ${fmt$(w.earnings)}<span style="color:var(--muted)"> · ${esc(w.department||'Unassigned')}</span>${edited?'<span class="ot-chip-tag"> · edited</span>':''}`;
-  const cls=`ot-chip${long&&!edited?' ot-chip-long':''}`;
-  // A row with no payroll number has no key to correct it by.
-  if(!w.employeeNumber) return `<span class="${cls}">${label}</span>`;
-  return `<button type="button" class="${cls} ot-chip-edit" title="Correct this day" data-date="${esc(date)}" data-emp="${esc(w.employeeNumber)}" onclick="otEditOpen(this.dataset.date,this.dataset.emp)">${label}</button>`;
+  const long=flags.includes('long_day')&&!edited;
+  const editable=!!w.employeeNumber;
+  const reg=(w.regularHours!==undefined&&w.regularHours!==null)?w.regularHours:Math.max(0,(+w.hours||0)-(+w.otHours||0));
+  const attrs=editable
+    ? ` class="ot-wrow${long?' ot-wrow-long':''}" tabindex="0" title="Click to correct this day" data-date="${esc(date)}" data-emp="${esc(w.employeeNumber)}" onclick="otEditOpen(this.dataset.date,this.dataset.emp)" onkeydown="if(event.key==='Enter')otEditOpen(this.dataset.date,this.dataset.emp)"`
+    : ` class="ot-wrow-static${long?' ot-wrow-long':''}"`;
+  return `<tr${attrs}>
+    <td style="font-weight:600">${esc(w.name||('#'+w.employeeNumber))}${w.employeeNumber?` <span style="color:var(--muted);font-size:11px;font-weight:400">#${esc(w.employeeNumber)}</span>`:''}${long?' <span class="ot-flag-long">16+ hrs</span>':''}${edited?' <span class="ot-flag-edited">edited</span>':''}</td>
+    <td>${esc(w.department||'Unassigned')}</td>
+    <td class="num">${fmtHrs(reg)}</td>
+    <td class="num" style="${(+w.otHours||0)>0?'font-weight:700;color:var(--brick)':'color:var(--muted)'}">${fmtHrs(w.otHours)}</td>
+    <td class="num">${fmtHrs(w.hours)}</td>
+    <td class="num">${fmt$(w.otDollars)}</td>
+    <td class="num">${fmt$(w.earnings)}</td>
+  </tr>`;
+}
+
+function otWorkerTable(date, workers){
+  return `<table class="ot-wtable">
+    <thead><tr><th>Employee</th><th>Department</th><th class="num">Regular</th><th class="num">OT</th><th class="num">Total</th><th class="num">OT $</th><th class="num">Earnings</th></tr></thead>
+    <tbody>${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>otWorkerRow(date,w)).join('')}</tbody>
+  </table>`;
 }
 
 function toggleOtDay(date){
@@ -273,13 +321,17 @@ const otReportStyle=`<style>
   tr.nonsched-row td{background:#fffdf7}
   tr.day-workers td{background:var(--surface2);white-space:normal;max-width:none}
   .ot-chip{display:inline-block;font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px 3px 2px 0}
-  .ot-chip-edit{font-family:var(--font);color:var(--text);cursor:pointer;line-height:inherit}
-  .ot-chip-edit:hover{border-color:var(--brick)}
-  .ot-chip-long{border-color:var(--brick);background:#fbeae5;font-weight:700}
-  .ot-chip-tag{color:#9a600a;font-weight:700}
-  .ot-edit{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;background:var(--surface);border:1px solid var(--brick);border-radius:6px;padding:10px 12px;margin-bottom:10px}
-  .ot-edit label{display:flex;gap:6px;align-items:center;color:var(--textDim)}
-  .ot-edit input{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 6px}
+  .ot-wtable{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:6px}
+  .ot-wtable th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)}
+  .ot-wtable td{background:var(--surface);font-size:12px;padding:6px 10px;border-bottom:1px solid var(--border)}
+  .ot-wtable th.num,.ot-wtable td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .ot-wrow{cursor:pointer}
+  .ot-wtable tr.ot-wrow:hover td,.ot-wtable tr.ot-wrow:focus td{background:#fdf3ec;outline:none}
+  .ot-wtable tr.ot-wrow-long td{background:#fbeae5}
+  .ot-flag-long{white-space:nowrap;font-size:10px;font-weight:800;color:#fff;background:var(--brick);border-radius:3px;padding:1px 5px;margin-left:4px}
+  .ot-flag-edited{font-size:10px;font-weight:700;color:#9a600a;background:#fdf1dc;border-radius:3px;padding:1px 5px;margin-left:4px}
+  .ot-edit-was{font-size:12px;color:var(--textDim);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:16px}
+  .ot-edit-total{font-size:13px;font-weight:700;margin-top:14px}
   .ot-flag{background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#7a1f1f}
   .ot-warn{background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#6b4a0a}
   .ot-ok{font-size:12px;color:#2a7a47;font-weight:600}
@@ -673,8 +725,7 @@ function renderOTReport(){
       <td>${(!d.isHoliday&&workers.length)?`<button class="btn btn-outline btn-sm" onclick="toggleOtDay('${d.date}')">${open?'Hide':'Who worked'}</button>`:`<span style="color:var(--muted)">${d.isHoliday?'closed':'no rows'}</span>`}</td>
     </tr>`;
     const detail=(open&&workers.length&&!d.isHoliday)?`<tr class="day-workers"><td colspan="8">
-      ${otEditor(d.date)}
-      ${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>otWorkerChip(d.date,w)).join('')}
+      ${otWorkerTable(d.date,workers)}
     </td></tr>`:'';
     return row+detail;
   }).join('');
@@ -858,5 +909,5 @@ function renderOTReport(){
 
   return otReportStyle+picker+trunc+`
     ${otPeriodNote(r)}
-    ${cards}${standingNote}${holBlock}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}`;
+    ${cards}${standingNote}${holBlock}${splitBlock}${deptBlock}${sgaBlock}${dayBlock}${weekendBlock}${empBlock}${compBlock}${preTypeBlock}${issueBlock}${otEditModal()}`;
 }
