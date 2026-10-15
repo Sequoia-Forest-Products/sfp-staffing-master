@@ -108,7 +108,7 @@ let state = {
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,
-  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{},
+  otSortCol:'netOtDollars', otSortDir:'desc', otDayDept:'all', otOpenDays:{}, otEdit:null,
   // Phase D. Deny by default on this side too: the base tier until /api/permissions
   // answers, so an unloaded state can never look like access. defaultPerms() is in
   // permissions.js, which is loaded after this file — hence the literal here.

@@ -567,6 +567,8 @@ function buildReport({
       // a true here is the week's own evidence that this person is not hourly.
       isSalary: isYes(raw.is_salary),
       otHours: num(raw.ot_hours),
+      // Carried so the day view can show what a hand edit would start from.
+      regularHours: num(raw.regular_hours),
       // COMPUTED, not read. The file's ot_dollars and total_earnings are null
       // on every row imported since the feed became hours-only, and were a
       // transcribed rate's output before that. dayPay applies the daily premium
@@ -999,9 +1001,11 @@ function buildReport({
         employeeNumber: row.employeeNumber,
         name: row.name,
         department: row.department,
-        hours: 0, otHours: 0, otDollars: 0, earnings: 0
+        hours: 0, regularHours: 0, otHours: 0, otDollars: 0, earnings: 0, flags: []
       };
       w.hours     += row.hours;
+      w.regularHours += row.regularHours;
+      for (const f of row.flags) if (!w.flags.includes(f)) w.flags.push(f);
       w.otHours   += row.otHours;
       w.otDollars += num(row.otDollars);
       w.earnings  += num(row.earnings);
@@ -1045,9 +1049,11 @@ function buildReport({
           name: w.name,
           department: w.department,
           hours: round2(w.hours),
+          regularHours: round2(w.regularHours),
           otHours: round2(w.otHours),
           otDollars: round2(w.otDollars),
-          earnings: round2(w.earnings)
+          earnings: round2(w.earnings),
+          flags: w.flags
         }))
         .sort((a, b) => b.otHours - a.otHours || b.hours - a.hours || a.name.localeCompare(b.name))
     };

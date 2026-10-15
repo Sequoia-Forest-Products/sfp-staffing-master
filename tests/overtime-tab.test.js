@@ -1039,3 +1039,107 @@ test('a marked date with nothing imported says so instead of showing a zero', ()
   assert.match(html, /marked as a mill holiday and no hours were imported/);
   assert.ok(!/Paid, not worked/.test(html), 'there is nothing to show as paid');
 });
+
+// ---------------------------------------------------------------------------
+// Correcting a day by hand from "Who worked"
+// ---------------------------------------------------------------------------
+//
+// A missed clock-out arrives as a 24-hour day, 10 regular + 14 OT. The fix used
+// to be SQL; now a chip in the day breakdown opens an editor for that one row.
+
+const EDIT_DAY = '2026-08-26';
+
+function editableReport(ctx) {
+  ctx.state.otOpenDays[EDIT_DAY] = true;   // a Mon-Thu day starts collapsed
+  return withOtReport(ctx, {
+    days: [{
+      date: EDIT_DAY, dayName: 'Wednesday', isScheduledDay: true, hasData: true,
+      hours: 34, otHours: 14, otDollars: 400, earnings: 900, headcount: 2,
+      workers: [
+        { employeeNumber: '0895', name: 'Everardo Gonzalez', department: 'Production',
+          hours: 24, regularHours: 10, otHours: 14, otDollars: 400, earnings: 700, flags: ['long_day'] },
+        { employeeNumber: "O'1", name: 'Quote Person', department: 'Production',
+          hours: 10, regularHours: 10, otHours: 0, otDollars: 0, earnings: 200, flags: [] },
+        { employeeNumber: null, name: 'No Number', department: 'Production',
+          hours: 8, regularHours: 8, otHours: 0, otDollars: 0, earnings: 160, flags: [] }
+      ]
+    }]
+  });
+}
+
+test('each worker chip with a payroll number opens the editor; one without cannot', () => {
+  const ctx = sandbox();
+  const html = editableReport(ctx);
+  assert.match(html, /data-emp="0895"[^>]*onclick="otEditOpen\(this\.dataset\.date,this\.dataset\.emp\)"/);
+  // A number with a quote in it is carried as an attribute, never spliced into JS.
+  assert.match(html, /data-emp="O'1"/);
+  assert.doesNotMatch(html, /otEditOpen\('/);
+  assert.match(html, /<span class="ot-chip">No Number/);
+});
+
+test('a long day is marked on its chip until it is corrected', () => {
+  const ctx = sandbox();
+  assert.match(editableReport(ctx), /ot-chip ot-chip-long ot-chip-edit[^>]*>Everardo Gonzalez/);
+
+  ctx.state.otReport.days[0].workers[0].flags = ['long_day', 'manual_edit'];
+  const html = ctx.renderOTReport();
+  assert.doesNotMatch(html, /class="ot-chip ot-chip-long/);
+  assert.match(html, /Everardo Gonzalez[^]*?· edited/);
+});
+
+test('opening the editor prefills the row\'s regular and OT hours', () => {
+  const ctx = sandbox();
+  editableReport(ctx);
+  ctx.otEditOpen(EDIT_DAY, '0895');
+  assert.strictEqual(ctx.state.otEdit.regularHours, '10');
+  assert.strictEqual(ctx.state.otEdit.otHours, '14');
+  const html = ctx.renderOTReport();
+  assert.match(html, /class="ot-edit"[^]*Everardo Gonzalez/);
+  assert.match(html, /value="10" oninput="otEditSet\('regularHours'/);
+  assert.match(html, /value="14" oninput="otEditSet\('otHours'/);
+
+  ctx.otEditCancel();
+  assert.strictEqual(ctx.state.otEdit, null);
+  assert.doesNotMatch(ctx.renderOTReport(), /class="ot-edit"/);
+});
+
+test('saving posts the one row to /api/daily-hours-edit and reloads the week', async () => {
+  const ctx = sandbox();
+  editableReport(ctx);
+  ctx.otEditOpen(EDIT_DAY, '0895');
+  ctx.otEditSet('otHours', '0');
+  ctx.otEditSet('note', 'missed clock-out');
+
+  ctx.fetch = async (url, opts) => {
+    ctx.__calls.fetches.push({ url: String(url), opts });
+    if (String(url) === '/api/daily-hours-edit') {
+      return { ok: true, status: 200, json: async () => ({ ok: true,
+        row: { workDate: EDIT_DAY, employeeNumber: '0895', regularHours: 10, otHours: 0, totalHours: 10 } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, report: ctx.state.otReport, availableWeeks: [] }) };
+  };
+  await ctx.otEditSave();
+
+  const post = ctx.__calls.fetches.find(f => f.url === '/api/daily-hours-edit');
+  assert.ok(post, 'no request to the edit endpoint');
+  assert.strictEqual(post.opts.method, 'POST');
+  assert.deepStrictEqual(JSON.parse(post.opts.body), {
+    workDate: EDIT_DAY, employeeNumber: '0895', regularHours: '10', otHours: '0', note: 'missed clock-out'
+  });
+  assert.ok(ctx.__calls.fetches.some(f => f.url.startsWith('/api/payroll-report')), 'the week was not reloaded');
+  assert.strictEqual(ctx.state.otEdit, null);
+  assert.strictEqual(lastToast(ctx).type, 'success');
+});
+
+test('a refused save keeps the editor open and says why', async () => {
+  const ctx = sandbox();
+  editableReport(ctx);
+  ctx.otEditOpen(EDIT_DAY, '0895');
+  ctx.fetch = async () => ({ ok: false, status: 400,
+    json: async () => ({ ok: false, error: 'OT hours cannot be more than 24' }) });
+  await ctx.otEditSave();
+  assert.ok(ctx.state.otEdit, 'the editor closed on a failed save');
+  assert.strictEqual(ctx.state.otEdit.saving, false);
+  assert.match(lastToast(ctx).msg, /cannot be more than 24/);
+  assert.strictEqual(lastToast(ctx).type, 'error');
+});
