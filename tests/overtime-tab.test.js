@@ -1067,40 +1067,51 @@ function editableReport(ctx) {
   });
 }
 
-test('each worker chip with a payroll number opens the editor; one without cannot', () => {
+test('who worked is a table of rows, not pills', () => {
   const ctx = sandbox();
   const html = editableReport(ctx);
-  assert.match(html, /data-emp="0895"[^>]*onclick="otEditOpen\(this\.dataset\.date,this\.dataset\.emp\)"/);
+  assert.match(html, /<table class="ot-wtable">/);
+  const detail = html.slice(html.indexOf('day-workers'), html.indexOf('Maintenance-day labor'));
+  assert.doesNotMatch(detail, /class="ot-chip/, 'the per-person pills are gone');
+  // Regular, OT and Total each get their own column.
+  assert.match(detail, /<th class="num">Regular<\/th><th class="num">OT<\/th><th class="num">Total<\/th>/);
+});
+
+test('each row with a payroll number opens the dialog; one without cannot', () => {
+  const ctx = sandbox();
+  const html = editableReport(ctx);
+  assert.match(html, /<tr class="ot-wrow[^"]*"[^>]*data-emp="0895"[^>]*onclick="otEditOpen\(this\.dataset\.date,this\.dataset\.emp\)"/);
   // A number with a quote in it is carried as an attribute, never spliced into JS.
   assert.match(html, /data-emp="O'1"/);
   assert.doesNotMatch(html, /otEditOpen\('/);
-  assert.match(html, /<span class="ot-chip">No Number/);
+  assert.match(html, /<tr class="ot-wrow-static">\s*<td[^>]*>No Number/);
 });
 
-test('a long day is marked on its chip until it is corrected', () => {
+test('a long day is marked on its row until it is corrected', () => {
   const ctx = sandbox();
-  assert.match(editableReport(ctx), /ot-chip ot-chip-long ot-chip-edit[^>]*>Everardo Gonzalez/);
+  assert.match(editableReport(ctx), /<tr class="ot-wrow ot-wrow-long"[^>]*data-emp="0895"/);
 
   ctx.state.otReport.days[0].workers[0].flags = ['long_day', 'manual_edit'];
   const html = ctx.renderOTReport();
-  assert.doesNotMatch(html, /class="ot-chip ot-chip-long/);
-  assert.match(html, /Everardo Gonzalez[^]*?· edited/);
+  assert.doesNotMatch(html, /<tr class="ot-wrow ot-wrow-long"/);
+  assert.match(html, /Everardo Gonzalez[^]*?<span class="ot-flag-edited">edited<\/span>/);
 });
 
-test('opening the editor prefills the row\'s regular and OT hours', () => {
+test('clicking a row opens a dialog prefilled with that day\'s hours', () => {
   const ctx = sandbox();
-  editableReport(ctx);
+  assert.doesNotMatch(editableReport(ctx), /class="modal-bg"/, 'no dialog until a row is clicked');
   ctx.otEditOpen(EDIT_DAY, '0895');
   assert.strictEqual(ctx.state.otEdit.regularHours, '10');
   assert.strictEqual(ctx.state.otEdit.otHours, '14');
   const html = ctx.renderOTReport();
-  assert.match(html, /class="ot-edit"[^]*Everardo Gonzalez/);
+  assert.match(html, /class="modal-bg"[^]*Correct hours — Everardo Gonzalez/);
+  assert.match(html, /As imported now: <strong>10.00<\/strong> regular · <strong>14.00<\/strong> OT · <strong>24.00<\/strong> total/);
   assert.match(html, /value="10" oninput="otEditSet\('regularHours'/);
   assert.match(html, /value="14" oninput="otEditSet\('otHours'/);
 
   ctx.otEditCancel();
   assert.strictEqual(ctx.state.otEdit, null);
-  assert.doesNotMatch(ctx.renderOTReport(), /class="ot-edit"/);
+  assert.doesNotMatch(ctx.renderOTReport(), /class="modal-bg"/);
 });
 
 test('saving posts the one row to /api/daily-hours-edit and reloads the week', async () => {
