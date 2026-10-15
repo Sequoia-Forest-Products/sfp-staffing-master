@@ -178,6 +178,73 @@ function otSort(col){
   render();
 }
 
+// ---- correcting one person's day by hand ----
+// A missed clock-out arrives as a 24-hour day (10 regular + 14 OT). Clicking a
+// chip in "Who worked" opens an editor for that one row; saving goes through
+// /api/daily-hours-edit, which keeps an audit trail, then reloads the week so
+// every figure on the page is recomputed from the corrected hours.
+function otEditOpen(date, employeeNumber){
+  const day=((state.otReport&&state.otReport.days)||[]).find(d=>d.date===date);
+  const w=day&&(day.workers||[]).find(x=>x.employeeNumber===employeeNumber);
+  if(!w) return;
+  state.otEdit={date, employeeNumber, name:w.name||('#'+employeeNumber),
+    regularHours:String(w.regularHours??''), otHours:String(w.otHours??''), note:'', saving:false};
+  render();
+}
+
+function otEditCancel(){ state.otEdit=null; render(); }
+
+// No render on input: re-rendering would rebuild the field and drop focus.
+function otEditSet(field, value){ if(state.otEdit) state.otEdit[field]=value; }
+
+async function otEditSave(){
+  const e=state.otEdit;
+  if(!e||e.saving) return;
+  e.saving=true; render();
+  try{
+    const res=await fetch('/api/daily-hours-edit',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({workDate:e.date, employeeNumber:e.employeeNumber,
+        regularHours:e.regularHours, otHours:e.otHours, note:e.note})});
+    if(res.status===401){location.href='/';return;}
+    let json=null;
+    try{json=await res.json();}catch(err){json=null;}
+    if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Save failed ('+res.status+')'));
+    state.otEdit=null;
+    toast(`${e.name} · ${fmtDate(e.date)} saved: ${fmtHrs(json.row.regularHours)} regular, ${fmtHrs(json.row.otHours)} OT`
+      +(json.auditError?' — but the audit record failed: '+json.auditError:''), json.auditError?'error':'success');
+    await loadOTReport(otRangeActive()?'':(state.otReportWeek||''));
+  }catch(err){
+    if(state.otEdit) state.otEdit.saving=false;
+    toast('Could not save: '+err.message,'error');
+    render();
+  }
+}
+
+function otEditor(date){
+  const e=state.otEdit;
+  if(!e||e.date!==date) return '';
+  const inp=(field,width)=>`<input type="number" step="0.01" min="0" max="24" value="${esc(e[field])}" oninput="otEditSet('${field}',this.value)" style="width:${width}px" ${e.saving?'disabled':''}>`;
+  return `<div class="ot-edit">
+    <strong>${esc(e.name)}</strong><span style="color:var(--muted)"> · ${fmtDate(date)}</span>
+    <label>Regular ${inp('regularHours',70)}</label>
+    <label>OT ${inp('otHours',70)}</label>
+    <label>Note <input type="text" maxlength="500" value="${esc(e.note)}" oninput="otEditSet('note',this.value)" placeholder="e.g. missed clock-out" style="width:220px" ${e.saving?'disabled':''}></label>
+    <button class="btn btn-sm" onclick="otEditSave()" ${e.saving?'disabled':''}>${e.saving?'Saving…':'Save'}</button>
+    <button class="btn btn-outline btn-sm" onclick="otEditCancel()" ${e.saving?'disabled':''}>Cancel</button>
+  </div>`;
+}
+
+function otWorkerChip(date, w){
+  const flags=w.flags||[];
+  const long=flags.includes('long_day');
+  const edited=flags.includes('manual_edit')||flags.some(f=>String(f).startsWith('normalized_'));
+  const label=`${esc(w.name||('#'+w.employeeNumber))} · ${fmtHrs(w.hours)}h${(w.otHours||0)>0?' · OT '+fmtHrs(w.otHours)+'h':''} · ${fmt$(w.earnings)}<span style="color:var(--muted)"> · ${esc(w.department||'Unassigned')}</span>${edited?'<span class="ot-chip-tag"> · edited</span>':''}`;
+  const cls=`ot-chip${long&&!edited?' ot-chip-long':''}`;
+  // A row with no payroll number has no key to correct it by.
+  if(!w.employeeNumber) return `<span class="${cls}">${label}</span>`;
+  return `<button type="button" class="${cls} ot-chip-edit" title="Correct this day" data-date="${esc(date)}" data-emp="${esc(w.employeeNumber)}" onclick="otEditOpen(this.dataset.date,this.dataset.emp)">${label}</button>`;
+}
+
 function toggleOtDay(date){
   const open=state.otOpenDays[date]===undefined?!isScheduledDate(date):state.otOpenDays[date];
   state.otOpenDays[date]=!open;
@@ -206,6 +273,13 @@ const otReportStyle=`<style>
   tr.nonsched-row td{background:#fffdf7}
   tr.day-workers td{background:var(--surface2);white-space:normal;max-width:none}
   .ot-chip{display:inline-block;font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px 3px 2px 0}
+  .ot-chip-edit{font-family:var(--font);color:var(--text);cursor:pointer;line-height:inherit}
+  .ot-chip-edit:hover{border-color:var(--brick)}
+  .ot-chip-long{border-color:var(--brick);background:#fbeae5;font-weight:700}
+  .ot-chip-tag{color:#9a600a;font-weight:700}
+  .ot-edit{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;background:var(--surface);border:1px solid var(--brick);border-radius:6px;padding:10px 12px;margin-bottom:10px}
+  .ot-edit label{display:flex;gap:6px;align-items:center;color:var(--textDim)}
+  .ot-edit input{font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 6px}
   .ot-flag{background:#fce8e8;border:1px solid #e0a5a5;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#7a1f1f}
   .ot-warn{background:#fef5e8;border:1px solid #e6b87f;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#6b4a0a}
   .ot-ok{font-size:12px;color:#2a7a47;font-weight:600}
@@ -599,7 +673,8 @@ function renderOTReport(){
       <td>${(!d.isHoliday&&workers.length)?`<button class="btn btn-outline btn-sm" onclick="toggleOtDay('${d.date}')">${open?'Hide':'Who worked'}</button>`:`<span style="color:var(--muted)">${d.isHoliday?'closed':'no rows'}</span>`}</td>
     </tr>`;
     const detail=(open&&workers.length&&!d.isHoliday)?`<tr class="day-workers"><td colspan="8">
-      ${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>`<span class="ot-chip">${esc(w.name||('#'+w.employeeNumber))} · ${fmtHrs(w.hours)}h${(w.otHours||0)>0?' · OT '+fmtHrs(w.otHours)+'h':''} · ${fmt$(w.earnings)}<span style="color:var(--muted)"> · ${esc(w.department||'Unassigned')}</span></span>`).join('')}
+      ${otEditor(d.date)}
+      ${workers.slice().sort((a,b)=>(b.hours||0)-(a.hours||0)).map(w=>otWorkerChip(d.date,w)).join('')}
     </td></tr>`:'';
     return row+detail;
   }).join('');
