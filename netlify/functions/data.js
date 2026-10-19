@@ -244,6 +244,7 @@ const hasCostClass = body => body && Object.prototype.hasOwnProperty.call(body, 
 // pay_type joined cost_class as a fact that can make a pay column inapplicable
 // on 2026-09-15: an SG&A employee moved to Salaried stops carrying a wage.
 const hasPayType = body => body && Object.prototype.hasOwnProperty.call(body, 'pay_type');
+const hasColumn = (body, col) => body && Object.prototype.hasOwnProperty.call(body, col);
 
 const scopeRefusal = (headers, employee, column) => ({
   statusCode: 409, headers, body: JSON.stringify(payRefusal(employee, column))
@@ -418,10 +419,20 @@ exports.handler = async (event) => {
       // a rate in one body must be judged against Salaried. It also makes the
       // opposite PATCH work — flipping somebody to Hourly and typing their rate
       // in one save, which is how a person actually gets fixed.
+      //
+      // EMPLOYEE NUMBER AND NAME TOO. The profile form checks the Emp # in the
+      // same save as the rate (canEditRate), so somebody can type both at once
+      // — which is how a rehire with no number on file gets reactivated and
+      // priced. Judging the rate against the stored, blank number refused that
+      // save with a 409 the form had already told them was fine.
       const nextRow = found
         ? { ...found,
             ...(hasCostClass(gated.body) ? { cost_class: gated.body.cost_class } : {}),
-            ...(hasPayType(gated.body)   ? { pay_type:   gated.body.pay_type }   : {}) }
+            ...(hasPayType(gated.body)   ? { pay_type:   gated.body.pay_type }   : {}),
+            ...(hasColumn(gated.body, 'employee_number')
+                  ? { employee_number: gated.body.employee_number } : {}),
+            ...(hasColumn(gated.body, 'name') && String(gated.body.name || '').trim()
+                  ? { name: gated.body.name } : {}) }
         : (hasCostClass(gated.body) || hasPayType(gated.body) ? gated.body : null);
 
       if (table === 'employees' && hasSalary(gated.body) && isSetting(gated.body.annual_salary)
