@@ -743,3 +743,31 @@ test('the migration widens the tier CHECK before it seeds', () => {
   assert.match(sql, /drop trigger if exists user_permissions_keep_an_admin on/);
   assert.match(sql, /drop trigger if exists user_permissions_keep_an_admin_truncate on/);
 });
+
+test('a rate may be set on somebody whose Emp # is typed in the same write', async () => {
+  // Alberto Valdovinos, 2026-10-19: a rehire with no number on file. The form
+  // collects the Emp # and the rate together and checks them together, so the
+  // server must judge the rate against the number the write lands with — not
+  // the stored blank, which answered 409 "no employee number".
+  const calls = stub({ grants: [], employee: { ...HOURLY_ROW, id: 'r1', employee_number: null,
+                                               status: 'Inactive', wage: null } });
+  const res = await patch('nobody@sequoiafp.com',
+    { status: 'Active', employee_number: '0777', cost_class: 'Manufacturing',
+      pay_type: 'Hourly', wage: '22.00' }, 'r1');
+
+  assert.strictEqual(res.statusCode, 200, res.body);
+  const history = calls.find(c => c.method === 'POST' && c.url.includes('wage_history'));
+  assert.ok(history, 'a history row is written');
+  const h = Array.isArray(history.body) ? history.body[0] : history.body;
+  assert.strictEqual(h.employee_number, '0777');
+  const write = calls.find(c => c.method === 'PATCH');
+  assert.strictEqual(write.body.status, 'Active');
+  assert.strictEqual(write.body.wage, '22.00');
+});
+
+test('a rate is still refused when no Emp # is on file or in the write', async () => {
+  stub({ grants: [], employee: { ...HOURLY_ROW, id: 'r2', employee_number: null, wage: null } });
+  const res = await patch('nobody@sequoiafp.com', { cost_class: 'Manufacturing', wage: '22.00' }, 'r2');
+  assert.strictEqual(res.statusCode, 409);
+  assert.match(JSON.parse(res.body).error, /no employee number/);
+});
