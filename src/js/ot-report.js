@@ -835,18 +835,16 @@ function renderOTReport(){
       </table>
     </div>`;
 
-  // 8. Completeness. BBSI sends the report every day, so any past day with no
-  // rows is a probable missed delivery — Saturday included.
+  // 8. Completeness. BBSI sends the report every day. The server checks what
+  // actually arrived (processed_emails), so an empty day is told apart as
+  // "file came, nobody worked" vs "file came, did not import" vs "no file".
   const comp=r.completeness||{days:[]};
-  // Three states, and the server decides all three. There used to be a fourth,
-  // 'unknown', for an empty Fri–Sun: "nobody worked, or no report arrived". That
-  // ambiguity was about the mill's schedule rather than the vendor's, and the
-  // server can no longer produce it — an unreachable state in the UI is worse
-  // than no state, so it is gone rather than left to rot.
-  const compState=d=>d.hasData?'data':(d.status==='pending'?'pending':'missing');
-  const compClass={data:'data',missing:'missing',pending:'pending'};
+  const compState=d=>d.hasData?'data':(['pending','no-hours','not-imported'].includes(d.status)?d.status:'missing');
+  const compClass={data:'data',missing:'missing',pending:'pending','no-hours':'pending','not-imported':'missing'};
   const compText={
-    missing:'no data — probable missed delivery',
+    missing:'no file arrived — missed delivery',
+    'not-imported':'file arrived but did not import — see Daily Hours',
+    'no-hours':'file arrived — nobody worked',
     pending:'not due yet — this day has not happened'
   };
   const compBlock=`
@@ -860,7 +858,7 @@ function renderOTReport(){
         </div>`;}).join('')}
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:10px">
-        ${comp.daysWithData||0} of ${comp.daysExpected||0} days have data${(comp.missingDays||[]).length?` · <span style="color:var(--brick);font-weight:700">missing: ${(comp.missingDays||[]).map(fmtDate).join(', ')}</span>`:''}
+        ${comp.daysWithData||0} of ${comp.daysExpected||0} days have data${(comp.noHoursDays||[]).length?` · ${comp.noHoursDays.length} with no hours reported`:''}${comp.deliveryUnavailable?' · delivery ledger unavailable, so every empty day is counted missing':''}${(comp.missingDays||[]).length?` · <span style="color:var(--brick);font-weight:700">missing: ${(comp.missingDays||[]).map(fmtDate).join(', ')}</span>`:''}
       </div>
     </div>`;
 

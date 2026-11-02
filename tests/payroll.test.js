@@ -733,6 +733,44 @@ test('a missing required column names the column and lists what was found', () =
   );
 });
 
+// BBSI's report for a day with no hours is not an empty table: it is a sheet
+// whose only content is one sentence. Sunday 2026-11-01 arrived exactly so and
+// was refused as "missing required columns", which made a day nobody worked
+// read as a missed delivery.
+test('the vendor\'s "nobody has any time" sheet imports as a day with no hours', () => {
+  const buf = buildXlsx({
+    sheetName: EXPECTED_SHEET,
+    rows: [['None of the selected employees have any time']]
+  });
+
+  const result = buildImport({ fileBuffer: buf, workDate: MONDAY, employees: ROSTER, timeZone: TZ });
+  assert.strictEqual(result.noTimeReported, true);
+  assert.deepStrictEqual(result.rows, []);
+  assert.strictEqual(result.counts.imported, 0);
+  assert.strictEqual(result.counts.totalRows, 0);
+  assert.strictEqual(result.totals.totalHours, 0);
+});
+
+test('the no-time sentence is only accepted when it is all the sheet says', () => {
+  // Alongside anything else it is not the vendor's empty report, and a broken
+  // file must still be refused rather than quietly imported as zero hours.
+  const buf = buildXlsx({
+    sheetName: EXPECTED_SHEET,
+    rows: [['None of the selected employees have any time', 'Emp #'], ['x', '0063']]
+  });
+  assert.throws(
+    () => buildImport({ fileBuffer: buf, workDate: MONDAY, employees: ROSTER, timeZone: TZ }),
+    /missing required column/
+  );
+
+  const ordinary = buildImport({
+    fileBuffer: buildXlsx({ sheetName: EXPECTED_SHEET,
+      rows: [PAYROLL_HEADERS, ['0063', 'Smith', 'Ana', 'No', 30, 10, 0, 10, 300]] }),
+    workDate: MONDAY, employees: ROSTER, timeZone: TZ
+  });
+  assert.strictEqual(ordinary.noTimeReported, false);
+});
+
 test('a renamed sheet still imports but says so', () => {
   const buf = buildXlsx({
     sheetName: 'Payroll Summary 2026',

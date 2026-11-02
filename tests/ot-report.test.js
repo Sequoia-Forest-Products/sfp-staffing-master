@@ -1457,6 +1457,45 @@ test('expectedDays can be narrowed so a day that has not happened yet is "pendin
   assert.strictEqual(thursday.isScheduledDay, true, 'still a scheduled day, just not due yet');
 });
 
+// The delivery ledger: an empty day is only a missed delivery when no file came.
+test('an empty day whose file arrived and imported is "no-hours", not missing', () => {
+  const r = report({ deliveries: [
+    { work_date: '2026-08-09', status: 'imported', rows_imported: 0 }
+  ] });
+  const sunday = dayOf(r.completeness.days, '2026-08-09');
+  assert.strictEqual(sunday.status, 'no-hours');
+  assert.deepStrictEqual(r.completeness.noHoursDays, ['2026-08-09']);
+  // Tuesday had no file at all: still the one missed delivery.
+  assert.deepStrictEqual(r.completeness.missingDays, ['2026-08-04']);
+  assert.strictEqual(dayOf(r.completeness.days, '2026-08-04').status, 'missing');
+  assert.strictEqual(r.completeness.deliveryUnavailable, false);
+});
+
+test('a file that arrived but did not import is still unaccounted for', () => {
+  const r = report({ deliveries: [
+    { work_date: '2026-08-09', status: 'error', rows_imported: 0 }
+  ] });
+  assert.strictEqual(dayOf(r.completeness.days, '2026-08-09').status, 'not-imported');
+  assert.deepStrictEqual(r.completeness.notImportedDays, ['2026-08-09']);
+  // Hours for the day are unknown, so the Monday email must still refuse it.
+  assert.deepStrictEqual(r.completeness.missingDays, ['2026-08-04', '2026-08-09']);
+});
+
+test('an imported delivery outranks a failed re-send for the same date', () => {
+  const r = report({ deliveries: [
+    { work_date: '2026-08-09', status: 'imported', rows_imported: 0 },
+    { work_date: '2026-08-09', status: 'pending_review', rows_imported: 0 }
+  ] });
+  assert.strictEqual(dayOf(r.completeness.days, '2026-08-09').status, 'no-hours');
+});
+
+test('without a ledger every empty past day is missing, and the report says why', () => {
+  const r = report();
+  assert.strictEqual(r.completeness.deliveryUnavailable, true);
+  assert.deepStrictEqual(r.completeness.missingDays, ['2026-08-04', '2026-08-09']);
+  assert.deepStrictEqual(r.completeness.noHoursDays, []);
+});
+
 test('every day of the week is present in days and completeness, in order', () => {
   const r = report();
   const expected = weekDates(WEEK);
@@ -1675,7 +1714,8 @@ function fakePage(rows, contentRange) {
 // index was paged. `settingsRows` supplies the row, `settingsError` makes the
 // read fail, and the default of no rows exercises the fallback.
 async function runReport({ pageFor, detailRows, settingsRows, settingsError,
-                            preApproved, preApprovedError, overtimeRows }) {
+                            preApproved, preApprovedError, overtimeRows,
+                            deliveries = [], deliveriesError = null }) {
   const handler = loadPayrollReport().handler;
   const payrollDb = require('../netlify/functions/payroll-db');
   const db = require('../netlify/functions/db');
@@ -1686,6 +1726,7 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError,
   const realPre   = payrollDb.fetchPreApprovedOt;
   const realEmp   = payrollDb.fetchEmployees;
   const realQuery = db.query;
+  const realDlv   = payrollDb.fetchDeliveriesForDates;
 
   const urls = [];
   const detailCalls = [];
@@ -1704,6 +1745,12 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError,
   };
   payrollDb.fetchOvertime   = async () => { otCalls.push(true); return overtimeRows || []; };
   payrollDb.fetchEmployees  = async () => EMPLOYEES;
+  // The processed_emails ledger, stubbed for the same reason as settings: it is
+  // not the week index, and `urls` is an assertion about the week index.
+  payrollDb.fetchDeliveriesForDates = async () => {
+    if (deliveriesError) throw deliveriesError;
+    return deliveries;
+  };
   db.query = async (table, params) => {
     settingsCalls.push([table, params]);
     if (settingsError) throw settingsError;
@@ -1720,6 +1767,7 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError,
     payrollDb.fetchPreApprovedOt = realPre;
     payrollDb.fetchEmployees = realEmp;
     db.query = realQuery;
+    payrollDb.fetchDeliveriesForDates = realDlv;
   }
 }
 
@@ -1820,6 +1868,25 @@ test('a week whose detail rows come back short of the index count is flagged', a
   assert.strictEqual(body.dataWindow.weekRowsFetched, 1);
   assert.strictEqual(body.dataWindow.weekDetailTruncated, true);
   assert.strictEqual(body.truncated, true);
+});
+
+test('the endpoint reads the delivery ledger, and a failed read falls back to missing', async () => {
+  const pageFor = () => fakePage([], '*/0');
+  // Every date in the period is reported delivered-with-no-hours.
+  const allDelivered = [];
+  {
+    const { body } = await runReport({ pageFor, detailRows: () => [], deliveries: [] });
+    for (const d of body.report.completeness.days) allDelivered.push({ work_date: d.date, status: 'imported' });
+  }
+  const ok = await runReport({ pageFor, detailRows: () => [], deliveries: allDelivered });
+  const c = ok.body.report.completeness;
+  assert.strictEqual(c.deliveryUnavailable, false);
+  assert.deepStrictEqual(c.missingDays, []);
+  assert.ok(c.days.every(d => d.status === 'no-hours' || d.status === 'pending'));
+
+  const failed = await runReport({ pageFor, detailRows: () => [], deliveriesError: new Error('boom') });
+  assert.strictEqual(failed.res.statusCode, 200, 'a ledger failure must not take the report down');
+  assert.strictEqual(failed.body.report.completeness.deliveryUnavailable, true);
 });
 
 test('the window scan pages until the exact count is satisfied', async () => {
