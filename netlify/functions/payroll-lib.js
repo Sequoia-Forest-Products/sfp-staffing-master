@@ -300,6 +300,25 @@ function mapHeaders(headers) {
   return { mapping, missing };
 }
 
+// BBSI's whole report on a day with no hours. Matched on the sentence, and only
+// when the sentence is ALL the sheet says — a real table that happens to carry
+// it somewhere is still a table, and still gets the missing-columns error.
+const NO_TIME_SENTENCE = /^none of the selected employees have any time\.?$/i;
+
+function isNoTimeSheet(parsed) {
+  const cells = [];
+  for (const h of (parsed && parsed.headers) || []) cells.push(h);
+  for (const record of (parsed && parsed.rows) || []) {
+    for (const v of Object.values(record || {})) cells.push(v);
+  }
+  // Blank header cells come back as their column letter (A, B, ...); they
+  // carry nothing.
+  const text = cells
+    .map(v => (v === null || v === undefined ? '' : String(v).trim()))
+    .filter(v => v && !/^[A-Z]{1,3}$/.test(v));
+  return text.length > 0 && text.every(v => NO_TIME_SENTENCE.test(v.replace(/\s+/g, ' ')));
+}
+
 // ============================================================
 // IMPORT
 // ============================================================
@@ -367,7 +386,21 @@ function buildImport({
     }
   }
 
-  const { mapping, missing } = mapHeaders(parsed.headers);
+  let { mapping, missing } = mapHeaders(parsed.headers);
+
+  // A day nobody worked. BBSI does not send the usual table with no rows under
+  // it — it sends a sheet whose only content is the sentence "None of the
+  // selected employees have any time". That is a delivered, legitimate report
+  // of zero hours, not a malformed file, and refusing it turned every such day
+  // into an import error and a "probable missed delivery" (Sunday 2026-11-01).
+  // It parses as an empty day: no rows, nothing missing, imported.
+  const noTimeReported = missing.length > 0 && isNoTimeSheet(parsed);
+  if (noTimeReported) {
+    mapping = {};
+    missing = [];
+    parsed = { ...parsed, rows: [] };
+  }
+
   if (missing.length) {
     // This message goes straight to the import screen and to the alert email,
     // so it names what is missing AND what we actually saw.
@@ -665,7 +698,8 @@ function buildImport({
     unmatched,
     missingDepartment,
     anomalies,
-    sample
+    sample,
+    noTimeReported
   };
 }
 

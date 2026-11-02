@@ -218,10 +218,19 @@ async function buildWeekReport({ weekStart, from = null, to = null, today, weekW
     : null;
   const weekDetailTruncated = weekRowsExpected !== null && dailyRows.length < weekRowsExpected;
 
-  const [standing, employees, reportSettings] = await Promise.all([
+  const [standing, employees, reportSettings, deliveries] = await Promise.all([
     loadStandingAllowance(),
     payrollDb.fetchEmployees(),
-    loadReportSettings()
+    loadReportSettings(),
+    // The ledger of what BBSI actually sent, which is the only thing that can
+    // tell "a file came and nobody worked" from "no file came". Same read, same
+    // rule, as the Daily Hours tab. A failed read is NOT an answer: it comes
+    // back null, and completeness falls back to calling every empty day
+    // missing — and says why.
+    payrollDb.fetchDeliveriesForDates(periodFrom, periodTo).catch(err => {
+      console.error('processed_emails read failed for the OT report:', err.message);
+      return null;
+    })
   ]);
   const { graceHoursPerEmployee, holidays } = reportSettings;
 
@@ -240,6 +249,7 @@ async function buildWeekReport({ weekStart, from = null, to = null, today, weekW
     preApprovedRows: standing.rows,
     employees: employees || [],
     expectedDays,
+    deliveries,
     graceHoursPerEmployee,
     holidays
   });

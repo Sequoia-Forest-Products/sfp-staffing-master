@@ -1154,3 +1154,41 @@ test('a refused save keeps the editor open and says why', async () => {
   assert.match(lastToast(ctx).msg, /cannot be more than 24/);
   assert.strictEqual(lastToast(ctx).type, 'error');
 });
+
+// ---------------------------------------------------------------------------
+// Completeness tiles read the delivery ledger's verdict, not just "no rows".
+// Sunday 2026-11-01: BBSI sent "None of the selected employees have any time"
+// and the tile said "probable missed delivery". A file came; nobody worked.
+// ---------------------------------------------------------------------------
+
+test('a day whose file arrived with no hours is not shown as a missed delivery', () => {
+  const html = withOtReport(sandbox(), {
+    completeness: {
+      days: [
+        { date: '2026-08-29', dayName: 'Saturday', hasData: true, rowCount: 2, expected: true, status: 'data' },
+        { date: '2026-08-30', dayName: 'Sunday', hasData: false, rowCount: 0, expected: true, status: 'no-hours' }
+      ],
+      missingDays: [], noHoursDays: ['2026-08-30'], notImportedDays: [],
+      daysWithData: 1, daysExpected: 2, deliveryUnavailable: false
+    }
+  });
+  assert.match(html, /file arrived — nobody worked/);
+  assert.match(html, /1 with no hours reported/);
+  assert.doesNotMatch(html, /missed delivery/);
+  assert.doesNotMatch(html, /missing:/);
+});
+
+test('each empty-day state gets its own tile text', () => {
+  const day = (date, status) => ({ date, dayName: 'Monday', hasData: false, rowCount: 0, expected: true, status });
+  const html = withOtReport(sandbox(), {
+    completeness: {
+      days: [day('2026-08-24', 'missing'), day('2026-08-25', 'not-imported')],
+      missingDays: ['2026-08-24', '2026-08-25'], noHoursDays: [], notImportedDays: ['2026-08-25'],
+      daysWithData: 0, daysExpected: 2, deliveryUnavailable: true
+    }
+  });
+  assert.match(html, /no file arrived — missed delivery/);
+  assert.match(html, /file arrived but did not import/);
+  assert.match(html, /delivery ledger unavailable/);
+  assert.doesNotMatch(html, /probable missed delivery/, 'the old guess stays gone');
+});

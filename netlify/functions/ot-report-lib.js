@@ -30,6 +30,11 @@
 //                 must narrow it to days that have already happened, the way
 //                 payroll-report.js does. Anything not in the set reads as
 //                 'pending' rather than as a missed delivery.
+//   deliveries    processed_emails rows ({work_date, status}) for the period —
+//                 what BBSI actually sent. An empty day whose file arrived and
+//                 imported is 'no-hours' (nobody worked), not missing. Omitted
+//                 or null means the ledger could not be read, and every empty
+//                 day falls back to 'missing' with deliveryUnavailable set.
 //   graceHoursPerEmployee
 //                 the timeclock grace allowance, in hours per active hourly
 //                 employee per week; DEFAULT_GRACE_HOURS when it is missing or
@@ -53,10 +58,12 @@
 //      keep them separable, because they are different promises to different
 //      people and a single merged number cannot be argued with.
 //
-// "No data" NEVER means "nobody worked". BBSI sends the Work Summary Payroll
-// report seven days a week, so a past day with no rows is a probable missed
-// delivery whichever day of the week it is — completeness calls every one of
-// them 'missing'. A day that simply has not happened yet is 'pending'.
+// "No data" alone NEVER means "nobody worked". BBSI sends the Work Summary
+// Payroll report seven days a week, so a past day with no rows is judged by
+// what actually arrived (the `deliveries` ledger): a file that imported with no
+// hours is 'no-hours', a file that failed is 'not-imported', and no file at all
+// is 'missing'. Without the ledger every empty past day is 'missing'. A day that
+// simply has not happened yet is 'pending'.
 //
 // This used to carve out Fri/Sat/Sun as 'no-data-nonscheduled', on the grounds
 // that an empty Saturday might just be a quiet Saturday. That was reasoning
@@ -445,6 +452,7 @@ function buildReport({
   overtimeRows = [],
   employees = [],
   expectedDays = null,
+  deliveries = null,
   graceHoursPerEmployee = null,
   // Dates the mill did not run: 'YYYY-MM-DD', from the holiday list on the
   // Settings tab. See the partition below for what a holiday does to a figure.
@@ -1227,8 +1235,22 @@ function buildReport({
     ? new Set(expectedDays.map(normalizeDate).filter(Boolean))
     : new Set(dates);
 
+  // What arrived, per date. An imported delivery wins over a failed one for the
+  // same date: once any file for the day imported, the day is accounted for.
+  const deliveryUnavailable = !Array.isArray(deliveries);
+  const deliveredStatus = new Map();
+  for (const dlv of deliveries || []) {
+    const date = normalizeDate(dlv && dlv.work_date);
+    if (!date) continue;
+    const imported = dlv.status === 'imported';
+    if (imported || !deliveredStatus.has(date)) {
+      deliveredStatus.set(date, imported ? 'imported' : 'not-imported');
+    }
+  }
+
   const completenessDays = days.map(day => {
     const expected = expectedSet.has(day.date);
+    const delivery = deliveredStatus.get(day.date) || null;
     return {
       date: day.date,
       dayName: day.dayName,
@@ -1239,23 +1261,37 @@ function buildReport({
       hasData: day.hasData,
       rowCount: day.rowCount,
       expected,
-      // Three states, and every day of the week reaches all three:
-      //   'data'     rows are present
-      //   'missing'  the day has passed and is empty — a probable missed delivery
-      //   'pending'  the day is not in the expected set, i.e. it has not
-      //              happened yet. Never a judgement about whether anyone worked.
-      status: day.hasData ? 'data' : (expected ? 'missing' : 'pending')
+      // Every day of the week can reach every state:
+      //   'data'          rows are present
+      //   'no-hours'      the file arrived and imported, reporting no hours.
+      //                   Nobody worked. A known fact, not a gap.
+      //   'not-imported'  a file arrived and did not import (error, pending
+      //                   review). Hours unknown until it is resolved.
+      //   'missing'       the day has passed and no file arrived — the only
+      //                   real missed delivery
+      //   'pending'       the day is not in the expected set, i.e. it has not
+      //                   happened yet. Never a judgement about whether anyone worked.
+      status: day.hasData ? 'data'
+        : !expected ? 'pending'
+        : delivery === 'imported' ? 'no-hours'
+        : delivery === 'not-imported' ? 'not-imported'
+        : 'missing'
     };
   });
 
   const expectedDayList = completenessDays.filter(d => d.expected);
   const completeness = {
     days: completenessDays,
-    // Renamed off "scheduled": these count every day the vendor owed a report,
-    // which is all of them. A name promising Mon-Thu would now be a lie.
-    missingDays: expectedDayList.filter(d => !d.hasData).map(d => d.date),
+    // Every expected day whose hours are not known: no file, or a file that did
+    // not import. A 'no-hours' day is known — zero — so it is not here. The
+    // Monday email refuses to send on anything in this list.
+    missingDays: expectedDayList
+      .filter(d => d.status === 'missing' || d.status === 'not-imported').map(d => d.date),
+    notImportedDays: expectedDayList.filter(d => d.status === 'not-imported').map(d => d.date),
+    noHoursDays: expectedDayList.filter(d => d.status === 'no-hours').map(d => d.date),
     daysWithData: expectedDayList.filter(d => d.hasData).length,
-    daysExpected: expectedDayList.length
+    daysExpected: expectedDayList.length,
+    deliveryUnavailable
   };
 
   // ---- holiday pay -----------------------------------------------------

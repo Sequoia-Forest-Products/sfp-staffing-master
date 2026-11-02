@@ -515,7 +515,7 @@ report tracks expected-versus-received days explicitly and renders three distinc
 | State | Meaning |
 |---|---|
 | **data** | rows imported for that day |
-| **missing** | a scheduled Mon-Thu day with no rows — a probable missed delivery, shown as a problem |
+| **missing** | a past day with no rows and no file in `processed_emails` — a missed delivery, shown as a problem (an empty day whose file imported is **no-hours**; one whose file failed is **not-imported**) |
 | **no data** | a Fri-Sun day with no rows — nobody worked, *or* no report arrived. Unknown, and shown as unknown |
 
 The daily missed-delivery check is the other half of this. Nobody forwards these emails
