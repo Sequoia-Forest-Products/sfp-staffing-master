@@ -202,6 +202,21 @@ function costRateGapNote(report){
     </div>`;
 }
 
+// Active hourly people the daily feed never mentioned in this period. Shown
+// because they cost nothing on this page, and a person costing nothing is far
+// more often a person missing from the timeclock's report than a person off.
+function costNoHoursNote(report){
+  const list=(report&&report.noHours)||[];
+  if(!list.length) return '';
+  return `<div class="cost-note cost-warn"><strong>${list.length} active hourly ${list.length===1?'person has':'people have'} no hours in this period.</strong>
+    Either they were off the whole period, or they are missing from the timeclock's daily report — and if so,
+    their cost is missing from every figure below.</div>
+    <div class="cost-panel">
+      ${list.map(p=>`<div class="cost-gap"><strong>${esc(p.name)}</strong> · ${esc(p.department||'—')}
+        ${p.employeeNumber?`<span style="color:var(--muted)"> · #${esc(p.employeeNumber)}</span>`:''}</div>`).join('')}
+    </div>`;
+}
+
 function costBullpenBlock(report){
   const pen=(report&&report.bullpen)||[];
   if(!pen.length) return '';
@@ -289,7 +304,7 @@ function costStatCards(report, opts){
     <div class="stat-card"><div class="stat-label">Hours</div><div class="stat-value">${costNum(t.hours)}</div>
       <div class="stat-sub">salaried staff at a standard ${report?report.standardWeeklyHours:40}-hr week</div></div>
     <div class="stat-card"><div class="stat-label">Cost</div><div class="stat-value">${costMoney(t.cost)}</div>
-      <div class="stat-sub">wages only, no burden</div></div>
+      <div class="stat-sub">wages only, no burden${t.otPremium?` · incl. ${costMoney(t.otPremium)} OT premium`:''}</div></div>
     <div class="stat-card"><div class="stat-label">Burdened cost</div><div class="stat-value">${costMoney(t.burdenedCost)}</div>
       <div class="stat-sub">at ${(costBurden()*100).toFixed(0)}% burden</div></div>
     <div class="stat-card"><div class="stat-label">Burdened $/hr</div><div class="stat-value">${costMoney(t.burdenedCostPerHour)}</div></div>
@@ -416,7 +431,8 @@ function costSection(costClass, classes, opts){
     + costAllocationNote(view)
     + costStatCards(r, opts)
     + costTotalsNote(r)
-    + costRateGapNote(r);
+    + costRateGapNote(r)
+    + costNoHoursNote(r);
 
   return head
     + costSuppressionNote(r)

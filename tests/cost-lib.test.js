@@ -694,3 +694,58 @@ test('the one exception, other half: Axeri is hourly and is SG&A, not Manufactur
   // must not be reported as a finding outside Manufacturing.
   assert.deepStrictEqual(sga.bullpen, []);
 });
+
+// ---------------------------------------------------------------------------
+// Overtime is priced at its premium, and people with no hours are named
+// ---------------------------------------------------------------------------
+//
+// Found by Ryley Stanley's payroll reconciliation of 9/28-10/25/2026: the cost
+// report priced every hour at straight time ($9,280.70 understated), and five
+// active hourly people missing from the timeclock's daily report were costed at
+// nothing without a word.
+
+const splitDay = (employee_number, regular_hours, ot_hours) =>
+  ({ employee_number, regular_hours, ot_hours, total_hours: regular_hours + ot_hours });
+
+test('overtime costs 1.5x from 10 to 12 hours and 2.0x above, per day', () => {
+  const emp = hourly({ name: 'OT', wage: 20, employee_number: '9001' });
+  // 11 hours: 10 reg + 1 at 1.5x = 200 + 30. 13 hours: 10 reg + 2 at 1.5x + 1 at 2x = 200 + 60 + 40.
+  const p = personCost(emp, 24, STANDARD_WEEKLY_HOURS, [splitDay('9001', 10, 1), splitDay('9001', 10, 3)]);
+  assert.strictEqual(p.cost, 530);
+  assert.strictEqual(p.otPremium, 50, 'straight time would be 480');
+});
+
+test('buildCostReport carries the overtime premium into cost and names it in totals', () => {
+  const emp = hourly({ name: 'OT', wage: 20, employee_number: '9001' });
+  const r = buildCostReport({
+    employees: [emp], dailyRows: [splitDay('9001', 10, 2)], minBucketHeadcount: 1
+  });
+  assert.strictEqual(r.totals.hours, 12);
+  assert.strictEqual(r.totals.cost, 260, '10 x 20 + 2 x 30, not 12 x 20');
+  assert.strictEqual(r.totals.otPremium, 20);
+});
+
+test('a salaried person is still costed on standard hours, whatever days arrive', () => {
+  const p = personCost(EDUARDO, 0, STANDARD_WEEKLY_HOURS, [splitDay('0101', 10, 4)]);
+  assert.strictEqual(p.cost, round2Test(50.48 * STANDARD_WEEKLY_HOURS));
+  assert.strictEqual(p.otPremium, 0);
+});
+
+test('an active hourly person with no rows in the period is listed by name, not costed silently at zero', () => {
+  const worked = hourly({ name: 'Worked', wage: 20, employee_number: '1' });
+  const missing = hourly({ name: 'Missing', wage: 20, employee_number: '2', department: 'Production' });
+  const r = buildCostReport({
+    employees: [worked, missing, EDUARDO], dailyRows: [splitDay('1', 10, 0)], minBucketHeadcount: 1
+  });
+  assert.deepStrictEqual(r.noHours.map(p => p.name), ['Missing'], 'salaried people are never on this list');
+  assert.strictEqual(r.totals.peopleWithoutHours, 1);
+  assert.ok(!('rate' in r.noHours[0]) && !('cost' in r.noHours[0]), 'the list carries no compensation');
+});
+
+test('a row without the regular/OT split is costed at straight time on its total, never at zero', () => {
+  const p = personCost(hourly({ name: 'A', wage: 30, employee_number: '7' }), 10, STANDARD_WEEKLY_HOURS,
+    [{ employee_number: '7', total_hours: 10 }]);
+  assert.strictEqual(p.cost, 300);
+});
+
+function round2Test(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }

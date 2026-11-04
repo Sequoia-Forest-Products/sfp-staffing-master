@@ -22,6 +22,7 @@
 
 const { effectiveHourlyRate, isSalaried, SALARY_HOURS_PER_YEAR } = require('./wage-sync');
 const { STANDARD_WEEKLY_HOURS } = require('./period-lib');
+const { dayPay } = require('./pay-rules-lib');
 
 // STANDARD_WEEKLY_HOURS is the mill's Mon-Thu 4x10 = 40, and it now comes from
 // period-lib because the same figure scales the OT report's weekly allowances.
@@ -121,7 +122,19 @@ function costedHours(employee, actualHours, standardHours = STANDARD_WEEKLY_HOUR
 
 // One person's cost, or an explained gap. Never a substituted zero: a person
 // with no usable rate is a data problem worth seeing, not somebody who is free.
-function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS) {
+//
+// OVERTIME IS PRICED AT ITS PREMIUM, as of 2026-11-04. `days` is the person's
+// daily_hours rows for the period. When it is given, an hourly person costs
+// what pay-rules-lib's dayPay says each day costs — regular hours at the rate,
+// overtime at 1.5x from 10 to 12 hours and 2.0x above — which is the same rule
+// the OT report has used since the feed went hours-only. Before this the cost
+// report priced every hour at straight time, which Ryley Stanley's payroll
+// reconciliation of 9/28-10/25 put at $9,280.70 understated on Manufacturing.
+//
+// Without `days` the old rate x hours stands, so a caller that only knows a
+// total (and the tests that pin that arithmetic) gets exactly what it got.
+// Salaried people ignore `days` entirely: they are costed on standard hours.
+function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS, days = null) {
   const { rate, source } = effectiveHourlyRate(employee);
   const hours = costedHours(employee, actualHours, standardHours);
 
@@ -150,7 +163,25 @@ function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS
     };
   }
 
-  return { rate, source, hours, cost: round2(rate * hours), gap: null };
+  const straight = round2(rate * hours);
+  if (!Array.isArray(days) || isSalaried(employee)) {
+    return { rate, source, hours, cost: straight, otPremium: 0, gap: null };
+  }
+
+  // Summed per day, because the 2.0x tier is a fact about a single day: twelve
+  // hours on Monday and twelve on Tuesday is no double time, twenty-four in one
+  // punch is.
+  let cost = 0;
+  for (const day of days) {
+    // A row without the split (a hand-made or historic row) is all regular
+    // time on its total — straight time, as before, never a zero.
+    const hasSplit = day && (day.regular_hours != null || day.ot_hours != null);
+    const ot = hasSplit ? num(day.ot_hours) : 0;
+    const regular = hasSplit ? num(day.regular_hours) : num(day && day.total_hours);
+    const pay = dayPay(regular, ot, rate);
+    cost = round2(cost + (pay.earnings || 0));
+  }
+  return { rate, source, hours, cost, otPremium: round2(cost - straight), gap: null };
 }
 
 // Burdened cost, and cost per thousand board feet. Both are display-level
@@ -316,10 +347,13 @@ function buildCostReport({
   standardHours = STANDARD_WEEKLY_HOURS
 } = {}) {
   const hoursByEmployeeNumber = new Map();
+  const daysByEmployeeNumber = new Map();
   for (const row of dailyRows) {
     const key = textOf(row && (row.employee_number != null ? row.employee_number : row.employeeNumber));
     if (!key) continue;
     hoursByEmployeeNumber.set(key, round2((hoursByEmployeeNumber.get(key) || 0) + num(row.total_hours)));
+    if (!daysByEmployeeNumber.has(key)) daysByEmployeeNumber.set(key, []);
+    daysByEmployeeNumber.get(key).push(row);
   }
 
   const allocByEmployee = new Map();
@@ -339,6 +373,15 @@ function buildCostReport({
   const byPositionGroup = new Map();
   const bullpen = [];
   const rateGaps = [];
+  // Active hourly people with NO daily_hours row in the period. Found
+  // 2026-11-04: every hire created since 2026-09-10 (and Alberto Valdovinos,
+  // since July) was missing from the timeclock's daily report, so the feed
+  // never carried them and this page costed them at nothing without saying so.
+  // A week off produces the same picture, so this is a list to check, not a
+  // verdict. Named for the same reason rateGaps is: it is unactionable without
+  // the name, and it is not compensation.
+  const noHours = [];
+  let otPremium = 0;
   let totalHours = 0;
   let totalCost = 0;
   let totalBurdened = 0;
@@ -346,7 +389,12 @@ function buildCostReport({
   for (const emp of members) {
     const name = textOf(emp.name);
     const empNum = textOf(emp.employee_number != null ? emp.employee_number : emp.empNum);
-    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0, standardHours);
+    const days = daysByEmployeeNumber.get(empNum) || [];
+    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0, standardHours, days);
+    if (!isSalaried(emp) && days.length === 0) {
+      noHours.push({ name, department: textOf(emp.department) || UNASSIGNED_DEPARTMENT, employeeNumber: empNum });
+    }
+    if (priced.otPremium) otPremium = round2(otPremium + priced.otPremium);
     const person = { ...priced, name };
 
     const primaryDept = textOf(emp.department) || UNASSIGNED_DEPARTMENT;
@@ -459,6 +507,7 @@ function buildCostReport({
     // Named on purpose: "somebody has no rate" is unactionable without the name,
     // and this is the one place a name is required. It is not compensation.
     rateGaps: rateGaps.sort((a, b) => a.name.localeCompare(b.name)),
+    noHours: noHours.sort((a, b) => a.name.localeCompare(b.name)),
     minBucketHeadcount,
     // True when at least one bucket withheld its money, so a reader can tell
     // why the visible buckets do not sum to the total.
@@ -475,6 +524,10 @@ function buildCostReport({
       burdenedCostPerHour: (totalsSuppressed || totalHours <= 0) ? null : round2(totalBurdened / totalHours),
       costPerThousand: totalsSuppressed ? null : costPerThousand(totalBurdened, totalHours, mbfPerHour),
       peopleWithoutRate: rateGaps.length,
+      peopleWithoutHours: noHours.length,
+      // The part of `cost` that is overtime premium over straight time. Withheld
+      // with the rest of the money when the class is too small to show it.
+      otPremium: totalsSuppressed ? null : otPremium,
       suppressed: totalsSuppressed,
       suppressedReason: totalsReason
     }
