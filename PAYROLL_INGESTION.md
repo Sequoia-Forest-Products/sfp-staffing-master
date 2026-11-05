@@ -17,7 +17,8 @@ payroll system", "BBSI" or "Central Servers", it means the same place.
 
 ```
 BBSI / Central Servers (no-reply@centralservers.com)
-   |  daily .xlsx, ~6:04 AM Pacific
+   |  daily .xlsx, 8:00 AM Pacific (prior day)
+   |  weekly .xlsx, Mondays 10:00 AM Pacific (prior week, punches corrected)
    v
 info@sequoiafp.com  — shared inbox
    |  Gmail filter applies the label: payroll import   (Skip Inbox, Mark as read)
@@ -232,8 +233,8 @@ So:
 work_date = (received timestamp converted to America/Los_Angeles) - 1 day
 ```
 
-The conversion to Pacific happens **before** the calendar date is taken. The 6:04 AM
-Pacific arrival is 13:04 UTC, so today the UTC date and the Pacific date agree — but any
+The conversion to Pacific happens **before** the calendar date is taken. The 8:00 AM
+Pacific arrival is 15:00-16:00 UTC, so today the UTC date and the Pacific date agree — but any
 drift in send time toward midnight would silently shift the date by a day, so the zone is
 explicit in the code rather than incidental.
 

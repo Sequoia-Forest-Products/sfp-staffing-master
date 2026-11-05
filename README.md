@@ -1062,7 +1062,7 @@ Netlify env vars to make even the scheduled run compose-and-log only.
 
 Full guide: **[`PAYROLL_INGESTION.md`](PAYROLL_INGESTION.md)**. The short version:
 
-BBSI emails `Work Summary Payroll.xlsx` to `info@sequoiafp.com` every morning at ~6:04 AM
+BBSI emails `Work Summary Payroll.xlsx` to `info@sequoiafp.com` every morning at 8:00 AM
 Pacific. (**BBSI and Central Servers are one vendor** — BBSI is the PEO, Central Servers is
 their reporting platform and the actual sender, `no-reply@centralservers.com`. Not two
 systems.) A Gmail filter labels it `payroll import` and skips the inbox. An hourly
@@ -1157,10 +1157,11 @@ mis-reported flip to their correct state the first time the tab is loaded after 
 `ot-weekly-email` (schedule in `netlify.toml`, logic in `ot-weekly-email-lib.js`) emails the
 Mon–Sun week **that just finished** to everyone on `settings.emailSettings.managers`.
 
-**Why 17:00 UTC Monday.** Sunday's hours do not exist until Monday: BBSI sends the daily file at
-~6:04 AM Pacific and `payroll-email-ingest` collects it on the next `:15`. 17:00 UTC is 10:00 AM
-Pacific in summer and 9:00 AM in winter — three to four hours and three to four ingest attempts
-after the file is due. Anything earlier risks a six-day week wearing a seven-day label. Anything
+**Why 19:30 UTC Monday.** The email should report the *reconciled* week. BBSI sends the daily
+file at 8:00 AM Pacific and the weekly file — last week with punch corrections applied — at
+10:00 AM Pacific Monday; `payroll-email-ingest` collects each on the next `:15`. 19:30 UTC is
+12:30 PM Pacific in summer and 11:30 AM in winter, after the weekly file and its 11:00 AM
+missing-file alert. Anything earlier sends the provisional snapshot, open punches at 0.00. Anything
 before ~08:00 UTC is worse than late: Pacific has not reached Monday yet, so `todayInZone` still
 says Sunday and the job would send *the week before last* with nothing looking wrong about it.
 `tests/ot-weekly-email.test.js` pins both ends of that.

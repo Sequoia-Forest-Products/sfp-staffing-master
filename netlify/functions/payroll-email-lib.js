@@ -1,5 +1,7 @@
-// Automated ingestion of the daily payroll .xlsx that the payroll vendor emails
-// to info@sequoiafp.com at ~6:04 AM Pacific.
+// Automated ingestion of the payroll .xlsx files the payroll vendor emails to
+// info@sequoiafp.com: the daily file at 8:00 AM Pacific (prior day) and the
+// weekly file Mondays at 10:00 AM Pacific (prior week, punches corrected).
+// The schedule is in timeclock-config.js.
 //
 // Kept separate from the handlers so the same code powers:
 //   - payroll-email-ingest.js   (hourly, imports for real)
@@ -45,12 +47,14 @@ const DEFAULTS = {
 const ATTACHMENT_NAME = 'Work Summary Payroll.xlsx';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// The vendor sends at ~6:04 AM Pacific. Anything outside this window still
-// imports — the file is the file — but it is flagged and reported, because an
-// arrival at an odd hour is the strongest available signal that the -1 day
-// inference is about to land on the wrong date.
-const EARLIEST_EXPECTED_HOUR = 4;
-const LATEST_EXPECTED_HOUR   = 10;
+// The daily file is due at 8:00 AM Pacific (timeclock-config.js). Anything
+// outside this window still imports — the file is the file — but it is flagged
+// and reported, because an arrival at an odd hour is the strongest available
+// signal that the -1 day inference is about to land on the wrong date. The
+// weekly file is dated by its own rows and never goes through this check.
+const { DAILY_FILE } = require('./timeclock-config');
+const EARLIEST_EXPECTED_HOUR = DAILY_FILE.earliestHour;
+const LATEST_EXPECTED_HOUR   = DAILY_FILE.latestHour;
 
 const STALE_AFTER_DAYS = 7;
 const MAX_MESSAGES     = 200;
@@ -154,8 +158,8 @@ function todayInZone(now, timeZone) {
 
 // The whole inference, in one place: the file that arrives this morning covers
 // YESTERDAY's work. Convert to Pacific FIRST, then subtract a day — taking the
-// UTC calendar date would be wrong for every arrival before 5 PM Pacific... and
-// right for the 6 AM delivery only by luck of the offset.
+// UTC calendar date would be wrong for every arrival before 4 PM Pacific... and
+// right for the 8 AM delivery only by luck of the offset.
 function deriveWorkDate(receivedAt, timeZone = DEFAULTS.timeZone) {
   // new Date(null) is the epoch, not an invalid date — an absent timestamp must
   // never quietly become 1969-12-31.

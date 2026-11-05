@@ -23,7 +23,7 @@
 
 const crypto = require('crypto');
 
-// The payroll vendor sends at ~6:04 AM Pacific, so payroll dates are Pacific
+// The payroll vendor sends on Pacific time (daily file 8:00 AM), so payroll dates are Pacific
 // dates. birthday-lib.js uses America/Boise for the mill's own clock — these
 // are two different questions and must not be unified.
 const DEFAULT_TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';

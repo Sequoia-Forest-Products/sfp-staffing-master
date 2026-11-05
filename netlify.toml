@@ -42,9 +42,11 @@
 
 # Payroll email ingestion — hourly, every day.
 #
-# The vendor sends the report at ~6:04 AM Pacific (13:04 UTC in summer, 14:04 in
-# winter), but polling hourly means a delayed report still lands the same day
-# instead of waiting until tomorrow. Each run searches only the "payroll import"
+# The daily file is due at 8:00 AM Pacific (15:00 UTC in summer, 16:00 in
+# winter) and the weekly file Mondays at 10:00 AM Pacific; see
+# netlify/functions/timeclock-config.js. Polling hourly means a delayed file
+# still lands the same day, and it is the only way a UTC cron can follow
+# daylight saving. Each run searches only the "payroll import"
 # Gmail label over a rolling 7-day window and skips any Message-ID already in
 # processed_emails, so the repeat runs are cheap and re-processing is harmless.
 #
@@ -57,8 +59,9 @@
   schedule = "15 * * * *"
 
 # Missed-delivery check — once daily at 19:00 UTC (12:00 PM PDT / 11:00 AM PST),
-# well after the delivery window has closed, so a merely late report is not
-# reported as a missing one.
+# well after the 8:00 AM delivery and its 9:00 AM missing-file alert, so a
+# merely late report is not emailed as a missing one. The Alerts tab raises
+# Daily file missing from 9:00 AM Pacific (alerts-evaluate, below).
 #
 # Nobody touches these emails by hand, so nobody would notice if they stopped
 # arriving. This is the only thing that surfaces a broken pipeline. It escalates
@@ -68,18 +71,18 @@
 [functions."payroll-missed-check"]
   schedule = "0 19 * * *"
 
-# Weekly manager overtime email — Monday, 17:00 UTC.
+# Weekly manager overtime email — Monday, 19:30 UTC.
 #
-# 17:00 UTC is 10:00 AM Pacific in summer (PDT) and 9:00 AM in winter (PST).
+# 19:30 UTC is 12:30 PM Pacific in summer (PDT) and 11:30 AM in winter (PST).
 # Netlify cron is UTC and does not shift with DST, so one of the two is what you
-# get; both are mid-morning Monday, which is when a manager can act on the week.
+# get; both are late morning Monday.
 #
-# The margin is the whole reason for the hour. Sunday's hours do not exist until
-# Monday: BBSI sends the daily file at ~6:04 AM Pacific and payroll-email-ingest
-# above collects it on the next :15. That is 13:04 UTC in summer, 14:04 in
-# winter, so 17:00 leaves three to four hours and three or four ingest attempts
-# after the file is due. Move this earlier and the email becomes a six-day week
-# wearing a seven-day label.
+# The hour exists to send the RECONCILED week. BBSI's weekly file — last week
+# with punch corrections applied — is due at 10:00 AM Pacific Monday (17:00 UTC
+# summer, 18:00 winter) and is collected on the next :15. Before it lands, the
+# week is the daily snapshots, with every open punch frozen at 0.00. Move this
+# earlier and managers act on the provisional figures the October payroll
+# reconciliation found ~$22K short.
 #
 # It sends the week that just FINISHED (previous Mon-Sun), derived from the
 # date rather than from the schedule — so a manual "Run now" on a Wednesday
@@ -88,7 +91,7 @@
 # If any day of that week has no hours, it sends nothing and alerts
 # PAYROLL_ALERT_EMAIL instead. See ot-weekly-email-lib.js.
 [functions."ot-weekly-email"]
-  schedule = "0 17 * * 1"
+  schedule = "30 19 * * 1"
 
 [[redirects]]
   from = "/auth/callback"
