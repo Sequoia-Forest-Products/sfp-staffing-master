@@ -681,7 +681,118 @@ function listProcessedEmails(opts = {}) {
   return requestRows('GET', `processed_emails?${filters.join('&')}`);
 }
 
+// ============================================================
+// TIMECLOCK RECONCILIATION (SCHEMA_TIMECLOCK_RECONCILE.sql)
+// ============================================================
+
+// The one write path for imported hours. replace_hours() deletes every date in
+// `dates` from daily_hours AND daily_hours_held and inserts the new rows, all in
+// one transaction, then records the import and stamps each day provisional or
+// reconciled. A failure changes nothing; a success leaves nothing of the old
+// file behind. Never call upsertDailyHours for an import any more.
+async function replaceHours({ importMeta, dates, rows = [], held = [] }) {
+  if (!Array.isArray(dates) || !dates.length) throw new Error('replaceHours: no dates');
+  const result = await request('POST', 'rpc/replace_hours', {
+    body: { p_import: importMeta, p_dates: dates, p_rows: rows, p_held: held }
+  });
+  // request() wraps whatever PostgREST returned as .rows; for an rpc that is
+  // the function's jsonb result, not an array.
+  return result.rows;
+}
+
+function fetchHeldRows({ reason, from, to, employeeNumber } = {}) {
+  const f = ['select=*'];
+  if (reason) f.push(`reason=eq.${encode(reason)}`);
+  if (from) f.push(`work_date=gte.${encode(from)}`);
+  if (to) f.push(`work_date=lte.${encode(to)}`);
+  if (employeeNumber) f.push(`employee_number=eq.${encode(employeeNumber)}`);
+  f.push('order=work_date.asc,employee_number.asc');
+  return requestRows('GET', `daily_hours_held?${f.join('&')}`);
+}
+
+async function reattributeHeld(employeeNumber, department) {
+  const result = await request('POST', 'rpc/reattribute_held', {
+    body: { p_employee_number: employeeNumber, p_department: department || null }
+  });
+  return Number(result.rows) || 0;
+}
+
+function fetchExclusions() {
+  return requestRows('GET', 'timeclock_exclusions?select=*&order=employee_number.asc');
+}
+
+async function addExclusion(row) {
+  const rows = await requestRows('POST', 'timeclock_exclusions?on_conflict=employee_number',
+    { body: row, headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' } });
+  return rows[0] || null;
+}
+
+// Moves held rows for a number that has just been marked BBSI staff from
+// 'unknown' to 'external', so they stop reading as a pending new hire.
+function markHeldExternal(employeeNumber) {
+  return requestRows('PATCH',
+    `daily_hours_held?employee_number=eq.${encode(employeeNumber)}&reason=eq.unknown`,
+    { body: { reason: 'external' } });
+}
+
+function fetchHoursDays(fromDate, toDate) {
+  return requestRows('GET',
+    `hours_days?select=*&work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}` +
+    `&order=work_date.asc`);
+}
+
+function fetchImports({ from, to, source, limit = 50 } = {}) {
+  const f = ['select=*'];
+  if (from) f.push(`work_date_to=gte.${encode(from)}`);
+  if (to) f.push(`work_date_from=lte.${encode(to)}`);
+  if (source) f.push(`source=eq.${encode(source)}`);
+  f.push('order=created_at.desc');
+  f.push(`limit=${Math.max(1, Math.floor(Number(limit)) || 50)}`);
+  return requestRows('GET', `hours_imports?${f.join('&')}`);
+}
+
+function fetchImport(id) {
+  return requestRows('GET', `hours_imports?select=*&id=eq.${encode(id)}&limit=1`).then(r => r[0] || null);
+}
+
+// ---- alerts ----
+
+function fetchAlerts({ statuses = ['open', 'acknowledged'], limit = 500 } = {}) {
+  const f = ['select=*'];
+  if (statuses && statuses.length) f.push(`status=in.(${statuses.map(encode).join(',')})`);
+  f.push('order=created_at.desc');
+  f.push(`limit=${Math.max(1, Math.floor(Number(limit)) || 500)}`);
+  return requestRows('GET', `alerts?${f.join('&')}`);
+}
+
+function fetchAlert(id) {
+  return requestRows('GET', `alerts?select=*&id=eq.${encode(id)}&limit=1`).then(r => r[0] || null);
+}
+
+async function insertAlert(row) {
+  const rows = await requestRows('POST', 'alerts', { body: row });
+  return rows[0] || null;
+}
+
+function updateAlert(id, patch) {
+  return requestRows('PATCH', `alerts?id=eq.${encode(id)}`,
+    { body: { ...patch, updated_at: new Date().toISOString() } });
+}
+
 module.exports = {
+  replaceHours,
+  fetchHeldRows,
+  reattributeHeld,
+  fetchExclusions,
+  addExclusion,
+  markHeldExternal,
+  fetchHoursDays,
+  fetchImports,
+  fetchImport,
+  fetchAlerts,
+  fetchAlert,
+  insertAlert,
+  updateAlert,
   // The raw call, for readers that need a projection, a page or the row count.
   // Everything else here is a thin wrapper over it.
   request,

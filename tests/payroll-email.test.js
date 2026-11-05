@@ -94,6 +94,14 @@ function harness(messages, overrides = {}, runOpts = {}) {
     ],
     fetchDailyHours:      async () => [],
     upsertDailyHours:     async rows => { calls.upserts.push(rows); return rows; },
+    // The import write. Recorded into calls.upserts too, so "what was written"
+    // reads the same whichever path wrote it.
+    replaceHours:         async ({ rows, held, dates, importMeta }) => {
+      calls.upserts.push(rows);
+      (calls.replaces = calls.replaces || []).push({ rows, held, dates, importMeta });
+      return { import_id: 'imp-' + dates[0], counted: rows.length, held: held.length };
+    },
+    fetchExclusions:      async () => [],
     findRowsByFileHash:   async () => [],
     getProcessedEmail:    async () => null,
     upsertProcessedEmail: async rec => { calls.ledger.push(rec); return rec; },
@@ -442,10 +450,10 @@ test('a failure on one message does not stop the others', async () => {
     message({ id: '<x2@centralservers.com>', receivedAt: '2026-08-19T13:04:00Z' })
   ];
   const { result, calls } = await harness(messages, {
-    upsertDailyHours: async rows => {
+    replaceHours: async ({ rows }) => {
       if (++call === 1) throw new Error('supabase exploded');
       written.push(rows);
-      return rows;
+      return { import_id: 'imp', counted: rows.length, held: 0 };
     }
   });
 
@@ -1019,58 +1027,73 @@ test('an unauthorised call is still 401 before anything else', async () => {
 });
 
 
-test('an employee number the roster does not have is an arrival, and alerts', async () => {
-  // The one thing planWageSync still does. It is not about money — the file's
-  // rate is not read — it is that somebody is working whose hours are landing
-  // nowhere, and nothing else in the system would say so.
-  //
-  // applyWageSync is stubbed here and nowhere else in this file: every other
-  // run leaves the roster knowing everybody, so the plan carries no ops and the
-  // real applyWageSync returns without making a request. This one has an op.
-  const plans = [];
+test('an employee number the roster does not have is HELD, alerts, and is never auto-created', async () => {
+  // 2026-11-05: this used to create the person on the roster from the file —
+  // with no rate, no department and no pay type. That is how a second, blank
+  // "Auzlo Gibb" appeared beside the real one, and with BBSI staff now in the
+  // daily file it would have added them too. The rows are held instead, and
+  // the Alerts tab raises a New employee alert.
+  let creates = 0;
   const { result, calls } = await harness([message()], {
     fetchEmployees: async () => [{ id: 'e1', employee_number: '0101', department: 'Production' }],
-    applyWageSync: async plan => {
-      plans.push(plan);
-      return {
-        workDate: plan.workDate,
-        created: plan.creates.map((c, i) => ({ ...c, employeeId: `new-${i}` })),
-        ratesUpdated: 0, historyWritten: 0, setupTasks: plan.setupTasks.length,
-        flagged: [], skipped: plan.skipped, errors: [], blocked: []
-      };
-    }
+    applyWageSync: async () => { creates++; return { created: [], errors: [] }; },
+    planWageSync: () => { creates++; return {}; }
   });
 
   assert.strictEqual(result.results[0].status, 'imported', 'the day still imports');
   assert.ok(result.results[0].flags.includes('new_employee'));
+  assert.strictEqual(creates, 0, 'nothing is created on the roster');
+
+  const write = calls.replaces[0];
+  assert.deepStrictEqual(write.rows.map(r => r.employee_number), ['0101'], 'only the rostered person counts');
+  assert.deepStrictEqual(write.held.map(h => [h.employee_number, h.reason]), [['0202', 'unknown']]);
+  assert.strictEqual(write.importMeta.source, 'daily');
+
   assert.strictEqual(result.alertRequired, true);
-  assert.strictEqual(calls.alerts.length, 1);
-
-  // The arrival is 0202, and they arrive with NO rate — the file's Pay Rate
-  // column is not consulted, and a create that carried one would be the old
-  // behaviour coming back.
-  const plan = plans[0];
-  assert.strictEqual(plan.creates.length, 1);
-  assert.strictEqual(plan.creates[0].employeeNumber, '0202');
-  assert.ok(!('rate' in plan.creates[0]), 'a create must not carry a rate');
-  // Not "an empty array" — ABSENT. The plan carries no rate-update or
-  // wage_history field at all, so there is nothing for a future caller to read
-  // as "no changes today" when the truth is that this cannot happen.
-  assert.strictEqual(plan.updates, undefined, 'no wage is written for anybody');
-  assert.strictEqual(plan.history, undefined, 'and no history row is planned');
-  assert.strictEqual(plan.flagged, undefined);
-  assert.strictEqual(plan.thresholdPct, undefined, 'nothing is compared to a threshold');
-
-  // 0101 is on the roster: known, and there is nothing left to do with them.
-  assert.strictEqual(plan.skipped.unchanged, 1);
-
-  // The alert a human actually reads. It used to say "at ${rate}/hr" from a
-  // field the plan no longer carries, which formats as NaN — an email telling
-  // somebody a new hire was taken on at NaN an hour.
   const body = calls.alerts[0].body;
   assert.match(body, /NEW EMPLOYEE — Emp # 0202/);
-  assert.match(body, /NO PAY RATE/);
-  assert.match(body, /Salaries & Wages/);
+  assert.match(body, /held, not counted/);
   assert.ok(!/NaN/.test(body), 'the alert must not contain NaN anywhere');
-  assert.ok(!/\/hr/.test(body), 'and must not quote a rate it does not have');
+});
+
+test('a daily file never overwrites a reconciled day: it is parked for a person', async () => {
+  const { result } = await harness([message()], {
+    replaceHours: async () => {
+      throw new Error('POST rpc/replace_hours 400: replace_hours: a daily file cannot replace a reconciled day (2026-08-18)');
+    }
+  });
+  assert.strictEqual(result.results[0].status, 'pending_review');
+  assert.ok(result.results[0].flags.includes('reconciled_day'));
+});
+
+test('a dated file is imported per day through the replace path and marked weekly', async () => {
+  const datedCalls = [];
+  const { result, calls } = await harness([message({ receivedAt: '2026-08-24T17:00:00Z' })], {
+    detectDated: () => true,
+    buildDatedImport: (args) => {
+      datedCalls.push(args);
+      const day = (date, emp, hrs) => ({ work_date: date, employee_number: emp, regular_hours: hrs,
+        ot_hours: 0, total_hours: hrs, flags: [] });
+      return {
+        from: '2026-08-17', to: '2026-08-18', dates: ['2026-08-17', '2026-08-18'],
+        days: [
+          { rows: [day('2026-08-17', '0101', 10)], salariedRows: [] },
+          { rows: [day('2026-08-18', '0101', 11)], salariedRows: [] }
+        ]
+      };
+    },
+    fetchDailyHours: async () => [{ work_date: '2026-08-18', employee_number: '0101',
+      regular_hours: 0, ot_hours: 0, total_hours: 0 }]
+  });
+
+  assert.strictEqual(result.results[0].status, 'imported', result.results[0].error);
+  assert.strictEqual(datedCalls.length, 1);
+  const write = calls.replaces[0];
+  assert.strictEqual(write.importMeta.source, 'weekly');
+  assert.deepStrictEqual(write.dates, ['2026-08-17', '2026-08-18']);
+  assert.strictEqual(write.rows.length, 2);
+  const v = write.importMeta.variance;
+  assert.deepStrictEqual(v.fixedPunches.map(f => f.date), ['2026-08-17', '2026-08-18'],
+    'a 0.00 row and a missing row that now carry hours are both fixed punches');
+  assert.strictEqual(result.results[0].workDate, '2026-08-17');
 });

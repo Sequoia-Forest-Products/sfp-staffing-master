@@ -59,9 +59,16 @@ async function commitDailyImport(){
     // new one. Nothing else in the app would ever mention them again, so the
     // count is said out loud here and left on screen in the panel below.
     const removed=json.removed||0;
-    state.dailyLastImport={workDate:f.workDate,inserted:json.inserted||0,replaced:json.replaced||0,removed};
+    // held = rows stored but not counted: salaried staff, BBSI staff, and
+    // employee numbers the roster does not have (those raise a New employee
+    // alert on the Alerts tab).
+    const held=json.held||0;
+    const newEmployees=json.newEmployees||[];
+    state.dailyLastImport={workDate:f.workDate,inserted:json.inserted||0,replaced:json.replaced||0,removed,held,newEmployees};
     toast((json.inserted||0)+' rows imported for '+fmtDate(f.workDate)+(json.replaced?(', '+json.replaced+' replaced'):'')
-      +(removed?(', '+removed+' employee'+(removed===1?'':'s')+' dropped from the day'):''),removed?'warning':'success');
+      +(held?(', '+held+' held (not counted)'):'')
+      +(removed?(', '+removed+' employee'+(removed===1?'':'s')+' dropped from the day'):''),(removed||newEmployees.length)?'warning':'success');
+    if(typeof loadAlertCount==='function') loadAlertCount();
     state.dailyPreview=null; state.dailyPreviewFile=null; state.dailyDupAck=false;
     state.otReport=null;  // the week that just changed has to be refetched
     await loadDailyDays();
@@ -443,7 +450,9 @@ function renderDailyHours(){
       ${li?`<div class="${li.removed?'dh-flag':'dh-ok'}" style="margin-top:12px${li.removed?'':';padding:8px 12px'}">
         <strong>Last import — ${fmtDate(li.workDate)}:</strong> ${li.inserted} row${li.inserted===1?'':'s'} written${li.replaced?', '+li.replaced+' replaced':''}${li.removed
           ? `, and <strong>${li.removed} employee${li.removed===1?'':'s'} removed from the day</strong> — ${li.removed===1?'that person was':'those people were'} on the earlier file for ${fmtDate(li.workDate)} and ${li.removed===1?'is':'are'} not on this one, so ${li.removed===1?'their':'their'} hours and earnings are gone from ${fmtDate(li.workDate)} and from every report that covers it.`
-          : '. Nobody was dropped from the day.'}</div>`:''}
+          : '. Nobody was dropped from the day.'}${li.held
+          ? ` ${li.held} row${li.held===1?' was':'s were'} held — stored, not counted: salaried staff, BBSI staff${(li.newEmployees||[]).length?', and <strong>'+li.newEmployees.length+' employee number'+(li.newEmployees.length===1?'':'s')+' not on the roster</strong> ('+li.newEmployees.map(n=>esc('#'+n.employeeNumber+(n.name?' '+n.name:''))).join(', ')+') — see Alerts':''}.`
+          : ''}</div>`:''}
     </div>`;
 
   const st=countDayStates();

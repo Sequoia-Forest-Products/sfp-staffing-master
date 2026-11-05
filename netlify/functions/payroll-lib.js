@@ -423,6 +423,11 @@ function buildImport({
   }
 
   const rows = [];
+  // Salaried rows are STORED, not counted, as of 2026-11-05: BBSI's daily file
+  // now covers every Active TimeNet employee, salaried staff included. They
+  // never enter `rows` (so no reader of daily_hours ever sees them) and are
+  // handed back here for daily_hours_held. See hours-import-lib.js.
+  const salariedRows = [];
   const unmatched = [];
   const missingDepartment = [];
   const seen = new Map();
@@ -512,6 +517,17 @@ function buildImport({
     // carried, rather than imported and flagged as it once was.
     if (isSalary) {
       salariedSkipped++;
+      salariedRows.push({
+        work_date: dateInfo.date,
+        employee_number: employeeNumber,
+        last_name: lastName,
+        first_name: firstName,
+        is_salary: true,
+        regular_hours: numbers.regularHours,
+        ot_hours: numbers.otHours,
+        total_hours: numbers.totalHours,
+        reason: 'salaried'
+      });
       if (hasActivity) {
         salariedWithHoursSkipped++;
         const salariedEmployee = byNumber.get(employeeNumber) || null;
@@ -687,6 +703,7 @@ function buildImport({
     uploadBatchId: batchId,
     sheetName,
     rows,
+    salariedRows,
     counts: {
       totalRows,
       imported: rows.length,

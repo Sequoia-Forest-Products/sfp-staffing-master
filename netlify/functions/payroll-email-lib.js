@@ -280,6 +280,7 @@ function resolveDeps(deps = {}) {
   const lib = () => require('./payroll-lib');
   const db  = () => require('./payroll-db');
   const wage = () => require('./wage-sync');
+  const hours = () => require('./hours-import-lib');
   const from = (loader, name) => (...args) => loader()[name](...args);
 
   return {
@@ -292,6 +293,17 @@ function resolveDeps(deps = {}) {
     listProcessedEmails:  deps.listProcessedEmails  || from(db, 'listProcessedEmails'),
     fetchDeliveriesForDates: deps.fetchDeliveriesForDates || from(db, 'fetchDeliveriesForDates'),
     buildImport:          deps.buildImport          || from(lib, 'buildImport'),
+    // The reconciliation path (SCHEMA_TIMECLOCK_RECONCILE.sql). replaceHours is
+    // the only write for imported hours; the rest decide what goes into it.
+    replaceHours:         deps.replaceHours         || from(db, 'replaceHours'),
+    fetchExclusions:      deps.fetchExclusions      || from(db, 'fetchExclusions'),
+    classifyRows:         deps.classifyRows         || from(hours, 'classifyRows'),
+    buildDatedImport:     deps.buildDatedImport     || from(hours, 'buildDatedImport'),
+    computeVariance:      deps.computeVariance      || from(hours, 'computeVariance'),
+    // Reads the attachment's sheet just far enough to tell a dated (weekly)
+    // file from the undated daily snapshot. False when the bytes do not parse;
+    // the daily path then reports the parse failure in its usual words.
+    detectDated:          deps.detectDated          || defaultDetectDated,
     // The wage sync: planWageSync decides (pure), applyWageSync writes. Both
     // injectable, and applyWageSync makes no request at all for a plan with
     // nothing in it, so a run whose file carried no usable rate touches nothing.
@@ -300,6 +312,16 @@ function resolveDeps(deps = {}) {
     hashFile:             deps.hashFile             || defaultHashFile,
     sendAlert:            deps.sendAlert            || sendAlert
   };
+}
+
+function defaultDetectDated(buffer) {
+  try {
+    const { readSheet } = require('./xlsx-lite');
+    const { dateColumnOf } = require('./hours-import-lib');
+    return !!dateColumnOf(readSheet(buffer));
+  } catch {
+    return false;
+  }
 }
 
 // payroll-lib owns the canonical hash (it is what lands in daily_hours.file_hash),
@@ -625,6 +647,21 @@ function describeItem(item) {
     for (const line of item.longDays) lines.push(`    ${line}`);
   }
   lines.push(...describeWageSync(item.wageSync));
+  // Numbers the roster does not have. Their rows are HELD — stored and not
+  // counted — and the Alerts tab carries a New employee alert for each until
+  // the number is added to the roster (or marked as BBSI staff).
+  for (const u of item.newEmployees || []) {
+    lines.push(
+      `  NEW EMPLOYEE — Emp # ${u.employeeNumber} ${u.name || '(no name)'}: ${u.hours} hour(s) held, ` +
+      `not counted. Add them to the roster with this employee number (with a department and ` +
+      `pay rate) and the held hours move in automatically — see the Alerts tab.`
+    );
+  }
+  if (item.variance && item.variance.totals) {
+    const t = item.variance.totals;
+    lines.push(`  RECONCILED ${item.workDate}..${item.workDateTo}: hours ${t.hoursBefore} -> ${t.hoursAfter}, ` +
+      `labour $${t.dollarsBefore} -> $${t.dollarsAfter}; ${item.variance.fixedPunches.length} fixed punch(es).`);
+  }
   return lines.join('\n');
 }
 
@@ -802,6 +839,91 @@ function ledgerRecord(item, notifiedAt) {
   };
 }
 
+// A dated (weekly) file: import every day it covers through the replace path,
+// mark them reconciled, and store what changed. The dates come from the file,
+// never from when the email arrived.
+async function importDated(item, { d, employees, exclusions, now, tz, isDryRun, log }) {
+  const today = todayInZone(now, tz);
+
+  const priorRows = await d.findRowsByFileHash(item.fileHash);
+  if (Array.isArray(priorRows) && priorRows.length) {
+    item.status = 'duplicate_file';
+    addFlag(item, 'duplicate_file');
+    item.error = 'identical dated file already imported — re-delivery ignored';
+    return;
+  }
+
+  const uploadBatchId = randomUUID();
+  const dated = d.buildDatedImport({
+    fileBuffer: item.attachment.content,
+    employees,
+    source: 'email',
+    sourceSubject: item.subject,
+    emailReceivedAt: item.receivedAt,
+    uploadBatchId,
+    timeZone: tz
+  });
+  item.workDate = dated.from;
+  item.workDateTo = dated.to;
+
+  if (dated.to > today) {
+    item.status = 'pending_review';
+    addFlag(item, 'future_date');
+    item.error = `the dated file runs to ${dated.to}, after today (${today}) — not imported`;
+    item.alert = true;
+    return;
+  }
+
+  const counted = [];
+  const held = [];
+  const unknown = new Map();
+  for (const day of dated.days) {
+    const c = d.classifyRows({ rows: day.rows, salariedRows: day.salariedRows || [], employees, exclusions });
+    counted.push(...c.counted);
+    held.push(...c.held);
+    for (const u of c.unknown) {
+      if (!unknown.has(u.employeeNumber)) unknown.set(u.employeeNumber, { ...u, dates: [], hours: 0 });
+      const acc = unknown.get(u.employeeNumber);
+      acc.dates.push(...u.dates);
+      acc.hours = Math.round((acc.hours + u.hours) * 100) / 100;
+    }
+  }
+  item.newEmployees = [...unknown.values()];
+
+  const before = (await d.fetchDailyHours(dated.from, dated.to)) || [];
+  const variance = d.computeVariance({ before, after: counted, employees, dates: dated.dates });
+  item.variance = variance;
+
+  if (isDryRun) {
+    item.status = 'dry_run';
+    item.rowsImported = counted.length;
+    log(`DRY RUN: would reconcile ${dated.from}..${dated.to} with ${counted.length} counted row(s)`);
+    return;
+  }
+
+  const written = await d.replaceHours({
+    importMeta: {
+      source: 'weekly',
+      file_received_at: item.receivedAt,
+      message_id: item.messageId,
+      file_hash: item.fileHash,
+      subject: item.subject,
+      variance
+    },
+    dates: dated.dates,
+    rows: counted,
+    held
+  });
+  item.status = 'imported';
+  item.rowsImported = counted.length;
+  item.rowsHeld = held.length;
+  item.uploadBatchId = (written && written.import_id) || uploadBatchId;
+  item.importId = written && written.import_id;
+  addFlag(item, 'reconciled');
+  log(`Reconciled ${dated.from}..${dated.to}: ${counted.length} counted, ${held.length} held, ` +
+      `hours change ${variance.totals.hoursChange}, dollars change ${variance.totals.dollarsChange}`);
+}
+
 async function runPayrollIngest({
   now = new Date(),
   dryRun,
@@ -913,6 +1035,20 @@ async function runPayrollIngest({
       continue;
     }
 
+    // A DATED file — one with a per-row date column, which is what BBSI's weekly
+    // file must be to do its job — carries its own dates. None of the
+    // arrival-time inference below applies to it, and none of it may: the
+    // weekly file arrives Monday at 10 AM and covers seven days, so "received
+    // date minus one" would be wrong for six of them.
+    if (d.detectDated(attachment.content)) {
+      item.kind = 'dated';
+      item.fileHash = d.hashFile(attachment.content);
+      item.attachment = attachment;
+      item.ready = true;
+      continue;
+    }
+    item.kind = 'daily';
+
     const derived = deriveWorkDate(msg.receivedAt, tz);
     if (!derived) {
       // No usable arrival timestamp means no defensible date. Never guess.
@@ -960,7 +1096,7 @@ async function runPayrollIngest({
   // rest duplicate_file). Different bytes are a real ambiguity: import neither.
   const byWorkDate = new Map();
   for (const item of items) {
-    if (!item.ready) continue;
+    if (!item.ready || item.kind === 'dated') continue;
     if (!byWorkDate.has(item.workDate)) byWorkDate.set(item.workDate, []);
     byWorkDate.get(item.workDate).push(item);
   }
@@ -991,8 +1127,24 @@ async function runPayrollIngest({
   // ---- Phase 2: duplicate checks against what is already stored, then import.
   let employees = null;
 
+  let exclusions = null;
+
   for (const item of items) {
     if (!item.ready) continue;
+
+    if (item.kind === 'dated') {
+      try {
+        if (!employees) employees = (await d.fetchEmployees()) || [];
+        if (!exclusions) exclusions = (await d.fetchExclusions()) || [];
+        await importDated(item, { d, employees, exclusions, now, tz, isDryRun, log });
+      } catch (err) {
+        item.ready = false;
+        item.status = 'error';
+        item.error = err.message;
+        item.alert = true;
+      }
+      continue;
+    }
 
     try {
       // The same bytes already imported: a vendor re-send. Under a DIFFERENT
@@ -1049,6 +1201,11 @@ async function runPayrollIngest({
       });
 
       const rows = mergeRowFlags(built.rows || [], item.flags);
+      if (!exclusions) exclusions = (await d.fetchExclusions()) || [];
+      const classified = d.classifyRows({
+        rows, salariedRows: built.salariedRows || [], employees, exclusions
+      });
+      item.newEmployees = classified.unknown;
       // A long day imports, but somebody has to fix the punch behind it, and
       // nothing else about a clean import would ever reach a person.
       const longDays = (built.anomalies || []).filter(a => a.type === 'long_day');
@@ -1067,16 +1224,48 @@ async function runPayrollIngest({
         item.rowsImported = rows.length;
         log(`DRY RUN: would import ${rows.length} row(s) for ${item.workDate} from ${item.subject || '(no subject)'}`);
       } else {
-        await d.upsertDailyHours(rows);
-        item.status = 'imported';
-        item.rowsImported = rows.length;
-        log(`Imported ${rows.length} row(s) for ${item.workDate} (batch ${uploadBatchId})`);
-
-        // The wage sync, on the same terms as the manual commit in
-        // payroll-import.js: after the hours are written, driven by the parsed
-        // FILE rather than the roster, and never in a dry run. A failure here
-        // does not un-import the day — it is reported and alerted on.
-        await syncWages(item, rows, employees, d, log);
+        // The day is written through replace_hours(): one transaction, every
+        // prior row for the date gone, counted and held rows written together.
+        // Unknown numbers are held and raise a New employee alert; they are no
+        // longer auto-created on the roster (that is how a blank duplicate
+        // "Auzlo Gibb" appeared on 2026-11-05).
+        //
+        // A daily file can never replace a RECONCILED day — the database
+        // refuses, and the file is parked for a person instead.
+        try {
+          const written = await d.replaceHours({
+            importMeta: {
+              source: 'daily',
+              file_received_at: item.receivedAt,
+              message_id: item.messageId,
+              file_hash: item.fileHash,
+              subject: item.subject
+            },
+            dates: [item.workDate],
+            rows: classified.counted,
+            held: classified.held
+          });
+          item.status = 'imported';
+          item.rowsImported = classified.counted.length;
+          item.rowsHeld = classified.held.length;
+          item.uploadBatchId = (written && written.import_id) || uploadBatchId;
+          log(`Imported ${classified.counted.length} counted + ${classified.held.length} held ` +
+              `row(s) for ${item.workDate} (import ${item.uploadBatchId})`);
+          if (classified.unknown.length) {
+            addFlag(item, 'new_employee');
+            item.alert = true;
+          }
+        } catch (err) {
+          if (/cannot replace a reconciled day/.test(err.message)) {
+            item.status = 'pending_review';
+            addFlag(item, 'reconciled_day');
+            item.error = `${item.workDate} is already reconciled from the weekly file; ` +
+              `a daily snapshot cannot overwrite it — not imported`;
+            item.alert = true;
+          } else {
+            throw err;
+          }
+        }
       }
     } catch (err) {
       item.ready = false;
