@@ -923,7 +923,7 @@ const storedRow = (empNumber, workDate, batch) => ({
 
 // Installs stub db functions for one test and restores the real module after.
 function stubDb(t, overrides = {}) {
-  const calls = { order: [], upserts: [], deletedDates: [], pruned: [], ledger: [], deliveryRanges: [] };
+  const calls = { order: [], upserts: [], deletedDates: [], pruned: [], ledger: [], deliveryRanges: [], replaces: [] };
   Object.assign(payrollDb, {
     fetchEmployees: async () => ROSTER,
     fetchDailyHours: async () => [],
@@ -943,6 +943,16 @@ function stubDb(t, overrides = {}) {
       calls.order.push('prune');
       calls.pruned.push({ date, batch });
       return 1;
+    },
+    fetchExclusions: async () => [],
+    // The atomic replace path. Modelled faithfully enough to assert on: the
+    // whole set of covered dates is cleared and the new rows written as ONE
+    // call, so there is no intermediate state for a test to catch.
+    replaceHours: async (args) => {
+      calls.order.push('replace');
+      calls.replaces.push(args);
+      return { import_id: 'imp-1', counted: args.rows.length, held: args.held.length,
+               replaced: calls.replacedCount || 0, replaced_held: 0 };
     },
     getProcessedEmail: async () => null,
     upsertProcessedEmail: async record => { calls.ledger.push(record); return record; },
@@ -969,18 +979,16 @@ const commitBody = extra => ({
 });
 
 test('a failed write during an overwrite leaves the existing day intact', async (t) => {
-  // The day is modelled as an array so a delete really removes it. Under the
-  // old delete-then-insert order this ends up empty and unreplaced: a day of
-  // payroll destroyed by one transient 5xx.
+  // replace_hours() is one transaction: if it throws, nothing it was going to
+  // delete has been deleted. The handler must not attempt any other write
+  // around it — no upsert first, no prune after.
   const day = [storedRow('0319', WORK_DATE, 'old-batch')];
   const calls = stubDb(t, {
     fetchDailyHoursForDate: async () => day.slice(),
-    upsertDailyHours: async () => {
-      calls.order.push('upsert');
-      throw new Error('POST daily_hours 503: <html>upstream connect error</html>');
-    },
-    deleteDailyHoursForDate: async () => { calls.order.push('deleteDay'); day.length = 0; return 1; },
-    deleteOtherBatchesForDate: async () => { calls.order.push('prune'); day.length = 0; return 1; }
+    replaceHours: async () => {
+      calls.order.push('replace');
+      throw new Error('POST rpc/replace_hours 503: <html>upstream connect error</html>');
+    }
   });
   const logged = captureConsoleError(t);
 
@@ -989,53 +997,93 @@ test('a failed write during an overwrite leaves the existing day intact', async 
   assert.strictEqual(res.statusCode, 500);
   assert.strictEqual(res.body.ok, false);
   assert.strictEqual(day.length, 1, 'the previous day must survive a failed write');
-  assert.deepStrictEqual(calls.order, ['upsert'], 'nothing may be deleted before the write lands');
+  assert.deepStrictEqual(calls.order, ['replace'], 'the replace is the only write');
   assert.strictEqual(logged.length, 1);
 });
 
-test('a successful overwrite writes first, then prunes only the rows the new batch did not write', async (t) => {
+test('re-importing a day REPLACES it in one call: every row of the new file, nothing appended', async (t) => {
   const calls = stubDb(t, {
     fetchDailyHoursForDate: async () => [
       storedRow('0319', WORK_DATE, 'old-batch'),
       storedRow('0771', WORK_DATE, 'old-batch')
     ]
   });
+  calls.replacedCount = 2;
 
   const res = await invoke(commitBody({ confirmOverwrite: true }));
 
-  assert.strictEqual(res.statusCode, 200);
-  assert.deepStrictEqual(calls.order, ['upsert', 'prune']);
-  assert.deepStrictEqual(calls.deletedDates, [], 'the whole day must never be deleted');
-  assert.strictEqual(calls.pruned.length, 1);
-  assert.strictEqual(calls.pruned[0].date, WORK_DATE);
-  assert.strictEqual(calls.pruned[0].batch, res.body.uploadBatchId);
+  assert.strictEqual(res.statusCode, 200, res.body.error);
+  assert.deepStrictEqual(calls.order, ['replace']);
+  assert.strictEqual(calls.upserts.length, 0, 'the old upsert-then-prune path is gone');
+  assert.strictEqual(calls.pruned.length, 0);
+  const call = calls.replaces[0];
+  assert.deepStrictEqual(call.dates, [WORK_DATE], 'exactly the day being imported is cleared');
+  assert.deepStrictEqual(call.rows.map(r => r.employee_number).sort(), ['0063', '0319'],
+    'the new file is written whole; 0771, absent from it, is not carried over');
+  assert.strictEqual(call.importMeta.source, 'manual');
+  assert.strictEqual(call.importMeta.created_by, 'peter.stroble@sequoiafp.com');
   assert.strictEqual(res.body.inserted, 2);
   assert.strictEqual(res.body.replaced, 2);
-  assert.strictEqual(res.body.removed, 1);
 });
 
-test('a first import of a date writes without pruning anything', async (t) => {
-  const calls = stubDb(t);
+test('importing the same file twice produces the same single day, not a doubled one', async (t) => {
+  // Model the database: replace clears the date, then writes.
+  const table = [];
+  const calls = stubDb(t, {
+    fetchDailyHoursForDate: async () => table.slice(),
+    replaceHours: async ({ dates, rows, held }) => {
+      calls.order.push('replace');
+      for (let i = table.length - 1; i >= 0; i--) if (dates.includes(table[i].work_date)) table.splice(i, 1);
+      table.push(...rows);
+      return { import_id: 'x', counted: rows.length, held: held.length, replaced: 0 };
+    }
+  });
 
-  const res = await invoke(commitBody({}));
+  assert.strictEqual((await invoke(commitBody({}))).statusCode, 200);
+  assert.strictEqual((await invoke(commitBody({ confirmOverwrite: true }))).statusCode, 200);
 
-  assert.strictEqual(res.statusCode, 200);
-  assert.deepStrictEqual(calls.order, ['upsert']);
-  assert.strictEqual(res.body.replaced, 0);
-  assert.strictEqual(res.body.removed, 0);
-  assert.strictEqual(res.body.inserted, 2);
+  assert.strictEqual(table.length, 2, 'two people, once each');
+  assert.deepStrictEqual(table.map(r => r.employee_number).sort(), ['0063', '0319']);
 });
 
-test('an empty representation from a non-empty write is a failure, not a silent no-op', async (t) => {
-  const calls = stubDb(t, { upsertDailyHours: async () => { calls.order.push('upsert'); return []; } });
-  const logged = captureConsoleError(t);
+test('the roster decides who counts: salaried, BBSI staff and unknown numbers are held, never counted', async (t) => {
+  const file = buildPayrollXlsx([
+    row('0319', 'Acosta Ruiz', 'Miguel', 'No',  24.5, 10, 0, 10, 0),   // hourly on roster
+    row('0101', 'Rivera',      'Eduardo','No',  0,    10, 0, 10, 0),   // roster says Salaried
+    row('0555', 'Office',      'Sal',    'Yes', 0,    8,  0, 8,  0),   // file says salaried
+    row('9001', 'Staff',       'Bbsi',   'No',  0,    8,  0, 8,  0),   // listed as BBSI staff
+    row('3380', 'Gibb',        'Auzlo',  'No',  0,    11, 0.62, 11.62, 0)  // not on the roster
+  ]).toString('base64');
+  const calls = stubDb(t, {
+    fetchEmployees: async () => [
+      ...ROSTER,
+      { id: 'e-r', name: 'Eduardo Rivera', employee_number: '0101', pay_type: 'Salaried', status: 'Active', department: 'Production' }
+    ],
+    fetchExclusions: async () => [{ employee_number: '9001', reason: 'bbsi_staff' }]
+  });
 
-  const res = await invoke(commitBody({}));
+  const res = await invoke(commitBody({ fileBase64: file }));
 
-  assert.strictEqual(res.statusCode, 500);
-  assert.match(res.body.error, /did not take effect/);
-  assert.deepStrictEqual(calls.order, ['upsert'], 'a failed write must not trigger the prune');
-  assert.strictEqual(logged.length, 1);
+  assert.strictEqual(res.statusCode, 200, res.body.error);
+  const call = calls.replaces[0];
+  assert.deepStrictEqual(call.rows.map(r => r.employee_number), ['0319']);
+  const held = Object.fromEntries(call.held.map(h => [h.employee_number, h.reason]));
+  assert.deepStrictEqual(held, { '0101': 'salaried', '0555': 'salaried', '9001': 'external', '3380': 'unknown' });
+  assert.deepStrictEqual(res.body.newEmployees.map(n => n.employeeNumber), ['3380']);
+});
+
+test('an unknown number is never auto-created on the roster any more', async (t) => {
+  let created = 0;
+  stubDb(t, {
+    createEmployee: async () => { created++; return {}; },
+    applyWageSync: async () => { created++; return { created: [], errors: [] }; }
+  });
+  const file = buildPayrollXlsx([row('3380', 'Gibb', 'Auzlo', 'No', 0, 10, 0, 10, 0)]).toString('base64');
+
+  const res = await invoke(commitBody({ fileBase64: file }));
+
+  assert.strictEqual(res.statusCode, 200, res.body.error);
+  assert.strictEqual(created, 0, 'the blank duplicate "Auzlo Gibb" came from this path');
 });
 
 test('the same file under a different date is refused, and named, unless confirmed', async (t) => {
@@ -1046,11 +1094,11 @@ test('the same file under a different date is refused, and named, unless confirm
   assert.strictEqual(refused.statusCode, 400);
   assert.match(refused.body.error, new RegExp(OTHER_DATE));
   assert.match(refused.body.error, /twice/);
-  assert.strictEqual(calls.upserts.length, 0, 'nothing may be written while the duplicate stands');
+  assert.strictEqual(calls.replaces.length, 0, 'nothing may be written while the duplicate stands');
 
   const allowed = await invoke(commitBody({ confirmDuplicateFile: true }));
   assert.strictEqual(allowed.statusCode, 200);
-  assert.strictEqual(calls.upserts.length, 1);
+  assert.strictEqual(calls.replaces.length, 1);
 });
 
 test('the same file re-uploaded under the SAME date needs no duplicate confirmation', async (t) => {
@@ -1063,7 +1111,19 @@ test('the same file re-uploaded under the SAME date needs no duplicate confirmat
   const res = await invoke(commitBody({ confirmOverwrite: true }));
 
   assert.strictEqual(res.statusCode, 200, res.body.error);
-  assert.strictEqual(calls.upserts.length, 1);
+  assert.strictEqual(calls.replaces.length, 1);
+});
+
+test('deleting a day goes through the replace path, clearing counted and held rows together', async (t) => {
+  const calls = stubDb(t, { fetchDailyHoursForDate: async () => [storedRow('0319', WORK_DATE, 'b')] });
+
+  const res = await invoke({ action: 'deleteDay', workDate: WORK_DATE });
+
+  assert.strictEqual(res.statusCode, 200, res.body.error);
+  assert.deepStrictEqual(calls.replaces[0].dates, [WORK_DATE]);
+  assert.deepStrictEqual(calls.replaces[0].rows, []);
+  assert.deepStrictEqual(calls.replaces[0].held, []);
+  assert.strictEqual(res.body.deleted, 1);
 });
 
 test('a Supabase failure that mentions a column is a 500 and reaches the log', async (t) => {
@@ -1071,9 +1131,9 @@ test('a Supabase failure that mentions a column is a 500 and reaches the log', a
   // word "column" in the message used to answer it as a 400 and log nothing,
   // so Netlify's alerting never saw it.
   const calls = stubDb(t, {
-    upsertDailyHours: async () => {
-      calls.order.push('upsert');
-      throw new Error(`POST daily_hours 400: {"code":"PGRST204","message":` +
+    replaceHours: async () => {
+      calls.order.push('replace');
+      throw new Error(`POST rpc/replace_hours 400: {"code":"PGRST204","message":` +
         `"Could not find the 'is_scheduled_day' column of 'daily_hours' in the schema cache"}`);
     }
   });

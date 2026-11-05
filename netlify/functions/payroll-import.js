@@ -18,7 +18,7 @@ const db = require('./payroll-db');
 const {
   buildImport, validateWorkDate, workDateInfo, DEFAULT_TIME_ZONE
 } = require('./payroll-lib');
-const { planWageSync } = require('./wage-sync');
+const { classifyRows } = require('./hours-import-lib');
 const { verifySession, getCookies } = require('./session-lib');
 
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || DEFAULT_TIME_ZONE;
@@ -189,7 +189,8 @@ async function commit(body) {
     );
   }
 
-  const employees = await db.fetchEmployees();
+  const [employees, exclusions] = await Promise.all([db.fetchEmployees(), db.fetchExclusions()]);
+  const uploadBatchId = randomUUID();
   const result = parseUpload({
     fileBuffer: buffer,
     workDate,
@@ -197,20 +198,21 @@ async function commit(body) {
     sourceSubject: body.fileName || null,
     dateSource: 'manual',
     employees,
-    uploadBatchId: randomUUID(),
+    uploadBatchId,
     timeZone: TIME_ZONE
   });
 
-  if (!result.rows.length) {
-    // Name the salaried-with-activity count too. Every salaried row is skipped
-    // whatever it carries, so a file of nothing but salaried rows that DO carry
-    // hours produces zero importable rows — and without saying so, "0 rows"
-    // reads like a parsing failure rather than the rule working.
-    const withHours = result.counts.salariedWithHoursSkipped || 0;
+  // Who counts is a roster fact (hours-import-lib rule 1): hourly people on the
+  // roster go to daily_hours; salaried staff, BBSI staff and numbers the roster
+  // does not know are stored in daily_hours_held and never counted.
+  const classified = classifyRows({
+    rows: result.rows, salariedRows: result.salariedRows, employees, exclusions
+  });
+
+  if (!classified.counted.length && !classified.held.length && result.counts.totalRows > 0) {
     throw new BadRequest(
       `${body.fileName || 'That file'} produced no importable rows ` +
-      `(${result.counts.totalRows} row(s) read, ${result.counts.salariedSkipped} salaried` +
-      `${withHours ? `, ${withHours} of them carrying hours or earnings` : ''}).`
+      `(${result.counts.totalRows} row(s) read).`
     );
   }
 
@@ -229,63 +231,40 @@ async function commit(body) {
     );
   }
 
-  // Write first, prune second. The old order — delete the day, then insert —
-  // was two independent PostgREST requests with no transaction around them, so
-  // a 5xx, a schema-cache miss or one bad row on the insert left the day
-  // deleted and not replaced. Upserting first is safe because
-  // unique(work_date, employee_number) makes it idempotent: the day briefly
-  // holds the old rows plus the new ones, and a failure here changes nothing.
-  const written = await db.upsertDailyHours(result.rows);
-  if (!written.length) {
-    // return=representation always echoes what it wrote, so an empty body after
-    // a non-empty write means the write did not happen. Reporting the intended
-    // count here would present a no-op as a successful import.
-    throw new Error(
-      `Sent ${result.rows.length} row(s) for ${workDate} but Supabase returned no rows — ` +
-      `the write did not take effect.`
-    );
-  }
-
-  // Only now remove whoever was on the old file and not on the new one: an
-  // upsert alone would leave them behind, and dropping somebody is exactly the
-  // correction a re-send usually is.
-  const removed = existing
-    ? await db.deleteOtherBatchesForDate(workDate, result.uploadBatchId)
-    : 0;
-
-  // The wage sync runs HERE — at commit, after the hours are safely written,
-  // and never at preview. Preview is a dry run: it must not create employees or
-  // move a single rate. And a failed hours write must not leave wages moved,
-  // which is why this is below the upsert rather than beside it.
+  // ONE atomic write: replace_hours() deletes the day from daily_hours and
+  // daily_hours_held and inserts the new rows in a single transaction. The old
+  // upsert-then-prune pair could not promise that — and it never cleared the
+  // rows of somebody dropped from a corrected file until the prune succeeded.
   //
-  // It is driven by result.rows — the parsed FILE — never by the roster. An
-  // active employee absent from today's file keeps their rate untouched; see
-  // rule 1 in wage-sync.js.
-  //
-  // A wage-sync failure does not fail the import. The day's hours are already
-  // in by this point, so throwing would report a successful write as a failure
-  // and invite a retry; the error is returned instead, and logged so Netlify's
-  // alerting sees it.
-  let wageSync;
-  try {
-    wageSync = await db.applyWageSync(
-      planWageSync({ fileRows: result.rows, employees, workDate })
-    );
-    if (wageSync.errors.length) {
-      console.error(`payroll-import commit: wage sync reported ${wageSync.errors.length} error(s):`,
-        wageSync.errors.join(' | '));
-    }
-  } catch (err) {
-    console.error('payroll-import commit: wage sync failed:', err);
-    wageSync = { failed: true, error: err.message, errors: [err.message] };
-  }
+  // Unknown employee numbers are NO LONGER auto-created on the roster
+  // (2026-11-05). That path is what put a blank second "Auzlo Gibb" on the
+  // roster, and with BBSI staff now in the file it would add them too. Their
+  // rows are held and the Alerts tab raises a New employee alert instead.
+  const written = await db.replaceHours({
+    importMeta: {
+      source: 'manual',
+      file_hash: result.fileHash,
+      subject: body.fileName || null,
+      created_by: body.__user || null
+    },
+    dates: [workDate],
+    rows: classified.counted,
+    held: classified.held
+  });
 
   return {
-    uploadBatchId: result.uploadBatchId,
-    inserted: written.length,
-    replaced: existing ? existing.rowCount : 0,
-    removed,
-    wageSync,
+    uploadBatchId: written && written.import_id ? written.import_id : uploadBatchId,
+    importId: written ? written.import_id : null,
+    inserted: written ? written.counted : classified.counted.length,
+    held: written ? written.held : classified.held.length,
+    replaced: written ? written.replaced : (existing ? existing.rowCount : 0),
+    // People who were counted on the day before and are not counted now: the
+    // replace removed them, and nothing else in the app would mention it.
+    removed: (() => {
+      const now = new Set(classified.counted.map(r => r.employee_number));
+      return new Set((existingRows || []).map(r => r.employee_number).filter(n => !now.has(n))).size;
+    })(),
+    newEmployees: classified.unknown,
     summary: { ...summaryOf(result), validation }
   };
 }
@@ -553,8 +532,14 @@ async function deleteDay(body) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
     throw new BadRequest('workDate must be a YYYY-MM-DD date.');
   }
-  const deleted = await db.deleteDailyHoursForDate(workDate);
-  return { workDate, deleted };
+  // Through the replace path with no rows: the day's counted AND held rows go
+  // in one transaction, and the deletion is recorded like any other import.
+  const before = await db.fetchDailyHoursForDate(workDate);
+  await db.replaceHours({
+    importMeta: { source: 'manual', subject: 'deleted by hand', created_by: body.__user || null },
+    dates: [workDate], rows: [], held: []
+  });
+  return { workDate, deleted: before.length };
 }
 
 // The only two ledger states that are waiting on a person. duplicate_file and
@@ -648,7 +633,9 @@ exports.handler = async (event) => {
   }
 
   try {
-    const result = await run(body);
+    // The signed-in address travels with the call so an import records who
+    // made it. Set server-side: a __user in the request body is overwritten.
+    const result = await run({ ...body, __user: session.email || null });
     return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...result }) };
   } catch (err) {
     // Only an error raised deliberately as "the caller sent something it can
