@@ -87,6 +87,7 @@ async function loadCostReport(costClass, week){
     // for — an empty range falls back to the week. The page states the period
     // from this rather than from the controls, so the two cannot disagree.
     view.period=json.period||null;
+    view.dayStatus=json.dayStatus||null;
     // The suppression posture the SERVER applied, reported so the page can say
     // why a figure is missing and stop offering a breakdown it would only draw
     // as dashes. Reading it is not a permission check — the money is already
@@ -426,6 +427,7 @@ function costSection(costClass, classes, opts){
   // Manufacturing and the correct answer for everybody else.
   const head = costPeriodNote(view)
     + costTruncationNote(view)
+    + dayStatusNote(view.dayStatus)
     + costAllocationNote(view)
     + costStatCards(r, opts)
     + costTotalsNote(r)

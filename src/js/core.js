@@ -764,6 +764,30 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','
 // because the badge is about the day.
 function schedBadge(isSched){return isSched?'<span class="badge active">Production Mon–Thu</span>':'<span class="badge en">Maintenance Fri–Sun</span>';}
 
+// Provisional vs reconciled, shown wherever daily figures appear. A day is
+// provisional while only the daily 8 AM snapshot is in (open punches read
+// 0.00); reconciled once BBSI's Monday weekly file, with punch corrections,
+// has replaced it. The summary comes from the server (summarizeDayStatus).
+function dayStatusBadge(status){
+  if(status==='reconciled') return '<span class="badge active" title="The weekly file, with punch corrections, has been applied">Reconciled</span>';
+  if(status==='provisional') return '<span class="badge es" title="Daily snapshot only — open punches may read 0.00 until the weekly file arrives">Provisional</span>';
+  return '';
+}
+function dayStatusNote(summary){
+  if(!summary||!summary.days||!summary.days.length) return '';
+  const p=summary.provisional||0, r=summary.reconciled||0;
+  const links=(summary.reconciliationImportIds||[]).map(id=>`<button class="btn btn-outline btn-sm" onclick="openVariance('${jsStr(id)}')">View reconciliation</button>`).join(' ');
+  if(!p&&r) return `<div class="ot-bar-note" data-day-status="reconciled">${dayStatusBadge('reconciled')} Every day shown is reconciled from the weekly file. ${links}</div>`;
+  if(!p&&!r) return '';
+  return `<div class="ot-bar-note" data-day-status="provisional">${dayStatusBadge('provisional')} ${p} day${p===1?' is':'s are'} provisional — the daily snapshot only, so an open punch reads 0.00 until the weekly file replaces it${r?'; '+r+' reconciled':''}. ${links}</div>`;
+}
+// The variance summary lives on the Alerts tab; this is the way in from a
+// reconciled week anywhere else.
+function openVariance(importId){
+  goToTab('alerts');
+  if(typeof showVariance==='function') showVariance(importId);
+}
+
 // Every /api/payroll-import call goes through here so a failed request raises
 // instead of leaving a panel spinning on nothing.
 async function payrollPost(body){

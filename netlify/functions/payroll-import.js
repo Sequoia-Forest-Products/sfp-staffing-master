@@ -339,7 +339,7 @@ async function days(body) {
   // department on the roster", which is false, and sent you to a profile that
   // already had one. The remedy for that person is the Re-stamp action further
   // down this same tab, not the employee card.
-  const [rows, deliveries, roster] = await Promise.all([
+  const [rows, deliveries, roster, hoursDays] = await Promise.all([
     db.fetchDaySummaries(from, to),
     db.fetchDeliveriesForDates(from, to).catch(err => {
       // A ledger that cannot be read must not take the day list down with it.
@@ -355,8 +355,13 @@ async function days(body) {
       // department is reported as unclassified rather than guessed either way.
       console.error('roster read failed for the day list:', err.message);
       return null;
+    }),
+    db.fetchHoursDays(from, to).catch(err => {
+      console.error('hours_days read failed for the day list:', err.message);
+      return null;
     })
   ]);
+  const statusByDate = new Map((hoursDays || []).map(h => [String(h.work_date).slice(0, 10), h]));
 
   const deliveryUnavailable = deliveries === null;
   const rosterUnavailable = roster === null;
@@ -485,7 +490,11 @@ async function days(body) {
       staleCount: stale.length,
       stale: stale.slice(0, NAMED_LIMIT),
       staleOmitted: Math.max(0, stale.length - NAMED_LIMIT),
-      delivery
+      delivery,
+      // provisional (daily snapshot) | reconciled (weekly file) | null.
+      reconciliation: statusByDate.has(info.date) ? statusByDate.get(info.date).status : null,
+      reconciliationImportId: statusByDate.has(info.date) && statusByDate.get(info.date).status === 'reconciled'
+        ? statusByDate.get(info.date).last_import_id || null : null
       /* no money: the feed is hours only */
     };
   }).sort((a, b) => (a.workDate < b.workDate ? 1 : a.workDate > b.workDate ? -1 : 0));

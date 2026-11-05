@@ -135,3 +135,22 @@ test('a person with no rate changes the hours but is reported, not priced at zer
   assert.deepStrictEqual(v.ratesMissing, ['5555']);
   assert.strictEqual(v.employees[0].dollarsChange, null);
 });
+
+// ---------------------------------------------------------------------------
+// Day status
+// ---------------------------------------------------------------------------
+
+const { summarizeDayStatus } = require('../netlify/functions/hours-import-lib');
+
+test('day status counts provisional, reconciled and nothing-imported, and never a future day', () => {
+  const s = summarizeDayStatus([
+    { work_date: '2026-11-02', status: 'reconciled', last_import_id: 'w1' },
+    { work_date: '2026-11-03', status: 'reconciled', last_import_id: 'w1' },
+    { work_date: '2026-11-04', status: 'provisional' }
+  ], ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'], '2026-11-06');
+  assert.strictEqual(s.reconciled, 2);
+  assert.strictEqual(s.provisional, 1);
+  assert.strictEqual(s.none, 1, '11/5 has happened and nothing is imported');
+  assert.strictEqual(s.days.length, 4, '11/6 is today and is not counted');
+  assert.deepStrictEqual(s.reconciliationImportIds, ['w1']);
+});

@@ -54,6 +54,7 @@ const {
   fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
 } = require('./week-index-lib');
 const { buildCostReport, REPORTED_COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
+const { summarizeDayStatus, eachDate: datesBetweenInclusive } = require('./hours-import-lib');
 const { parseRange, standardHoursFor } = require('./period-lib');
 
 // The cost classes this endpoint used to serve behind the salaries tier, and
@@ -290,6 +291,10 @@ exports.handler = async (event) => {
           standardHours
         },
         truncated: weekIndex.truncated || weekDetailTruncated,
+        // Provisional (daily snapshot) or reconciled (weekly file) per day.
+        dayStatus: await payrollDb.fetchHoursDays(periodFrom, periodTo)
+          .then(rows => summarizeDayStatus(rows, datesBetweenInclusive(periodFrom, periodTo), today))
+          .catch(err => { console.error('hours_days read failed for the cost report:', err.message); return null; }),
         dataWindow: {
           from: windowFrom,
           to: windowTo,
