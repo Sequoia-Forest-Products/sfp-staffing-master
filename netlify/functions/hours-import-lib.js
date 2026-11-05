@@ -372,7 +372,35 @@ function computeVariance({ before = [], after = [], employees = [], dates = [] }
   };
 }
 
+// ---------------------------------------------------------------------------
+// 4. Day status, for every screen that shows daily figures
+// ---------------------------------------------------------------------------
+//
+// provisional = the daily snapshot only (open punches may read 0.00);
+// reconciled  = the weekly file, with punch corrections, has been applied.
+// A day with no hours_days row has had nothing imported. Only days that have
+// already happened are counted, so tomorrow is never "provisional".
+function summarizeDayStatus(hoursDays, dates, today) {
+  const by = new Map((hoursDays || []).map(d => [String(d.work_date).slice(0, 10), d]));
+  const days = [];
+  let provisional = 0, reconciled = 0, none = 0;
+  const imports = new Set();
+  for (const date of dates || []) {
+    if (today && date >= today) continue;
+    const row = by.get(date);
+    const status = row ? row.status : null;
+    if (status === 'reconciled') {
+      reconciled++;
+      if (row.last_import_id) imports.add(row.last_import_id);
+    } else if (status === 'provisional') provisional++;
+    else none++;
+    days.push({ date, status, importId: row && status === 'reconciled' ? row.last_import_id || null : null });
+  }
+  return { days, provisional, reconciled, none, reconciliationImportIds: [...imports] };
+}
+
 module.exports = {
+  summarizeDayStatus,
   classifyRows,
   buildDatedImport,
   dateColumnOf,

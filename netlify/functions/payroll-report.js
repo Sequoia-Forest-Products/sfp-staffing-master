@@ -12,6 +12,7 @@
 
 const db = require('./db');
 const payrollDb = require('./payroll-db');
+const { summarizeDayStatus, eachDate } = require('./hours-import-lib');
 const { weekStartFor, weekDates, buildReport, DEFAULT_GRACE_HOURS } = require('./ot-report-lib');
 const { datesBetween, parseRange } = require('./period-lib');
 const { verifySession, getCookies } = require('./session-lib');
@@ -331,6 +332,11 @@ exports.handler = async (event) => {
         report,
         availableWeeks,
         preApprovedSource,
+        // Provisional (daily snapshot) or reconciled (weekly file) for each day
+        // shown. Null when hours_days could not be read — never a guess.
+        dayStatus: await payrollDb.fetchHoursDays(report.weekStart, report.weekEnd)
+          .then(rows => summarizeDayStatus(rows, eachDate(report.weekStart, report.weekEnd), today))
+          .catch(err => { console.error('hours_days read failed for the OT report:', err.message); return null; }),
         // `truncated` is the one flag the page needs to decide whether to show a
         // "this may be incomplete" banner.
         truncated: weekWindow.truncated || dataWindow.weekDetailTruncated,

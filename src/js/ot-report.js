@@ -44,6 +44,7 @@ async function loadOTReport(week){
     try{json=await res.json();}catch(e){json=null;}
     if(!res.ok||!json||json.ok===false) throw new Error((json&&json.error)||('Request failed ('+res.status+')'));
     state.otReport=json.report||null;
+    state.otDayStatus=json.dayStatus||null;
     state.otReportWeeks=json.availableWeeks||[];
     // The week the dropdown should show. A RANGE MUST NOT OVERWRITE IT: the
     // report's weekStart is the range's first date when a range was asked for,
@@ -467,7 +468,7 @@ function renderOTReport(){
       <div class="ot-bar-note">Hourly payroll only — salaried staff are excluded at import.</div>
     </div>`;
 
-  const trunc=otTruncationBanner();
+  const trunc=otTruncationBanner()+dayStatusNote(state.otDayStatus);
 
   if(state.otReportLoading) return otReportStyle+picker+'<div class="loading-state">Loading the weekly report…</div>';
   if(!state.otReport) return otReportStyle+picker+trunc+`

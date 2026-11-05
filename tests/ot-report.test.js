@@ -1715,7 +1715,7 @@ function fakePage(rows, contentRange) {
 // read fail, and the default of no rows exercises the fallback.
 async function runReport({ pageFor, detailRows, settingsRows, settingsError,
                             preApproved, preApprovedError, overtimeRows,
-                            deliveries = [], deliveriesError = null }) {
+                            deliveries = [], deliveriesError = null, hoursDays = [] }) {
   const handler = loadPayrollReport().handler;
   const payrollDb = require('../netlify/functions/payroll-db');
   const db = require('../netlify/functions/db');
@@ -1751,6 +1751,9 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError,
     if (deliveriesError) throw deliveriesError;
     return deliveries;
   };
+  // Day status (provisional / reconciled): likewise not the week index.
+  const realDays = payrollDb.fetchHoursDays;
+  payrollDb.fetchHoursDays = async () => hoursDays || [];
   db.query = async (table, params) => {
     settingsCalls.push([table, params]);
     if (settingsError) throw settingsError;
@@ -1768,6 +1771,7 @@ async function runReport({ pageFor, detailRows, settingsRows, settingsError,
     payrollDb.fetchEmployees = realEmp;
     db.query = realQuery;
     payrollDb.fetchDeliveriesForDates = realDlv;
+    payrollDb.fetchHoursDays = realDays;
   }
 }
 
@@ -2430,4 +2434,15 @@ test('a marked date outside the period, or with no data, changes nothing', () =>
   const noData = holidayReport(['2026-09-07', '2026-09-10']);
   assert.deepStrictEqual(noData.holidays.dates, ['2026-09-07'], 'only the day with rows is reported');
   assert.deepStrictEqual(noData.holidays.datesWithoutData, ['2026-09-10'], 'the other is named separately');
+});
+
+test('the OT report says which days are provisional and which are reconciled', async () => {
+  const { body } = await runReport({
+    pageFor: (url) => fakePage([], '*/0'),
+    detailRows: () => [],
+    hoursDays: [{ work_date: '2026-08-17', status: 'reconciled', last_import_id: 'w1' }]
+  });
+  assert.ok(body.dayStatus, 'dayStatus is in the payload');
+  assert.ok(Array.isArray(body.dayStatus.days));
+  assert.ok(body.dayStatus.provisional + body.dayStatus.reconciled + body.dayStatus.none === body.dayStatus.days.length);
 });

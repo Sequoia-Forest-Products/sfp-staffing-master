@@ -486,7 +486,7 @@ function renderDailyHours(){
             const inferred=String(d.dateSource||'').includes('email_received');
             const src=String(d.source||'manual');
             const ds=dayStateOf(d);
-            const dateCell=`<td style="font-weight:600">${fmtDate(d.workDate)}<div style="font-size:11px;color:var(--muted);font-weight:400">${esc(d.dayName||dayNameOf(d.workDate))}</div></td>`;
+            const dateCell=`<td style="font-weight:600">${fmtDate(d.workDate)}<div style="font-size:11px;color:var(--muted);font-weight:400">${esc(d.dayName||dayNameOf(d.workDate))}</div>${d.reconciliation?'<div style="margin-top:3px">'+dayStatusBadge(d.reconciliation)+(d.reconciliationImportId?` <a href="#" style="font-size:10.5px" onclick="openVariance('${jsStr(d.reconciliationImportId)}');return false">variance</a>`:'')+'</div>':''}</td>`;
 
             // A day with no rows is a row like any other. It used to be a chip
             // in a banner above the table, which read as a warning about
