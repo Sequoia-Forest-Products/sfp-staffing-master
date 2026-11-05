@@ -104,6 +104,13 @@ test('Daily file missing: not before 9:00 AM Pacific, yes after, and not once de
   assert.ok(!types(delivered).includes('daily_file_missing'), 'a "nobody had time" day is delivered too');
 });
 
+test('Weekly file missing is never raised for a week before the weekly file existed', () => {
+  // Thursday 11/5: last week is 10/26, which no weekly file was ever promised for.
+  const s = steady();
+  const conds = evaluateConditions({ now: AT('10:00'), employees: s.employees, dailyRows: s.rows, hoursDays: s.days });
+  assert.ok(!types(conds).includes('weekly_file_missing'));
+});
+
 test('Weekly file missing: Monday 11:00 AM Pacific, for last week, until a weekly import exists', () => {
   const s = steady();
   const mon = d => AT(d, '2026-11-09');

@@ -167,7 +167,7 @@ function evaluateConditions({
   const lastMonday = addDays(thisMonday, -7);
   const pastGrace = clock.dow > WEEKLY_FILE.dayOfWeek ||
     (clock.dow === WEEKLY_FILE.dayOfWeek && clock.hour >= WEEKLY_FILE.missingAfterHour);
-  if (pastGrace) {
+  if (pastGrace && lastMonday >= WEEKLY_FILE.firstWeekStart) {
     // Arrived = a weekly import created this week, or one covering last week.
     const arrived = weeklyImports.some(i =>
       (i.created_at && pacificParts(new Date(i.created_at), tz).date >= thisMonday) ||

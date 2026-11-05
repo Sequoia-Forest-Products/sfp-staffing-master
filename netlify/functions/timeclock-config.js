@@ -29,7 +29,11 @@ const WEEKLY_FILE = {
   dayOfWeek: 1,          // Monday (1 = Monday ... 7 = Sunday)
   expectedHour: 10,
   // Weekly file missing: no weekly file for last week by this hour on Monday.
-  missingAfterHour: 11
+  missingAfterHour: 11,
+  // The first week BBSI's weekly file covers. It starts arriving Monday
+  // 2026-11-09 with the week of 11/2; no earlier week was ever owed one, so
+  // none is alerted on.
+  firstWeekStart: '2026-11-02'
 };
 
 const ALERT_THRESHOLDS = {
