@@ -475,5 +475,6 @@ module.exports = {
   // isSalaryWage is the narrow value-only sentinel test kept for callers that
   // hold nothing else.
   isSalaried,
-  isSalaryWage
+  isSalaryWage,
+  isActive
 };

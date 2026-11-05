@@ -202,19 +202,17 @@ function costRateGapNote(report){
     </div>`;
 }
 
-// Active hourly people the daily feed never mentioned in this period. Shown
-// because they cost nothing on this page, and a person costing nothing is far
-// more often a person missing from the timeclock's report than a person off.
+// Active hourly people the daily feed never mentioned in this period. The list
+// itself MOVED to the Alerts tab on 2026-11-05 (Active, no hours), where it can
+// be acknowledged and resolves itself when hours arrive. The cost page keeps one
+// line, because the figures below it are understated by whatever those people
+// earned and a reader of this page needs to know that here.
 function costNoHoursNote(report){
   const list=(report&&report.noHours)||[];
   if(!list.length) return '';
-  return `<div class="cost-note cost-warn"><strong>${list.length} active hourly ${list.length===1?'person has':'people have'} no hours in this period.</strong>
-    Either they were off the whole period, or they are missing from the timeclock's daily report — and if so,
-    their cost is missing from every figure below.</div>
-    <div class="cost-panel">
-      ${list.map(p=>`<div class="cost-gap"><strong>${esc(p.name)}</strong> · ${esc(p.department||'—')}
-        ${p.employeeNumber?`<span style="color:var(--muted)"> · #${esc(p.employeeNumber)}</span>`:''}</div>`).join('')}
-    </div>`;
+  return `<div class="cost-note cost-warn"><strong>${list.length} active hourly ${list.length===1?'person has':'people have'} no hours in this period</strong>
+    — either off, or missing from the timeclock report, in which case every figure below is understated.
+    <a href="#" onclick="goToTab('alerts');return false">See Alerts</a>.</div>`;
 }
 
 function costBullpenBlock(report){

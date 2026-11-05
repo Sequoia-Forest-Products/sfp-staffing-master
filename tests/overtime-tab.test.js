@@ -618,10 +618,10 @@ test('no navigation still targets a retired tab key', () => {
   for (const key of RETIRED_TAB_KEYS) {
     assert.ok(!app.includes(`data-tab="${key}"`), `app.html still has a ${key} tab button`);
   }
-  // The five that survive, and nothing else.
+  // The five that survive, plus Alerts (2026-11-05), and nothing else.
   const live = Array.from(app.matchAll(/data-tab="([^"]+)"/g), m => m[1]);
   assert.deepStrictEqual(live.sort(),
-    ['costs', 'employees', 'overtime', 'points', 'settings']);
+    ['alerts', 'costs', 'employees', 'overtime', 'points', 'settings']);
 
   // goToTab('otreport') would now silently render nothing. goToOvertime() is the
   // supported way in.

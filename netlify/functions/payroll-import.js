@@ -252,6 +252,15 @@ async function commit(body) {
     held: classified.held
   });
 
+  // The Alerts tab, now: a New employee alert or a thin day should be there
+  // when the person who just imported the day goes to look. Never fails the
+  // import — the hours are written.
+  try {
+    await require('./alerts-engine').runAlertEvaluation({ db });
+  } catch (err) {
+    console.warn('payroll-import commit: alert evaluation failed:', err.message);
+  }
+
   return {
     uploadBatchId: written && written.import_id ? written.import_id : uploadBatchId,
     importId: written ? written.import_id : null,

@@ -34,6 +34,7 @@ const SCRIPT_MODULES = [
   // arbitrary sequence.
   'overtime.js',
   'settings-tab.js',
+  'alerts.js',
   'bootstrap.js'
 ];
 
