@@ -47,10 +47,13 @@ feed. When they arrive, each employee number is checked against the roster:
   roster, and the held hours move in automatically on the next hourly check.
   No re-import is needed.
 
-Gibb's number was corrected to 3380 on 11/5. The other four are still on the
-roster under 5668 (Harig), 5342 (J. Ramirez), 5159 (Cervantes) and 5467
-(Valdovinos). If TimeNet uses different numbers for them, the alerts will
-say so.
+**Already confirmed for all five.** The 11/5 daily file (11/4 work) was the
+first to cover all Active TimeNet employees. It carried every one of them,
+under numbers that match the roster: 3380 (Gibb, corrected on the roster on
+11/5), 5668 (Harig), 5342 (J. Ramirez), 5159 (Cervantes) and 5467
+(Valdovinos). 53.55 hours across the five were counted for 11/4, so their
+backfilled days should count straight away. If BBSI's backfill file uses a
+different number for anyone, the New employee alert will name it.
 
 ## Verify after the backfill
 
