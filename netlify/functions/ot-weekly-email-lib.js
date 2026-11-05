@@ -10,13 +10,15 @@
 //
 // WHY IT RUNS WHEN IT RUNS
 //
-// Sunday's hours do not exist until Monday morning: BBSI sends the daily file at
-// ~6:04 AM Pacific and payroll-email-ingest picks it up on the next :15. Send
-// before that and the email is a six-day week wearing a seven-day label —
-// every figure real, internally consistent, and understated. The schedule in
-// netlify.toml is 17:00 UTC Monday, which is 10:00 AM Pacific in summer and
-// 9:00 AM in winter: three to four hours of margin, and three or four ingest
-// attempts, after the file is due.
+// Sunday's hours do not exist until Monday morning, and the CORRECTED week does
+// not exist until the weekly file: BBSI sends the daily file at 8:00 AM Pacific
+// and the weekly file (prior week, punches fixed) at 10:00 AM Pacific Monday,
+// and payroll-email-ingest picks each up on the next :15. Send before the
+// weekly file and the email reports the provisional snapshot — open punches at
+// 0.00 — which is the understatement the October reconciliation found. The
+// schedule in netlify.toml is 19:30 UTC Monday: 11:30 AM Pacific in winter and
+// 12:30 PM in summer, after the weekly file and its 11:00 AM missing-file
+// alert.
 //
 // WHAT IT REFUSES TO SEND
 //

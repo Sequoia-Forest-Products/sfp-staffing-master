@@ -4,8 +4,9 @@
 // imports any daily payroll workbook it has not seen before. All logic lives in
 // payroll-email-lib.js; this file only wires it up and reports.
 //
-// Hourly rather than daily on purpose: the vendor sends at ~6:04 AM Pacific but
-// has been late before, and the ingest is idempotent (processed_emails keys off
+// Hourly rather than daily on purpose: the daily file is due at 8:00 AM Pacific
+// and the weekly file Mondays at 10:00 AM (timeclock-config.js), the vendor has
+// been late before, and a cron line cannot follow daylight saving anyway, and the ingest is idempotent (processed_emails keys off
 // the RFC822 Message-ID), so re-running costs nothing.
 //
 // Scheduled functions cannot be invoked over HTTP in production. To test, use

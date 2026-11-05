@@ -19,7 +19,7 @@ const {
   fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
 } = require('./week-index-lib');
 
-// The payroll vendor sends at ~6:04 AM Pacific, so Pacific is the clock that
+// The payroll vendor sends on Pacific time (daily file 8:00 AM), so Pacific is the clock that
 // decides what "today" means here. birthday-lib.js deliberately uses
 // America/Boise for the mill's own clock — these are two different questions.
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';

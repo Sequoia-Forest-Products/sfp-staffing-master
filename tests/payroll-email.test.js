@@ -124,11 +124,11 @@ function harness(messages, overrides = {}, runOpts = {}) {
 // Work-date derivation
 // ============================================================
 
-test('the normal 6:04 AM Pacific arrival covers the previous Pacific day', () => {
-  const d = deriveWorkDate('2026-08-19T13:04:00Z', TZ); // 06:04 PDT Wed Aug 19
+test('the normal 8:00 AM Pacific arrival covers the previous Pacific day', () => {
+  const d = deriveWorkDate('2026-08-19T15:00:00Z', TZ); // 08:00 PDT Wed Aug 19
   assert.strictEqual(d.workDate, '2026-08-18');
   assert.strictEqual(d.lateArrival, false);
-  assert.strictEqual(d.receivedLocal.hour, 6);
+  assert.strictEqual(d.receivedLocal.hour, 8);
 });
 
 test('the zone conversion happens BEFORE the calendar date is taken', () => {
@@ -165,10 +165,11 @@ test('a Monday arrival resolves to Sunday, which is a legitimate work day', () =
 });
 
 test('arrival hour drives the late_arrival signal, not the date', () => {
-  assert.strictEqual(deriveWorkDate('2026-08-19T11:00:00Z', TZ).lateArrival, false); // 04:00
-  assert.strictEqual(deriveWorkDate('2026-08-19T16:59:00Z', TZ).lateArrival, false); // 09:59
-  assert.strictEqual(deriveWorkDate('2026-08-19T17:00:00Z', TZ).lateArrival, true);  // 10:00
-  assert.strictEqual(deriveWorkDate('2026-08-19T10:30:00Z', TZ).lateArrival, true);  // 03:30
+  // The window is timeclock-config's DAILY_FILE: 06:00 up to (not including) 12:00.
+  assert.strictEqual(deriveWorkDate('2026-08-19T13:00:00Z', TZ).lateArrival, false); // 06:00
+  assert.strictEqual(deriveWorkDate('2026-08-19T18:59:00Z', TZ).lateArrival, false); // 11:59
+  assert.strictEqual(deriveWorkDate('2026-08-19T19:00:00Z', TZ).lateArrival, true);  // 12:00
+  assert.strictEqual(deriveWorkDate('2026-08-19T12:30:00Z', TZ).lateArrival, true);  // 05:30
 });
 
 test('an unusable timestamp yields no date at all rather than a guess', () => {
@@ -379,7 +380,7 @@ test('a message with no matching attachment is recorded as an error and alerts',
 
 test('a late arrival still imports, but carries the late_arrival flag', async () => {
   const { result, calls } = await harness([
-    message({ receivedAt: '2026-08-19T18:20:00Z' }) // 11:20 Pacific
+    message({ receivedAt: '2026-08-19T20:20:00Z' }) // 13:20 Pacific
   ]);
 
   const r = result.results[0];

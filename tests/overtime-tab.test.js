@@ -322,8 +322,8 @@ test('an automatic sender still exists, and it is the schedule rather than the i
   const toml = fs.readFileSync(path.join(ROOT, 'netlify.toml'), 'utf8');
   assert.ok(/\[functions\."ot-weekly-email"\]/.test(toml),
     'the weekly email must be a scheduled function');
-  assert.ok(/schedule = "0 17 \* \* 1"/.test(toml),
-    'Monday 17:00 UTC — late enough that Sunday\'s hours have been ingested');
+  assert.ok(/schedule = "30 19 \* \* 1"/.test(toml),
+    'Monday 19:30 UTC — after the 10:00 AM Pacific weekly file, so the email reports the reconciled week');
 
   // And the schedule has to actually reach the saved manager list, which is the
   // Phase A failure this whole file exists to prevent.

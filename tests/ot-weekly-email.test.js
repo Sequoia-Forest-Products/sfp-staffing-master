@@ -60,14 +60,14 @@ test('the week is the one that just finished, not the one starting', () => {
 });
 
 test('the cron hour is late enough that Pacific has reached Monday', () => {
-  // 17:00 UTC Monday is 10:00 Pacific (PDT) / 09:00 (PST). Fire it before
+  // 19:30 UTC Monday is 12:30 Pacific (PDT) / 11:30 (PST). Fire it before
   // Pacific midnight — say 03:00 UTC — and todayInZone still says Sunday, so the
   // job would send the week BEFORE last and nothing would look wrong about it.
   const { todayInZone } = require('../netlify/functions/week-index-lib');
   const zone = 'America/Los_Angeles';
 
-  assert.strictEqual(todayInZone(new Date('2026-09-07T17:00:00Z'), zone), '2026-09-07');
-  assert.strictEqual(previousWeekStart(todayInZone(new Date('2026-09-07T17:00:00Z'), zone)),
+  assert.strictEqual(todayInZone(new Date('2026-09-07T19:30:00Z'), zone), '2026-09-07');
+  assert.strictEqual(previousWeekStart(todayInZone(new Date('2026-09-07T19:30:00Z'), zone)),
     '2026-08-31');
 
   // The trap, pinned so nobody "tidies" the schedule earlier.
@@ -76,7 +76,7 @@ test('the cron hour is late enough that Pacific has reached Monday', () => {
     '2026-08-24', 'an early-UTC Monday run would send the wrong week entirely');
 
   // And winter, when the same UTC hour is 09:00 Pacific rather than 10:00.
-  assert.strictEqual(todayInZone(new Date('2026-01-05T17:00:00Z'), zone), '2026-01-05');
+  assert.strictEqual(todayInZone(new Date('2026-01-05T19:30:00Z'), zone), '2026-01-05');
 });
 
 // ---------------------------------------------------------------------------
@@ -174,8 +174,8 @@ test('THERE IS NO OFF SWITCH — a stored autoSend:false cannot stop the email',
 // 4. The run, over stubbed everything
 // ---------------------------------------------------------------------------
 
-// Monday 2026-09-07, 17:00 UTC — the instant the cron will actually fire.
-const FIRES_AT = new Date('2026-09-07T17:00:00Z');
+// Monday 2026-09-07, 19:30 UTC — the instant the cron will actually fire.
+const FIRES_AT = new Date('2026-09-07T19:30:00Z');
 
 function report(overrides = {}) {
   return Object.assign({
