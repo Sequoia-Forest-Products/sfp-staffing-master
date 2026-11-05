@@ -10,3 +10,7 @@
 loadPermissions();
 loadEmailSettings();
 loadData();
+// The Alerts badge: now, and every five minutes, so a file that goes missing at
+// 9:00 shows on a page that was opened at 8:00.
+loadAlertCount();
+if (typeof setInterval === 'function') setInterval(loadAlertCount, 5 * 60 * 1000);

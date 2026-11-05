@@ -735,6 +735,30 @@ function markHeldExternal(employeeNumber) {
     { body: { reason: 'external' } });
 }
 
+// A held 'unknown' number has been added to the roster as salaried: its rows
+// stay held, under the reason that is now true.
+function updateHeldReason(employeeNumber, fromReason, toReason) {
+  return requestRows('PATCH',
+    `daily_hours_held?employee_number=eq.${encode(employeeNumber)}&reason=eq.${encode(fromReason)}`,
+    { body: { reason: toReason } });
+}
+
+// Every daily_hours row in a range, paged. A project-level row cap (1000 by
+// default on Supabase) would otherwise cut a two-month read short without an
+// error, and an alert computed off a truncated read is confidently wrong.
+async function fetchDailyHoursAll(fromDate, toDate, pageSize = 1000) {
+  const out = [];
+  for (let offset = 0, guard = 0; guard < 100; guard++, offset += pageSize) {
+    const page = await requestRows('GET',
+      `daily_hours?select=${DAILY_COLUMNS}` +
+      `&work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}` +
+      `&order=work_date.asc,employee_number.asc`, { limit: pageSize, offset });
+    out.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return out;
+}
+
 function fetchHoursDays(fromDate, toDate) {
   return requestRows('GET',
     `hours_days?select=*&work_date=gte.${encode(fromDate)}&work_date=lte.${encode(toDate)}` +
@@ -786,6 +810,8 @@ module.exports = {
   fetchExclusions,
   addExclusion,
   markHeldExternal,
+  updateHeldReason,
+  fetchDailyHoursAll,
   fetchHoursDays,
   fetchImports,
   fetchImport,

@@ -308,6 +308,9 @@ function resolveDeps(deps = {}) {
     // file from the undated daily snapshot. False when the bytes do not parse;
     // the daily path then reports the parse failure in its usual words.
     detectDated:          deps.detectDated          || defaultDetectDated,
+    // Alerts, after the run. Lazy and injectable like everything else here.
+    evaluateAlerts:       deps.evaluateAlerts       || ((opts) => require('./alerts-engine').runAlertEvaluation(opts)),
+    raiseVarianceAlert:   deps.raiseVarianceAlert   || ((opts) => require('./alerts-engine').raiseVarianceAlert(opts)),
     // The wage sync: planWageSync decides (pure), applyWageSync writes. Both
     // injectable, and applyWageSync makes no request at all for a plan with
     // nothing in it, so a run whose file carried no usable rate touches nothing.
@@ -1276,6 +1279,30 @@ async function runPayrollIngest({
       item.status = 'error';
       item.error = err.message;
       item.alert = true;
+    }
+  }
+
+  // ---- Phase 2b: the Alerts tab. A weekly import raises its variance alert
+  // (once, here — it is an event, not a standing condition), and then every
+  // condition is re-evaluated so a New employee alert, a thin day or a
+  // zero-hour day appears the moment the file that caused it is in. Neither
+  // can fail the run: the hours are already written.
+  if (!isDryRun) {
+    for (const item of items) {
+      if (item.status === 'imported' && item.variance) {
+        try {
+          await d.raiseVarianceAlert({ variance: item.variance, importId: item.importId || item.uploadBatchId });
+        } catch (err) {
+          log(`Variance alert for ${item.workDate} failed: ${err.message}`);
+        }
+      }
+    }
+    if (items.some(i => i.status === 'imported')) {
+      try {
+        await d.evaluateAlerts({ now, log });
+      } catch (err) {
+        log(`Alert evaluation failed: ${err.message}`);
+      }
     }
   }
 

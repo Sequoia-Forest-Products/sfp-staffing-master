@@ -214,6 +214,11 @@
       <!-- Settings is a container now: the settings page proper, plus Daily
            Hours, which is the payroll import rather than a report. -->
       <button class="sfp-tab" data-tab="settings" onclick="switchTab('settings',this)">Settings</button>
+      <!-- Alerts: timeclock and reconciliation conditions that need a person —
+           new employee numbers, missing files, thin days, open punches,
+           reconciliation variance. The badge is the OPEN count and is hidden at
+           zero. See src/js/alerts.js. -->
+      <button class="sfp-tab" data-tab="alerts" onclick="switchTab('alerts',this)">Alerts<span class="al-badge" id="alertBadge" style="display:none"></span></button>
     </div>
   </div>
 </header>

@@ -809,6 +809,9 @@ function switchTab(tab,el){
     const view=costsSubView(state.costsView);
     if(view.load) view.load();
   }
+  // Re-evaluates on open, so what the tab shows is the state of the data now
+  // rather than as of the last hourly run.
+  if(tab==='alerts') loadAlerts(true);
 }
 
 function render(){
@@ -829,6 +832,7 @@ function render(){
   else if(state.tab==='points')el.innerHTML=renderPoints();
   else if(state.tab==='overtime')el.innerHTML=renderOvertime();
   else if(state.tab==='settings')el.innerHTML=renderSettingsTab();
+  else if(state.tab==='alerts')el.innerHTML=renderAlertsTab();
   // ANY OTHER KEY BOUNCES, rather than leaving the tab content as it was with
   // nothing explaining why. 'overhead' is the one that exists: it was a tab
   // until 2026-09-14 and a session open across that deploy — or a hand-typed

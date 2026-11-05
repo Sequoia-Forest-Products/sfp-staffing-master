@@ -68,6 +68,17 @@
 # on EVERY missing day: BBSI sends the report seven days a week, so a Saturday
 # with no data is a failed delivery rather than a quiet weekend. The daily
 # schedule below already covers all seven.
+# Alerts — every hour at :20, five minutes after the ingest's :15.
+#
+# Re-evaluates every condition on the Alerts tab: new employee numbers,
+# thin days, zero-hour rows, active people with no hours, and the two
+# missing-file alerts. Those two are why this is scheduled at all — a file that
+# does NOT arrive produces no event, only a clock. Hourly because a UTC cron
+# cannot follow daylight saving; alerts-lib decides whether 9:00 AM (daily) or
+# Monday 11:00 AM (weekly) Pacific has passed.
+[functions."alerts-evaluate"]
+  schedule = "20 * * * *"
+
 [functions."payroll-missed-check"]
   schedule = "0 19 * * *"
 

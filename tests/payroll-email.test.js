@@ -102,6 +102,8 @@ function harness(messages, overrides = {}, runOpts = {}) {
       return { import_id: 'imp-' + dates[0], counted: rows.length, held: held.length };
     },
     fetchExclusions:      async () => [],
+    evaluateAlerts:       async () => { calls.evaluations = (calls.evaluations || 0) + 1; return {}; },
+    raiseVarianceAlert:   async (opts) => { (calls.varianceAlerts = calls.varianceAlerts || []).push(opts); return null; },
     findRowsByFileHash:   async () => [],
     getProcessedEmail:    async () => null,
     upsertProcessedEmail: async rec => { calls.ledger.push(rec); return rec; },
