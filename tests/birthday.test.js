@@ -46,6 +46,7 @@ function harness(iso, roster = ROSTER, opts = {}) {
     now: new Date(iso),
     employees: roster,
     claim: async () => true,
+    retryDelayMs: 0,
     log: (...a) => logs.push(a.join(' ')),
     send: async (to, subject, body) => { sends.push({ to, subject, body }); },
     ...opts
@@ -425,6 +426,7 @@ test('one bad address does not abort the run', async () => {
     now: new Date('2026-03-11T13:30:00Z'),
     employees: ROSTER,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async to => { if (to === tb(3)) throw new Error('550 bad recipient'); }
   });
@@ -508,6 +510,7 @@ function watched(iso, roster = ROSTER, { sendFails = null, recordThrows = false 
     now: new Date(iso),
     employees: roster,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async (to, subject, body) => {
       if (sendFails && sendFails(to)) throw new Error('550 gateway refused');
@@ -589,6 +592,7 @@ test('an alert that cannot be sent is reported, not swallowed', async () => {
     now: new Date(BOISE_WED),
     employees: ROSTER,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async () => { throw new Error('550 gateway refused'); },
     sendAlert: async () => { throw new Error('gmail auth failed'); },
@@ -627,6 +631,7 @@ test('every recipient is attempted, not just the ones that fit in 10 seconds', a
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async (to) => { seen.push(to); },
     sendAlert: async () => {},
@@ -652,6 +657,7 @@ test('the whole roster is sent well inside a function lifetime', async () => {
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async () => {},
     sendAlert: async () => {},
@@ -671,6 +677,7 @@ test('a truncated run says so in its record rather than looking clean', async ()
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
     claim: async () => true,
+    retryDelayMs: 0,
     log: () => {},
     send: async () => { n++; },
     sendAlert: async () => {},
@@ -758,4 +765,120 @@ test('claimSendDay maps 201 to owned, 409 to taken, anything else to an error', 
   }
   assert.match(calls[0].url, /\/rest\/v1\/birthday_send_claims$/);
   assert.deepStrictEqual(JSON.parse(calls[0].body), { run_date: '2026-11-18' });
+});
+
+// ============================================================
+// Gateway failures: retry once, and say why
+// ============================================================
+//
+// Every birthday day from 2026-09-22 to 2026-11-18 lost texts, and the count
+// alone could not say why. Unpooled sends were ten simultaneous Gmail logins.
+
+const { summarizeFailures } = require('../netlify/functions/birthday-lib');
+
+function smtpError(code, response) {
+  const e = new Error(`Message failed: ${response}`);
+  e.responseCode = code;
+  e.response = response;
+  return e;
+}
+
+test('a send that is throttled once goes through on the retry', async () => {
+  const tries = new Map();
+  const rows = [];
+  const alerts = [];
+  const result = await runBirthdayNotifications({
+    now: new Date(BOISE_WED), employees: ROSTER, log: () => {},
+    claim: async () => true, retryDelayMs: 0,
+    record: async (r) => rows.push(r),
+    sendAlert: async (s) => alerts.push(s),
+    send: async (to) => {
+      const n = (tries.get(to) || 0) + 1;
+      tries.set(to, n);
+      if (n === 1) throw smtpError(421, '421 4.7.0 Try again later, closing connection.');
+    }
+  });
+  assert.strictEqual(result.status, 'sent');
+  assert.strictEqual(result.failed, 0);
+  assert.strictEqual(result.sent, result.recipients, 'each recipient counted once, not once per try');
+  assert.ok([...tries.values()].every(n => n === 2));
+  assert.strictEqual(rows[0].detail, null);
+  assert.strictEqual(alerts.length, 0);
+});
+
+test('a recipient that succeeds first time is never sent to twice', async () => {
+  const sends = [];
+  let first = true;
+  await runBirthdayNotifications({
+    now: new Date(BOISE_WED), employees: ROSTER, log: () => {},
+    claim: async () => true, retryDelayMs: 0, record: async () => {}, sendAlert: async () => {},
+    send: async (to) => {
+      sends.push(to);
+      if (first) { first = false; throw smtpError(421, '421 4.7.0 Try again later'); }
+    }
+  });
+  const counts = sends.reduce((m, t) => (m[t] = (m[t] || 0) + 1, m), {});
+  assert.strictEqual(Object.values(counts).filter(n => n === 2).length, 1, 'only the failed one is retried');
+});
+
+test('what the server said reaches the run row and the alert', async () => {
+  const rows = [];
+  const alerts = [];
+  const result = await runBirthdayNotifications({
+    now: new Date(BOISE_WED), employees: ROSTER, log: () => {},
+    claim: async () => true, retryDelayMs: 0,
+    record: async (r) => rows.push(r),
+    sendAlert: async (subject, body) => alerts.push({ subject, body }),
+    send: async () => { throw smtpError(550, '550 5.4.5 Daily user sending limit exceeded.'); }
+  });
+  assert.strictEqual(result.status, 'delivery-failed');
+  assert.match(rows[0].detail, /after one retry/);
+  assert.match(rows[0].detail, new RegExp(`${result.failed}x 550 550 5\\.4\\.5 Daily user sending limit exceeded`));
+  assert.match(alerts[0].body, /Daily user sending limit exceeded/);
+});
+
+test('the connection pool is closed whether or not sending succeeds', async () => {
+  for (const fails of [false, true]) {
+    let closed = 0;
+    const send = async () => { if (fails) throw new Error('boom'); };
+    send.close = () => { closed++; };
+    await runBirthdayNotifications({
+      now: new Date(BOISE_WED), employees: ROSTER, log: () => {},
+      claim: async () => true, retryDelayMs: 0, record: async () => {}, sendAlert: async () => {}, send
+    });
+    assert.strictEqual(closed, 1);
+  }
+});
+
+test('summarizeFailures groups by server response, most common first', () => {
+  const s = summarizeFailures([
+    smtpError(421, '421 4.7.0 Try again later'),
+    smtpError(454, '454 4.7.0 Too many login attempts'),
+    smtpError(421, '421 4.7.0 Try again later'),
+    new Error('Connection timeout')
+  ]);
+  assert.strictEqual(s, '2x 421 421 4.7.0 Try again later; 1x 454 454 4.7.0 Too many login attempts; 1x Connection timeout');
+});
+
+test('the Gmail transport is pooled, not one login per message', () => {
+  const libPath = require.resolve('../netlify/functions/birthday-lib');
+  const savedEnv = { ...process.env };
+  let options = null;
+  let closed = 0;
+  const mailer = {
+    createTransport: (o) => { options = o; return { sendMail: async () => ({}), close: () => { closed++; } }; }
+  };
+  process.env.GMAIL_USER = 'sender@example.invalid';
+  process.env.GMAIL_APP_PASSWORD = 'x';
+  delete require.cache[libPath];
+  try {
+    const send = require(libPath).createGmailSender(mailer);
+    assert.strictEqual(options.pool, true);
+    assert.ok(options.maxConnections >= 1 && options.maxConnections < 10, 'a few connections, not one per in-flight send');
+    send.close();
+    assert.strictEqual(closed, 1);
+  } finally {
+    process.env = savedEnv;
+    delete require.cache[libPath];
+  }
 });
