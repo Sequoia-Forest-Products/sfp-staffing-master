@@ -45,6 +45,7 @@ function harness(iso, roster = ROSTER, opts = {}) {
   return runBirthdayNotifications({
     now: new Date(iso),
     employees: roster,
+    claim: async () => true,
     log: (...a) => logs.push(a.join(' ')),
     send: async (to, subject, body) => { sends.push({ to, subject, body }); },
     ...opts
@@ -423,6 +424,7 @@ test('one bad address does not abort the run', async () => {
   const result = await runBirthdayNotifications({
     now: new Date('2026-03-11T13:30:00Z'),
     employees: ROSTER,
+    claim: async () => true,
     log: () => {},
     send: async to => { if (to === tb(3)) throw new Error('550 bad recipient'); }
   });
@@ -505,6 +507,7 @@ function watched(iso, roster = ROSTER, { sendFails = null, recordThrows = false 
   return runBirthdayNotifications({
     now: new Date(iso),
     employees: roster,
+    claim: async () => true,
     log: () => {},
     send: async (to, subject, body) => {
       if (sendFails && sendFails(to)) throw new Error('550 gateway refused');
@@ -585,6 +588,7 @@ test('an alert that cannot be sent is reported, not swallowed', async () => {
   const result = await runBirthdayNotifications({
     now: new Date(BOISE_WED),
     employees: ROSTER,
+    claim: async () => true,
     log: () => {},
     send: async () => { throw new Error('550 gateway refused'); },
     sendAlert: async () => { throw new Error('gmail auth failed'); },
@@ -622,6 +626,7 @@ test('every recipient is attempted, not just the ones that fit in 10 seconds', a
   const result = await runBirthdayNotifications({
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
+    claim: async () => true,
     log: () => {},
     send: async (to) => { seen.push(to); },
     sendAlert: async () => {},
@@ -646,6 +651,7 @@ test('the whole roster is sent well inside a function lifetime', async () => {
   await runBirthdayNotifications({
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
+    claim: async () => true,
     log: () => {},
     send: async () => {},
     sendAlert: async () => {},
@@ -664,6 +670,7 @@ test('a truncated run says so in its record rather than looking clean', async ()
   await runBirthdayNotifications({
     now: new Date(BOISE_WED),
     employees: BIG_ROSTER,
+    claim: async () => true,
     log: () => {},
     send: async () => { n++; },
     sendAlert: async () => {},
@@ -671,4 +678,84 @@ test('a truncated run says so in its record rather than looking clean', async ()
   });
   assert.strictEqual(rows[0].detail, null, 'a complete run has nothing to report');
   assert.strictEqual(n, 61);
+});
+
+// ============================================================
+// One send per day
+// ============================================================
+//
+// Every birthday day from 2026-10-05 to 2026-11-18 sent THREE times: the
+// invocation was re-run and each attempt texted the whole roster again.
+
+function claimStore() {
+  const claimed = new Set();
+  return { claimed, claim: async (date) => (claimed.has(date) ? false : (claimed.add(date), true)) };
+}
+
+test('a second run on the same day sends nothing', async () => {
+  const store = claimStore();
+  const first = await harness(BOISE_WED, ROSTER, { claim: store.claim, record: async () => {} });
+  const rows = [];
+  const second = await harness(BOISE_WED, ROSTER, { claim: store.claim, record: async (r) => rows.push(r) });
+
+  assert.ok(first.sends.length > 0);
+  assert.strictEqual(second.sends.length, 0, 'the repeat must not text anyone');
+  assert.strictEqual(second.result.status, 'already-sent');
+  assert.ok(!second.result.deliveryFailed, 'a repeat is not a failure, so the handler returns 200');
+  assert.strictEqual(rows[0].status, 'already-sent', 'the repeat is still visible in birthday_runs');
+});
+
+test('three overlapping runs send exactly once', async () => {
+  const store = claimStore();
+  const runs = await Promise.all([1, 2, 3].map(() =>
+    harness(BOISE_WED, ROSTER, { claim: store.claim, record: async () => {} })));
+  const sending = runs.filter(r => r.sends.length > 0);
+  assert.strictEqual(sending.length, 1);
+  assert.deepStrictEqual(runs.map(r => r.result.status).sort(), ['already-sent', 'already-sent', 'sent']);
+});
+
+test('the claim is per date: the next day still sends', async () => {
+  const store = claimStore();
+  await harness(BOISE_WED, ROSTER, { claim: store.claim, record: async () => {} });
+  const thursday = await harness('2026-03-12T14:00:00Z', ROSTER, { claim: store.claim, record: async () => {} });
+  assert.ok(thursday.sends.length > 0);
+  assert.deepStrictEqual([...store.claimed].sort(), ['2026-03-11', '2026-03-12']);
+});
+
+test('if the claim cannot be checked, nothing is sent', async () => {
+  const sends = [];
+  await assert.rejects(runBirthdayNotifications({
+    now: new Date(BOISE_WED), employees: ROSTER, log: () => {}, record: async () => {},
+    send: async (to) => { sends.push(to); },
+    claim: async () => { throw new Error('supabase unreachable'); }
+  }), /supabase unreachable/);
+  assert.strictEqual(sends.length, 0);
+});
+
+test('dry runs and quiet days never take the claim', async () => {
+  const store = claimStore();
+  await harness(BOISE_WED, ROSTER, { claim: store.claim, dryRun: true });
+  await harness('2026-03-10T14:00:00Z', ROSTER, { claim: store.claim, record: async () => {} }); // Tuesday, no birthdays
+  assert.strictEqual(store.claimed.size, 0);
+});
+
+test('claimSendDay maps 201 to owned, 409 to taken, anything else to an error', async () => {
+  const realFetch = global.fetch;
+  process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'https://example.invalid';
+  process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || 'k';
+  delete require.cache[require.resolve('../netlify/functions/birthday-lib')];
+  const lib = require('../netlify/functions/birthday-lib');
+  const calls = [];
+  try {
+    for (const [status, expect] of [[201, true], [409, false]]) {
+      global.fetch = async (url, init) => { calls.push({ url, body: init.body }); return { ok: status < 300, status, text: async () => '' }; };
+      assert.strictEqual(await lib.claimSendDay('2026-11-18'), expect);
+    }
+    global.fetch = async () => ({ ok: false, status: 500, text: async () => 'boom' });
+    await assert.rejects(lib.claimSendDay('2026-11-18'), /500/);
+  } finally {
+    global.fetch = realFetch;
+  }
+  assert.match(calls[0].url, /\/rest\/v1\/birthday_send_claims$/);
+  assert.deepStrictEqual(JSON.parse(calls[0].body), { run_date: '2026-11-18' });
 });

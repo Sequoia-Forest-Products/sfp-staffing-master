@@ -336,6 +336,40 @@ async function recordRun(row) {
   });
 }
 
+// ONE SEND PER DAY, ENFORCED BY THE DATABASE.
+//
+// From at least 2026-10-05 to 2026-11-18 every birthday day sent THREE times:
+// three birthday_runs rows 10-20s apart, each texting the whole roster. A
+// sending run takes ~30s and the invocation was re-run; nothing here knew the
+// day had already gone out, so every attempt sent it again. That cost real
+// money at the SMS gateway and annoyed all ~66 recipients.
+//
+// The claim is an INSERT on a date primary key, so exactly one invocation per
+// date wins regardless of how many run or how close together. It is taken
+// BEFORE sending: a run killed mid-send is not retried, which is the right
+// trade — a missed text is one alert; a duplicate is 66 paid messages.
+//
+// Returns true if this run owns the date, false if another already does.
+// Anything else throws: if the claim cannot be checked, nothing is sent.
+async function claimSendDay(runDate) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
+  }
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/birthday_send_claims`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal'
+    },
+    body: JSON.stringify({ run_date: runDate })
+  });
+  if (res.ok) return true;
+  if (res.status === 409) return false;
+  throw new Error(`Could not claim birthday send for ${runDate}: ${res.status} ${await res.text()}`);
+}
+
 // ============================================================
 // RUNNER
 // ============================================================
@@ -349,12 +383,14 @@ async function runBirthdayNotifications({
   send = null,
   log = console.log,
   sendAlert = null,
-  record = null
+  record = null,
+  claim = null
 } = {}) {
   // Required lazily: payroll-email-lib pulls in the IMAP stack, and a dry run or
   // a unit test must not need it. Both are injectable for the same reason.
   const _sendAlert = sendAlert || ((subject, body) => require('./payroll-email-lib').sendAlert(subject, body));
   const _record    = record    || recordRun;
+  const _claim     = claim     || claimSendDay;
 
   // A run must never fail because its own bookkeeping failed.
   const note = async (row) => {
@@ -398,6 +434,17 @@ async function runBirthdayNotifications({
       status: 'dry-run', date: stamp, sent: 0, failed: 0,
       recipients: recipients.length, recipientList: recipients,
       people: names, subject, body
+    };
+  }
+
+  // Claimed only once we know there is something to send and this is not a dry
+  // run, so a dry run or a quiet day never blocks the real send.
+  if (!(await _claim(stamp))) {
+    log(`Birthday text for ${stamp} already sent by an earlier run — not sending again.`);
+    await note({ run_date: stamp, status: 'already-sent', people: names, recipients: recipients.length });
+    return {
+      status: 'already-sent', date: stamp, sent: 0, failed: 0, attempted: 0,
+      recipients: recipients.length, people: names, subject
     };
   }
 
@@ -495,5 +542,6 @@ module.exports = {
   fetchActiveEmployees,
   createGmailSender,
   recordRun,
+  claimSendDay,
   runBirthdayNotifications
 };
