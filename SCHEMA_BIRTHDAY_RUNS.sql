@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS public.birthday_runs (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   ran_at      timestamptz NOT NULL DEFAULT now(),
   run_date    date        NOT NULL,
-  status      text        NOT NULL,   -- sent | partly-sent | delivery-failed | no-birthdays | no-run-day
+  status      text        NOT NULL,   -- sent | partly-sent | delivery-failed | already-sent | no-birthdays | no-run-day
   people      text[]      NOT NULL DEFAULT '{}',
   recipients  integer     NOT NULL DEFAULT 0,
   attempted   integer     NOT NULL DEFAULT 0,   -- < recipients means the run was cut short

@@ -37,6 +37,9 @@
 # Birthday notifications — Mon-Thu. No Friday run: Thursday's 3-day look-ahead
 # already covers Fri/Sat/Sun, so a Friday run would double-announce.
 # Netlify cron is UTC: 13:30 UTC = 7:30 AM Mountain (MDT) / 6:30 AM (MST in winter).
+# A sending run takes ~30s and has been re-invoked (three sends per birthday,
+# Oct-Nov 2026). The job claims the date in birthday_send_claims before sending,
+# so however many times it runs, one invocation per day sends.
 [functions."birthday-notifications"]
   schedule = "30 13 * * 1-4"
 
