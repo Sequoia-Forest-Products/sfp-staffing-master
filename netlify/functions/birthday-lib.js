@@ -44,6 +44,11 @@ const DIVIDER   = '--------------------------------------------------';
 // Ten at a time finishes 62 recipients in about seven round trips.
 const SEND_BATCH_SIZE = 10;
 const SEND_BATCH_GAP_MS = 150;
+// A small pool of reused SMTP connections; see createGmailSender().
+const SMTP_POOL_CONNECTIONS = 3;
+// Failures get one more try after this pause. A rejected SMTP send delivered
+// nothing, so a retry cannot duplicate a text.
+const RETRY_DELAY_MS = 2000;
 
 // ============================================================
 // DATE LOGIC
@@ -291,25 +296,59 @@ async function fetchActiveEmployees() {
 
 // TextBolt gateways behave better with individual plain-text sends than with BCC,
 // which is also what the legacy script did.
-function createGmailSender() {
+function createGmailSender(mailer = null) {
   if (!GMAIL_USER || !GMAIL_PASS) {
     throw new Error('Missing GMAIL_USER or GMAIL_APP_PASSWORD');
   }
 
   // Required lazily so dry runs and tests never need the mail library loaded.
-  const nodemailer = require('nodemailer');
+  // Injectable so the transport options can be tested without it installed.
+  const nodemailer = mailer || require('nodemailer');
 
+  // POOLED, AND THAT IS THE FIX FOR THE FAILURES, NOT A TUNING KNOB.
+  //
+  // Unpooled, nodemailer opens a fresh connection, TLS handshake and LOGIN for
+  // every single message. With ten sends in flight that is ten simultaneous
+  // logins to the one Gmail account, and while the scheduler was re-invoking
+  // the job every 15s (see claimSendDay) it was up to thirty. Gmail throttles
+  // exactly that: from 2026-09-22 to 2026-11-18 every birthday day lost texts,
+  // and the third run of the day reached nobody on five of the first six.
+  //
+  // A small pool logs in a few times and pushes every message down those same
+  // connections — fewer logins, no per-message handshake, and a faster run.
   const transporter = nodemailer.createTransport({
     service: 'gmail',
-    auth: { user: GMAIL_USER, pass: GMAIL_PASS }
+    auth: { user: GMAIL_USER, pass: GMAIL_PASS },
+    pool: true,
+    maxConnections: SMTP_POOL_CONNECTIONS
   });
 
-  return (to, subject, body) => transporter.sendMail({
+  const send = (to, subject, body) => transporter.sendMail({
     from: `Sequoia Forest Products <${GMAIL_USER}>`,
     to,
     subject,
     text: body
   });
+  send.close = () => transporter.close();
+  return send;
+}
+
+// "421 4.7.0 Try again later" and "Daily sending quota exceeded" need two
+// different fixes, and a count alone cannot tell them apart. Group failures by
+// what the server actually said so the run row and the alert carry the reason.
+function summarizeFailures(errors) {
+  const counts = new Map();
+  for (const err of errors) {
+    const code = err && err.responseCode ? `${err.responseCode} ` : '';
+    const text = String((err && (err.response || err.message)) || 'unknown error')
+      .replace(/\s+/g, ' ').trim().slice(0, 120);
+    const key = `${code}${text}`.trim();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${n}x ${reason}`)
+    .join('; ');
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -384,7 +423,8 @@ async function runBirthdayNotifications({
   log = console.log,
   sendAlert = null,
   record = null,
-  claim = null
+  claim = null,
+  retryDelayMs = RETRY_DELAY_MS
 } = {}) {
   // Required lazily: payroll-email-lib pulls in the IMAP stack, and a dry run or
   // a unit test must not need it. Both are injectable for the same reason.
@@ -452,30 +492,51 @@ async function runBirthdayNotifications({
   let sent = 0;
   let failed = 0;
 
-  // Sequential, with a small gap, to stay friendly with Gmail rate limits.
-  // One bad address must never abort the run.
-  // Counted separately from recipients.length so a run that still does not
-  // finish is VISIBLE as a truncation rather than looking like a clean partial.
+  // Batched, with a small gap; see SEND_BATCH_SIZE. One bad address must never
+  // abort the run. `attempted` is counted separately from recipients.length so
+  // a run that still does not finish is VISIBLE as a truncation rather than
+  // looking like a clean partial.
   let attempted = 0;
+  let failures = [];   // { to, error } — the latest error for each recipient
 
-  for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
-    const slice = recipients.slice(i, i + SEND_BATCH_SIZE);
-    const settled = await Promise.allSettled(
-      slice.map(recipient => sender(recipient, subject, body))
-    );
+  const sendAll = async (list) => {
+    const out = [];
+    for (let i = 0; i < list.length; i += SEND_BATCH_SIZE) {
+      const slice = list.slice(i, i + SEND_BATCH_SIZE);
+      const settled = await Promise.allSettled(
+        slice.map(recipient => sender(recipient, subject, body))
+      );
+      settled.forEach((outcome, n) => {
+        if (outcome.status === 'fulfilled') sent++;
+        else out.push({ to: slice[n], error: outcome.reason });
+      });
+      if (i + SEND_BATCH_SIZE < list.length) await delay(SEND_BATCH_GAP_MS);
+    }
+    return out;
+  };
 
-    settled.forEach((outcome, n) => {
-      attempted++;
-      if (outcome.status === 'fulfilled') {
-        sent++;
-      } else {
-        failed++;
-        log(`Failed to send to ${slice[n]}: ${outcome.reason && outcome.reason.message}`);
-      }
-    });
+  try {
+    failures = await sendAll(recipients);
+    attempted = recipients.length;
 
-    if (i + SEND_BATCH_SIZE < recipients.length) await delay(SEND_BATCH_GAP_MS);
+    // Throttling is transient; most of what failed on the first pass goes on
+    // the second. Permanent refusals just fail again, costing nothing.
+    if (failures.length > 0) {
+      log(`${failures.length} send(s) failed; retrying once in ${retryDelayMs}ms.`);
+      await delay(retryDelayMs);
+      failures = await sendAll(failures.map(f => f.to));
+    }
+  } finally {
+    if (typeof sender.close === 'function') {
+      try { sender.close(); } catch (_) { /* closing the pool must not fail the run */ }
+    }
   }
+
+  failed = failures.length;
+  for (const f of failures) {
+    log(`Failed to send to ${f.to}: ${f.error && f.error.message}`);
+  }
+  const reasons = failed > 0 ? summarizeFailures(failures.map(f => f.error)) : null;
 
   log(`Sent to ${sent} of ${recipients.length} recipients (${failed} failed). Birthday people: ${names.join(', ')}`);
 
@@ -494,7 +555,7 @@ async function runBirthdayNotifications({
     recipients: recipients.length, attempted, sent, failed,
     detail: attempted < recipients.length
       ? `TRUNCATED: only ${attempted} of ${recipients.length} were attempted`
-      : (failed > 0 ? `${failed} of ${recipients.length} failed` : null)
+      : (failed > 0 ? `${failed} of ${recipients.length} failed after one retry: ${reasons}` : null)
   });
 
   let alertError = null;
@@ -505,7 +566,8 @@ async function runBirthdayNotifications({
     try {
       await _sendAlert(headline, [
         `Birthday people: ${names.join(', ')}`,
-        `Sent to ${sent} of ${recipients.length} recipients (${failed} failed).`,
+        `Sent to ${sent} of ${recipients.length} recipients (${failed} failed after one retry).`,
+        `What the mail server said: ${reasons}`,
         '',
         reachedNobody
           ? 'Not one message left. That is a transport problem, not a roster one —'
@@ -539,6 +601,7 @@ module.exports = {
   selectBirthdayPeople,
   buildRecipients,
   composeMessage,
+  summarizeFailures,
   fetchActiveEmployees,
   createGmailSender,
   recordRun,
