@@ -134,8 +134,18 @@ function costedHours(employee, actualHours, standardHours = STANDARD_WEEKLY_HOUR
 // Without `days` the old rate x hours stands, so a caller that only knows a
 // total (and the tests that pin that arithmetic) gets exactly what it got.
 // Salaried people ignore `days` entirely: they are costed on standard hours.
-function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS, days = null) {
-  const { rate, source } = effectiveHourlyRate(employee);
+//
+// `rateOverride` IS THE RATE SCENARIO'S WAY IN, and the only one. A positive
+// finite number replaces the rate on file for an HOURLY person, and everything
+// after that — straight time, the 1.5x/2.0x days — is this same code. Ignored
+// for a salaried person (the scenario is hourly-only) and for anything that is
+// not a usable rate, so a bad override can never produce a cost the rate on
+// file would not have.
+function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS, days = null, rateOverride = null) {
+  const onFile = effectiveHourlyRate(employee);
+  const overridden = usableOverride(rateOverride) && !isSalaried(employee);
+  const rate = overridden ? Number(rateOverride) : onFile.rate;
+  const source = overridden ? 'scenario' : onFile.source;
   const hours = costedHours(employee, actualHours, standardHours);
 
   if (rate === null) {
@@ -182,6 +192,12 @@ function personCost(employee, actualHours, standardHours = STANDARD_WEEKLY_HOURS
     cost = round2(cost + (pay.earnings || 0));
   }
   return { rate, source, hours, cost, otPremium: round2(cost - straight), gap: null };
+}
+
+function usableOverride(v) {
+  if (v === null || v === undefined || v === '') return false;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0;
 }
 
 // Burdened cost, and cost per thousand board feet. Both are display-level
@@ -344,8 +360,22 @@ function buildCostReport({
   // The standard hours a salaried person is costed on across this report's
   // period. Defaults to one week, which is what every caller meant before the
   // reports accepted a date range.
-  standardHours = STANDARD_WEEKLY_HOURS
+  standardHours = STANDARD_WEEKLY_HOURS,
+  // Rate Scenario only: { employee_number: rate } (an object or a Map). Passed
+  // straight to personCost, so a scenario is priced by exactly this code.
+  // Absent for the Manufacturing Costs report, which therefore cannot be
+  // touched by one.
+  rateOverrides = null,
+  // Rate Scenario only: return the per-person rows as well as the buckets. Off
+  // for /api/cost-report, whose payload stays aggregates.
+  includePeople = false
 } = {}) {
+  const overrideFor = (empNum) => {
+    if (!rateOverrides || !empNum) return null;
+    if (rateOverrides instanceof Map) return rateOverrides.has(empNum) ? rateOverrides.get(empNum) : null;
+    return Object.prototype.hasOwnProperty.call(rateOverrides, empNum) ? rateOverrides[empNum] : null;
+  };
+  const people = [];
   const hoursByEmployeeNumber = new Map();
   const daysByEmployeeNumber = new Map();
   for (const row of dailyRows) {
@@ -390,7 +420,30 @@ function buildCostReport({
     const name = textOf(emp.name);
     const empNum = textOf(emp.employee_number != null ? emp.employee_number : emp.empNum);
     const days = daysByEmployeeNumber.get(empNum) || [];
-    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0, standardHours, days);
+    const priced = personCost(emp, hoursByEmployeeNumber.get(empNum) || 0, standardHours, days, overrideFor(empNum));
+    if (includePeople) {
+      let regularHours = 0, otHours = 0;
+      for (const d of days) {
+        const hasSplit = d && (d.regular_hours != null || d.ot_hours != null);
+        regularHours = round2(regularHours + (hasSplit ? num(d.regular_hours) : num(d && d.total_hours)));
+        otHours = round2(otHours + (hasSplit ? num(d.ot_hours) : 0));
+      }
+      people.push({
+        employeeNumber: empNum,
+        name,
+        department: textOf(emp.department) || UNASSIGNED_DEPARTMENT,
+        salaried: isSalaried(emp),
+        hours: priced.hours,
+        regularHours,
+        otHours,
+        rate: priced.rate,
+        source: priced.source,
+        cost: priced.cost,
+        burdenedCost: burdened(priced.cost, burden),
+        otPremium: priced.otPremium || 0,
+        gap: priced.gap
+      });
+    }
     if (!isSalaried(emp) && days.length === 0) {
       noHours.push({ name, department: textOf(emp.department) || UNASSIGNED_DEPARTMENT, employeeNumber: empNum });
     }
@@ -491,7 +544,7 @@ function buildCostReport({
       `so a total here would be an individual figure`
     : null;
 
-  return {
+  const out = {
     costClass,
     burden: num(burden),
     mbfPerHour: num(mbfPerHour),
@@ -532,6 +585,8 @@ function buildCostReport({
       suppressedReason: totalsReason
     }
   };
+  if (includePeople) out.people = people;
+  return out;
 }
 
 module.exports = {
