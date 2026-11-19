@@ -878,11 +878,9 @@ test('switchTab fires the load for the Settings view already selected', () => {
 
 test('Staffing Economics is first, and named what it is called on screen', () => {
   const ctx = sandbox();
-  // Rate Scenario sits beside Staffing Economics (2026-11-19): it is a what-if
-  // on the same people, opened from the same place.
-  assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.key), ['staffing', 'scenario', 'deptgroup']);
+  assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.key), ['staffing', 'deptgroup']);
   assert.deepStrictEqual(Array.from(ctx.COSTS_VIEWS, v => v.label),
-    ['Staffing Economics', 'Rate Scenario', 'Department & Group']);
+    ['Staffing Economics', 'Department & Group']);
   // The key is the distinctive word of the label, so searching either finds the
   // other. What it must never be is a word appearing nowhere on screen, which
   // is what 'staff' had become.

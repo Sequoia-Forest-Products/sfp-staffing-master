@@ -506,15 +506,6 @@ const COSTS_VIEWS = [
     load: () => { if (!state.econLoaded && !state.econLoading) loadEconomics(); }
   },
   {
-    key: 'scenario',
-    label: 'Rate Scenario',
-    // A what-if beside the plan: change individual hourly rates and see the
-    // fully burdened $/MBF move. Nothing it does is stored — see
-    // src/js/rate-scenario.js.
-    render: () => renderRateScenario(),
-    load: () => rsLoadOnce()
-  },
-  {
     key: 'deptgroup',
     label: 'Department & Group',
     render: () => renderCosts(),

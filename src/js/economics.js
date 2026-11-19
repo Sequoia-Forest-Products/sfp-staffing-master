@@ -58,10 +58,19 @@ const ECON_MAX_CEILING = 1000;
 //
 // By id and not by name: a rename moves the name and leaves the id alone, so
 // nothing here has to notice.
-function econRateFor(employeeId){
+//
+// `overrides` IS THE RATE SCENARIO'S WAY IN, and the only one: an optional
+// {employeeId: rate} map. A rate in it replaces the one on file, and every
+// figure computed from this function's answer — the seat's $/M, the crew total
+// — moves with it through exactly the same arithmetic. Without it, nothing
+// changes for any caller.
+function econRateFor(employeeId, overrides){
   if(!employeeId) return {rate:null, source:null};
   const emp=(state.employees||[]).find(e=>String(e.id)===String(employeeId));
   if(!emp) return {rate:null, source:null};
+  if(overrides&&Object.prototype.hasOwnProperty.call(overrides,String(employeeId))){
+    return {rate:overrides[String(employeeId)], source:'scenario'};
+  }
 
   if(isSalaried(emp)){
     // parseSalary, not parseFloat: it is the same helper the profile card's
@@ -86,8 +95,8 @@ function econRateFor(employeeId){
 }
 
 // The rate alone, for the arithmetic that does not care where it came from.
-function econWageFor(employeeId){
-  return econRateFor(employeeId).rate;
+function econWageFor(employeeId, overrides){
+  return econRateFor(employeeId, overrides).rate;
 }
 
 function econDollarPerM(wage){
@@ -95,6 +104,95 @@ function econDollarPerM(wage){
   if(!isFinite(mhr)||mhr<=0||wage==null) return null;
   return wage*(1+(Number(state.burden)||0))/mhr;
 }
+
+// The crew totals the stat cards show: the wage pool, and the crew's fully
+// burdened $/M — the sum of every priced seat's $/M. ONE function for current
+// and scenario: the scenario is this called with overrides.
+function econCrew(overrides){
+  let totalWage=0, totalDpm=0, priced=0;
+  for(const p of econRows()){
+    const w=econWageFor(p.employeeId, overrides);
+    if(w==null) continue;
+    priced++; totalWage+=w;
+    const d=econDollarPerM(w); if(d!=null) totalDpm+=d;
+  }
+  return {totalWage, totalDpm, priced};
+}
+
+// ------------------------------------------------------------------------
+// RATE SCENARIO
+// ------------------------------------------------------------------------
+//
+// A what-if, not an editor. With scenario mode on, every occupied seat gets a
+// Scenario Rate box and a Scenario $/M, and the top of the page compares the
+// crew's burdened $/M now against the scenario.
+//
+// NOTHING IS SAVED. What is typed lives in state.econScen.drafts, in memory,
+// keyed by employee id — not localStorage, not any request. Nothing in this
+// block calls fetch. Reset or a reload clears it, and no other view reads it.
+//
+// Keyed by PERSON, not seat: a rate belongs to somebody, so a person in two
+// seats moves in both — the same way their real rate would.
+
+const ECON_SCEN_WARN = 0.25;
+
+function econScen(){
+  if(!state.econScen) state.econScen={drafts:{}};
+  return state.econScen;
+}
+
+// What a box holds: {value}, {error}, or {empty} for a cleared box.
+function econScenParse(raw){
+  const t=String(raw==null?'':raw).replace(/[$,\s]/g,'');
+  if(t==='') return {empty:true};
+  const n=Number(t);
+  if(!isFinite(n)) return {error:'Not a number'};
+  if(n<=0) return {error:'Must be more than zero'};
+  if(n>ECON_MAX_CEILING) return {error:'Too high for an hourly rate'};
+  return {value:Math.round(n*100)/100};
+}
+
+// The overrides actually in force: valid boxes that differ from the rate on
+// file. An invalid box is flagged on its row and contributes nothing.
+function econScenOverrides(){
+  const out={};
+  const drafts=econScen().drafts;
+  for(const id of Object.keys(drafts)){
+    const parsed=econScenParse(drafts[id]);
+    if(parsed.value==null) continue;
+    const cur=econWageFor(id);
+    if(cur!=null&&Math.abs(parsed.value-cur)<0.005) continue;
+    out[id]=parsed.value;
+  }
+  return out;
+}
+
+function econToggleScenario(){ state.econScenario=!state.econScenario; render(); }
+
+function econScenReset(){ econScen().drafts={}; render(); }
+
+// One keystroke. Re-renders at once — the arithmetic is a few dozen
+// multiplications — and puts the cursor back where it was.
+function econScenSet(employeeId, inputId, raw){
+  econScen().drafts[String(employeeId)]=String(raw);
+  let pos=null;
+  try{ const a=document.activeElement; pos=a&&a.id===inputId?a.selectionStart:null; }catch(e){ pos=null; }
+  render();
+  const el=document.getElementById(inputId);
+  if(el&&typeof el.focus==='function'){
+    el.focus();
+    try{ if(pos!=null) el.setSelectionRange(pos,pos); }catch(e){ void e; }
+  }
+}
+
+function econSigned(v, digits){
+  const d=digits==null?2:digits;
+  if(v==null) return '—';
+  if(Math.abs(v)<Math.pow(10,-d)/2) return '$'+(0).toFixed(d);
+  return (v>0?'+':'−')+'$'+Math.abs(v).toFixed(d);
+}
+// Up is red, down is green — text colour only, unlike the variance pills.
+function econDirCls(v){ return v==null||Math.abs(v)<0.005?'':(v>0?'econ-scn-up':'econ-scn-down'); }
 
 async function loadEconomics(){
   if(state.econLoading) return;
@@ -404,13 +502,12 @@ function renderEconomics(){
   // has run at all.
   const unknown=rows.filter(p=>p.unlinked);
 
-  let totalWage=0, totalDpm=0, priced=0;
-  for(const p of rows){
-    const w=econWageFor(p.employeeId);
-    if(w==null) continue;
-    priced++; totalWage+=w;
-    const d=econDollarPerM(w); if(d!=null) totalDpm+=d;
-  }
+  const {totalWage, totalDpm, priced}=econCrew();
+
+  // Scenario mode. Off, none of this is drawn and the page is as it was.
+  const scen=!!state.econScenario;
+  const overrides=scen?econScenOverrides():{};
+  const scenCrew=scen?econCrew(overrides):null;
 
   const overs=rows.filter(p=>{
     const w=econWageFor(p.employeeId);
@@ -453,7 +550,35 @@ function renderEconomics(){
     // Distinct from `unlinked`: this row HAS a key and resolves fine. It just
     // cannot be reassigned from here, and the option says so.
     const notOfferable=p.employeeId&&!eligible.some(e=>String(e.id)===String(p.employeeId));
-    return `<div class="econ-row"${isDupe?' style="border-color:#e67e22;background:rgba(230,126,34,.06)"':''}>
+
+    // The scenario's two cells: the box, and that seat's $/M at the box's rate.
+    let scenCells='', edited=false;
+    if(scen){
+      const empKey=p.employeeId?String(p.employeeId):null;
+      if(!empKey||wage==null&&!Object.prototype.hasOwnProperty.call(econScen().drafts,empKey)){
+        scenCells='<div class="econ-fig">—</div><div class="econ-fig">—</div>';
+      }else{
+        const drafts=econScen().drafts;
+        const has=Object.prototype.hasOwnProperty.call(drafts,empKey);
+        const draft=has?drafts[empKey]:(wage==null?'':Number(wage).toFixed(2));
+        const parsed=has?econScenParse(draft):{};
+        edited=Object.prototype.hasOwnProperty.call(overrides,empKey);
+        const sRate=econWageFor(empKey, overrides);
+        const sDpm=econDollarPerM(sRate);
+        const pct=(edited&&wage)?(sRate-wage)/wage:0;
+        const inputId='econ-scn-'+p.id;
+        const cls='econ-scn'+(parsed.error?' econ-scn-bad':(Math.abs(pct)>ECON_SCEN_WARN?' econ-scn-warn':''));
+        const msg=parsed.error
+          ? `<div class="econ-scn-msg econ-scn-bad">${esc(parsed.error)} — not applied</div>`
+          : (Math.abs(pct)>ECON_SCEN_WARN?`<div class="econ-scn-msg econ-scn-warn">⚠ ${pct>0?'+':'−'}${(Math.abs(pct)*100).toFixed(0)}% — over 25%</div>`:'');
+        scenCells=`<div class="econ-fig"><input type="text" inputmode="decimal" class="${cls}" id="${esc(inputId)}"
+            value="${esc(draft)}" aria-label="Scenario rate for ${esc(p.name||'')}"
+            oninput="econScenSet('${jsStr(empKey)}','${jsStr(inputId)}',this.value)">${msg}</div>
+          <div class="econ-fig ${edited?econDirCls(sDpm-dpm):''}">${sDpm==null?'—':esc(fmt$(sDpm))}</div>`;
+      }
+    }
+
+    return `<div class="econ-row${scen?' econ-row-scn':''}${edited?' econ-scn-edited':''}"${isDupe?' style="border-color:#e67e22;background:rgba(230,126,34,.06)"':''}>
       <div class="econ-num">${esc(String(p.num==null?'':p.num))}</div>
       <div class="econ-seat">${esc(p.seat||'')}</div>
       <div class="econ-name">
@@ -465,13 +590,15 @@ function renderEconomics(){
           ${notOfferable?`<option value="${esc(String(p.employeeId))}" selected>${esc(p.name||'unknown')} — ${p.occupantSalaried?'salaried':'not active'}, cannot be reassigned here</option>`:''}
           ${eligible.map(e=>`<option value="${esc(String(e.id))}"${String(p.employeeId)===String(e.id)?' selected':''}>${esc(e.name)}</option>`).join('')}
         </select>${
-        isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}</div>
+        isDupe?'<span class="econ-flag">⚠ in two seats</span>':''}${
+        edited?'<span class="econ-scn-tag" title="Scenario rate differs from the rate on file">edited</span>':''}</div>
       <div class="econ-fig">${wage==null?'—':esc(fmt$(wage))}${
         priced.source==='salary'
           ? '<span class="econ-imputed" title="Imputed from an annual salary — annual ÷ '
             +SALARY_HOURS_PER_YEAR.toLocaleString('en-US')+'. This person is salaried; the figure is what the costing reports use.">imputed</span>'
           : ''}</div>
       <div class="econ-fig">${dpm==null?'—':esc(fmt$(dpm))}</div>
+      ${scenCells}
       <div class="econ-fig">${maxField(p)}</div>
       <div class="econ-fig ${cls}">${esc(varStr)}</div>
       <div class="econ-hist-cell"><button class="econ-hist-btn" title="What has changed on this seat"
@@ -516,6 +643,23 @@ function renderEconomics(){
     .var-over{color:#e74c3c;font-weight:700}
     .var-under{color:#2a7a47;font-weight:600}
     .var-even{color:var(--muted)}
+    /* Scenario mode adds two columns after $/M: the scenario rate and its $/M. */
+    .econ-row.econ-row-scn{grid-template-columns:36px minmax(110px,1.1fr) minmax(150px,1.8fr) 84px 70px 96px 84px 84px 76px 24px}
+    .econ-row.econ-scn-edited{background:#fff7e6}
+    .econ-scn{width:100%;font-family:var(--font);font-size:12px;text-align:right;font-variant-numeric:tabular-nums;
+      border:1px solid var(--border);border-radius:4px;padding:3px 5px;background:#fff}
+    .econ-scn.econ-scn-bad{border-color:#c0392b;background:#fff6f5}
+    .econ-scn.econ-scn-warn{border-color:#e67e22}
+    .econ-scn-msg{font-size:9.5px;font-weight:700;text-align:right;line-height:1.3}
+    .econ-scn-msg.econ-scn-bad{color:#c0392b}
+    .econ-scn-msg.econ-scn-warn{color:#e67e22}
+    .econ-scn-up{color:#c0392b;font-weight:700}
+    .econ-scn-down{color:#2a7a47;font-weight:700}
+    .econ-scn-tag{display:inline-block;font-size:9px;font-weight:800;color:#fff;background:var(--orange);border-radius:8px;padding:0 6px;white-space:nowrap}
+    .econ-scn-panel{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--orange);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+    .econ-scn-figs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .econ-scn-figs .stat-value{font-size:28px}
+    .econ-scn-only{font-size:11px;font-weight:700;color:var(--brick);background:#fce8e8;border-radius:10px;padding:3px 10px}
     .econ-ctrls{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:14px 0;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px}
     .econ-ctrls input{width:70px;font-family:var(--font);font-size:12px;border:1px solid var(--border);border-radius:4px;padding:3px 7px}
   </style>
@@ -531,8 +675,13 @@ function renderEconomics(){
         <input type="number" min="0.5" step="0.5" value="${esc(String(state.mhr))}"
           onchange="econSetMhr(this.value)"></span>
       <span style="color:var(--muted)">Display assumptions for the $/M column only. They are not stored.</span>
-      <span style="margin-left:auto"><button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="loadEconomics()">Refresh</button></span>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-sm ${scen?'btn-primary':'btn-outline'}" onclick="econToggleScenario()"
+          title="Try different rates and see the crew's burdened $/M. Nothing is saved.">${scen?'Exit rate scenario':'Rate scenario'}</button>
+        <button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted)" onclick="loadEconomics()">Refresh</button></span>
     </div>
+
+    ${scen?econScenPanel(totalDpm, scenCrew.totalDpm, Object.keys(overrides).length):''}
 
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">Seats</div><div class="stat-value">${rows.length}</div>
@@ -550,9 +699,10 @@ function renderEconomics(){
     ${unknown.length?`<div class="cost-note" style="border-color:#e67e22"><strong>⚠ ${unknown.length} ${unknown.length===1?'seat names somebody':'seats name people'} not on the active hourly roster:</strong>
       ${esc(unknown.map(p=>`${p.seat} → ${p.name}`).join('; '))}. They have left, changed pay type, or are spelled differently here.</div>`:''}
 
-    <div class="econ-row econ-head" style="margin-top:16px">
+    <div class="econ-row econ-head${scen?' econ-row-scn':''}" style="margin-top:16px">
       <div>#</div><div>Seat</div><div>Assigned</div>
       <div class="econ-fig">Current Rate</div><div class="econ-fig">$/M</div>
+      ${scen?'<div class="econ-fig">Scenario Rate</div><div class="econ-fig">Scenario $/M</div>':''}
       <div class="econ-fig">Position Rate</div><div class="econ-fig">Variance</div>
       <div class="econ-hist-cell"></div>
     </div>
@@ -572,6 +722,33 @@ function renderEconomics(){
             `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:2px 10px;font-size:12px">${esc(e.name)} · ${esc(fmtWage(e))}</span>`
           ).join('')}</div>`
         : `<div style="font-size:13px;color:var(--muted)">Everybody active and hourly is in a seat.</div>`}
+    </div>
+  </div>`;
+}
+
+// The headline: the crew's fully burdened $/M now, in the scenario, and the
+// move. Up is red — this is a cost.
+function econScenPanel(current, scenario, changed){
+  const mhr=Number(state.mhr);
+  const noVolume=!isFinite(mhr)||mhr<=0;
+  const na='<span title="No MBF per hour set, so there is no $/M to compute">unavailable</span>';
+  const delta=noVolume?null:Math.round((scenario-current)*100)/100;
+  const pct=(noVolume||!current)?null:(scenario-current)/current;
+  const cls=econDirCls(delta);
+  const pctStr=pct==null?'':(Math.abs(pct)<0.00005?'0.0%':(pct>0?'+':'−')+(Math.abs(pct)*100).toFixed(1)+'%');
+  return `<div class="econ-scn-panel">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Rate scenario</strong>
+      <span class="econ-scn-only">Scenario only — actual rates are not changed.</span>
+      <span style="color:var(--muted);font-size:11.5px">${changed} ${changed===1?'rate':'rates'} changed</span>
+      <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="econScenReset()"
+        ${Object.keys(econScen().drafts).length?'':'disabled'}>Reset</button>
+    </div>
+    <div class="econ-scn-figs">
+      <div><div class="stat-label">Crew burdened $/M — current</div><div class="stat-value">${noVolume?na:esc(fmt$(current))}</div></div>
+      <div><div class="stat-label">Crew burdened $/M — scenario</div><div class="stat-value">${noVolume?na:esc(fmt$(scenario))}</div></div>
+      <div><div class="stat-label">Change</div><div class="stat-value ${cls}">${noVolume?na:esc(econSigned(delta))}<span style="font-size:13px">/M</span></div>
+        <div class="stat-sub ${cls}">${esc(pctStr)}</div></div>
     </div>
   </div>`;
 }
