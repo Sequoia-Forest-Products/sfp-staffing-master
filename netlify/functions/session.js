@@ -20,9 +20,6 @@ const SCRIPT_MODULES = [
   'data.js',
   'employees.js',
   'economics.js',
-  // The Rate Scenario view of Manufacturing Costs. Reads costBurden/costMbf
-  // from costs.js at call time only, so it may sit before it.
-  'rate-scenario.js',
   'costs.js',
   'preapproved.js',
   'allocations.js',

@@ -45,11 +45,17 @@
 // overtime, and a cost report over SG&A is the analysis that stopped. The suppression floor above is untouched and still answers to the
 // reader's tier: a one-person Manufacturing bucket is still somebody's rate.
 
+const db = require('./db');
+const perms = require('./permissions-lib');
 const payrollDb = require('./payroll-db');
+const { weekStartFor, weekDates } = require('./ot-report-lib');
 const { verifySession, getCookies } = require('./session-lib');
-const { buildCostReport, REPORTED_COST_CLASSES } = require('./cost-lib');
+const {
+  fetchWeekIndex, summarizeWeeks, todayInZone, shiftDays, WINDOW_DAYS
+} = require('./week-index-lib');
+const { buildCostReport, REPORTED_COST_CLASSES, DEFAULT_MIN_BUCKET } = require('./cost-lib');
 const { summarizeDayStatus, eachDate: datesBetweenInclusive } = require('./hours-import-lib');
-const { parseDecimal, parseCostParams, loadCostInputs } = require('./cost-inputs-lib');
+const { parseRange, standardHoursFor } = require('./period-lib');
 
 // The cost classes this endpoint used to serve behind the salaries tier, and
 // now refuses outright. Kept as a named list rather than deleted so the refusal
@@ -57,6 +63,46 @@ const { parseDecimal, parseCostParams, loadCostInputs } = require('./cost-inputs
 // value that worked last week reads as a bug and sends somebody looking for
 // one.
 const RETIRED_COST_CLASSES = ['Mill Overhead', 'SG&A'];
+
+const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || 'America/Los_Angeles';
+
+// Bounds on the two display parameters. They arrive from a query string, so they
+// are validated rather than trusted: burden is a multiplier that gets applied to
+// every figure on the page, and a NaN would turn the whole report into "null"
+// with nothing saying why.
+const MAX_BURDEN = 5;        // 500%, far past anything real, but finite
+const MAX_MBF_PER_HOUR = 1000;
+
+function parseDecimal(raw, { min, max, fallback }) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < min || n > max) return null;   // null => 400
+  return n;
+}
+
+// Allocations split a person's cost across departments (Task 5). The table does
+// not exist yet, and this endpoint has to work both before and after it does:
+// a missing table means "nobody has an allocation", which is the correct answer
+// today and stops being reached the moment the table is created. Any OTHER
+// failure propagates — an unreachable database must not silently flatten every
+// split back to the primary department, because the numbers would look right.
+async function loadAllocations() {
+  try {
+    const rows = await payrollDb.fetchAllocations();
+    return { rows: rows || [], available: true, note: null };
+  } catch (err) {
+    const message = String((err && err.message) || '');
+    // PostgREST answers an unknown table with 404 / PGRST205, and a schema-cache
+    // miss with 'could not find the table'.
+    if (/\b404\b|PGRST205|could not find the table|does not exist/i.test(message)) {
+      return {
+        rows: [], available: false,
+        note: 'No allocations table yet — every person is costed 100% to their primary department.'
+      };
+    }
+    throw err;
+  }
+}
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -96,16 +142,47 @@ exports.handler = async (event) => {
     };
   }
 
-  const parsed = parseCostParams(params);
-  if (parsed.error) {
-    return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: parsed.error }) };
+  const burden = parseDecimal(params.burden, { min: 0, max: MAX_BURDEN, fallback: 0 });
+  if (burden === null) {
+    return {
+      statusCode: 400, headers,
+      body: JSON.stringify({ ok: false, error: `Invalid burden "${params.burden}" — expected a decimal between 0 and ${MAX_BURDEN}` })
+    };
   }
-  const { burden, mbfPerHour, range, snappedWeek } = parsed;
+
+  const mbfPerHour = parseDecimal(params.mbfPerHour, { min: 0, max: MAX_MBF_PER_HOUR, fallback: 0 });
+  if (mbfPerHour === null) {
+    return {
+      statusCode: 400, headers,
+      body: JSON.stringify({ ok: false, error: `Invalid mbfPerHour "${params.mbfPerHour}" — expected a number between 0 and ${MAX_MBF_PER_HOUR}` })
+    };
+  }
 
   // The suppression threshold is a disclosure judgement, so it is settable —
   // but only UPWARD from the floor, which is 1 and is decided below rather than
   // anywhere in the query string.
   const requestedMin = parseDecimal(params.minBucket, { min: 1, max: 100, fallback: null });
+
+  // A DATE RANGE, or a week. The range wins when both are given — it is the
+  // more specific request, and refusing the combination would only punish a UI
+  // that sent a stale week alongside a deliberate range.
+  const range = parseRange(params.from, params.to);
+  if (range.error) {
+    return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: range.error }) };
+  }
+
+  const requestedWeek = String(params.week || '').trim();
+  let snappedWeek = null;
+  if (requestedWeek) {
+    try {
+      snappedWeek = weekStartFor(requestedWeek);
+    } catch {
+      return {
+        statusCode: 400, headers,
+        body: JSON.stringify({ ok: false, error: `Invalid week "${requestedWeek}" — expected YYYY-MM-DD` })
+      };
+    }
+  }
 
   try {
     // SMALL-BUCKET SUPPRESSION IS NO LONGER TIERED, 2026-09-15.
@@ -125,10 +202,38 @@ exports.handler = async (event) => {
       ? floor
       : Math.max(floor, Math.floor(requestedMin));
 
-    const {
-      today, windowFrom, windowTo, weekIndex, availableWeeks, weekStart, dates,
-      periodFrom, periodTo, standardHours, dailyRows, employees, allocations
-    } = await loadCostInputs({ range, snappedWeek });
+    const today = todayInZone(new Date(), TIME_ZONE);
+
+    // Same window, same snapping and the same week list as /api/payroll-report,
+    // because the two tabs offering different weeks for the same table would be
+    // a bug nobody could explain.
+    const windowFrom = weekStartFor(shiftDays(today, -WINDOW_DAYS));
+    const windowTo   = weekDates(today)[6];
+
+    const weekIndex      = await fetchWeekIndex(windowFrom, windowTo);
+    const availableWeeks = summarizeWeeks(weekIndex.rows, { weekStartFor, weekDates });
+
+    const weekStart = snappedWeek
+      || (availableWeeks.length ? availableWeeks[0].weekStart : weekStartFor(today));
+    const dates = weekDates(weekStart);
+
+    // The period actually reported: the range when one was asked for, otherwise
+    // the week. Everything below reads periodFrom/periodTo, so the week is just
+    // the default range rather than a separate code path.
+    const periodFrom = range.from || dates[0];
+    const periodTo   = range.to   || dates[6];
+
+    // What a salaried person is costed on across this period. Exactly
+    // STANDARD_WEEKLY_HOURS for a single Mon-Sun week — period-lib counts
+    // scheduled Mon-Thu days — so a weekly report is unchanged, and a
+    // three-week range costs them three weeks instead of one.
+    const standardHours = standardHoursFor(periodFrom, periodTo);
+
+    const [dailyRows, employees, allocations] = await Promise.all([
+      payrollDb.fetchDailyHours(periodFrom, periodTo),
+      payrollDb.fetchEmployees(),
+      loadAllocations()
+    ]);
 
     // Cross-check the detail fetch against the window scan, which counted the
     // same rows a cheaper way. Fewer rows than the index says exist means
