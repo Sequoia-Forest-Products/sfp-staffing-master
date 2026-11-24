@@ -52,7 +52,18 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 // and reported, because an arrival at an odd hour is the strongest available
 // signal that the -1 day inference is about to land on the wrong date. The
 // weekly file is dated by its own rows and never goes through this check.
-const { DAILY_FILE } = require('./timeclock-config');
+const { DAILY_FILE, emailImportEnabled } = require('./timeclock-config');
+
+// THE EMAIL IMPORT IS OFF (2026-11-24). BBSI's report carries no date, and
+// guessing it from the email's arrival stored two weekly files as single days
+// (11/15, 11/22). Files are uploaded by hand on the Timeclock tab instead. Both
+// entry points below return without reading the mailbox or writing anything
+// unless PAYROLL_EMAIL_IMPORT_ENABLED is exactly 'true'. The code is kept until
+// the manual path has run for a while.
+function disabledResult(what, log) {
+  log(`${what}: the payroll email import is switched off (PAYROLL_EMAIL_IMPORT_ENABLED is not 'true'). Nothing read, nothing written.`);
+  return { status: 'disabled', disabled: true, failed: false, items: [] };
+}
 const EARLIEST_EXPECTED_HOUR = DAILY_FILE.earliestHour;
 const LATEST_EXPECTED_HOUR   = DAILY_FILE.latestHour;
 
@@ -938,8 +949,10 @@ async function runPayrollIngest({
   timeZone,
   fetchMessages,
   deps,
+  enabled = emailImportEnabled(),
   log = console.log
 } = {}) {
+  if (!enabled) return disabledResult('Payroll email ingest', log);
   const conf = config();
   const tz = timeZone || conf.timeZone;
   const lookback = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : conf.lookbackDays;
@@ -1451,8 +1464,10 @@ async function runMissedDeliveryCheck({
   dryRun,
   lookbackDays,
   deps,
+  enabled = emailImportEnabled(),
   log = console.log
 } = {}) {
+  if (!enabled) return disabledResult('Payroll missed-delivery check', log);
   const conf = config();
   const tz = timeZone || conf.timeZone;
   const window = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : conf.lookbackDays;

@@ -3,15 +3,16 @@
 // tests drive it with an in-memory stand-in.
 //
 // Run from three places, all of them idempotent:
-//   * alerts-evaluate   hourly scheduled function (missing-file alerts need a
-//                       clock, not an event)
-//   * payroll-email-lib after every ingest run
+//   * alerts-evaluate   hourly scheduled function (missing-upload alerts need
+//                       a clock, not an event)
+//   * timeclock-upload  after every daily or weekly commit
+//   * payroll-import    after a commit on Settings → Daily Hours
 //   * /api/alerts       when the Alerts tab is opened or refreshed
 
 const {
   evaluateConditions, planAlertChanges, varianceAlert, pacificParts, addDays
 } = require('./alerts-lib');
-const { ALERT_THRESHOLDS, WEEKLY_FILE, TIME_ZONE } = require('./timeclock-config');
+const { ALERT_THRESHOLDS, WEEKLY_UPLOAD, TIME_ZONE } = require('./timeclock-config');
 const { normalizeEmpNumber } = require('./payroll-lib');
 const { isSalaried } = require('./wage-sync');
 
@@ -86,14 +87,11 @@ async function runAlertEvaluation({ now = new Date(), db = require('./payroll-db
     heldUnknown: heldUnknown || [], log });
   if (moved.length) heldUnknown = await db.fetchHeldRows({ reason: 'unknown' });
 
-  const clock = pacificParts(now, TIME_ZONE);
-  const thisMonday = addDays(today, -(clock.dow - WEEKLY_FILE.dayOfWeek));
-
-  const [dailyRows, hoursDays, deliveries, weeklyImports, liveAlerts] = await Promise.all([
+  const [dailyRows, hoursDays, deliveries, timeclockWeeks, liveAlerts] = await Promise.all([
     db.fetchDailyHoursAll(readFrom, yesterday),
     db.fetchHoursDays(readFrom, yesterday),
     db.fetchDeliveriesForDates(windowStart, yesterday),
-    db.fetchImports({ source: 'weekly', from: addDays(thisMonday, -7) }),
+    db.fetchTimeclockWeeks({ from: WEEKLY_UPLOAD.firstWeekStart }),
     db.fetchAlerts({ statuses: ['open', 'acknowledged'] })
   ]);
 
@@ -104,7 +102,7 @@ async function runAlertEvaluation({ now = new Date(), db = require('./payroll-db
     dailyRows: dailyRows || [],
     hoursDays: hoursDays || [],
     deliveredDates: (deliveries || []).filter(d => d.status === 'imported').map(d => d.work_date),
-    weeklyImports: weeklyImports || [],
+    timeclockWeeks: timeclockWeeks || [],
     liveAlerts: liveAlerts || []
   });
   const plan = planAlertChanges({ conditions, liveAlerts: liveAlerts || [], now });

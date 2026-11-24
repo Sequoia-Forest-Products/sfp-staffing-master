@@ -26,6 +26,9 @@ const SCRIPT_MODULES = [
   'points.js',
   'ot-report.js',
   'daily-hours.js',
+  // The Timeclock tab: daily and weekly uploads. Before settings-tab.js only
+  // for reading order — daily-hours.js links to it.
+  'timeclock.js',
   // After the modules they render, so a container cannot be assembled without
   // the views inside it — overtime.js needs ot-report and preapproved,
   // settings-tab.js needs daily-hours. Only function declarations cross module

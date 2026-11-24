@@ -1,95 +1,16 @@
-// daily-hours — the Daily Hours tab: manual import and its preview, the imported
-// days list, the department re-stamp and the email ingestion queue.
+// daily-hours — the Daily Hours tab: the imported days list, the department
+// re-stamp and the old email ingestion queue. Uploading is on the Timeclock tab.
 //
 // Shares one global scope with the other files in src/js (see core.js).
 
 // ============================================================
-// DAILY HOURS — manual import, imported days, admin actions
+// DAILY HOURS — imported days, admin actions
 // ============================================================
-async function previewDailyFile(){
-  const input=document.getElementById('dhFile');
-  const file=input&&input.files&&input.files[0];
-  if(!file){toast('Choose the .xlsx payroll file first','error');return;}
-  if(!state.dailyWorkDate){toast('Pick the work date — the file does not contain one','error');return;}
-
-  state.dailyDupAck=false;
-  state.dailyBusy=true; render();
-  try{
-    const fileBase64=await fileToBase64(file);
-    // The server parses the workbook so the manual path and the email path
-    // produce byte-identical rows; the browser only ships the bytes.
-    const json=await payrollPost({action:'preview',fileName:file.name,fileBase64,workDate:state.dailyWorkDate});
-    state.dailyPreview=json.preview||null;
-    state.dailyPreviewFile={fileName:file.name,fileBase64,workDate:state.dailyWorkDate};
-  }catch(err){
-    state.dailyPreview=null; state.dailyPreviewFile=null;
-    toast('Preview failed: '+err.message,'error');
-  }
-  state.dailyBusy=false; render();
-}
-
-function cancelDailyPreview(){
-  state.dailyPreview=null; state.dailyPreviewFile=null; state.dailyDupAck=false; render();
-}
-
-// Filing the same bytes under a second date double-counts that day in every
-// weekly report from then on, and the server now refuses the commit without an
-// explicit confirmDuplicateFile. So the acknowledgement is a deliberate act —
-// a box that has to be ticked with the two dates named in it — not an OK on a
-// dialog that gets dismissed by reflex.
-function ackDuplicateFile(on){state.dailyDupAck=!!on;render();}
-
-async function commitDailyImport(){
-  const f=state.dailyPreviewFile, p=state.dailyPreview;
-  if(!f||!p) return;
-  // Same bytes, different date is the one duplicate that doubles a day; same
-  // bytes, same date is a harmless re-upload and must not ask for anything extra.
-  const dup=p.duplicateFileHash;
-  const crossDate=!!(dup&&!dup.sameDate);
-  if(crossDate&&!state.dailyDupAck){toast('Tick the double-count acknowledgement before filing this file under a second date','error');return;}
-  const overwrite=!!p.existing;
-  if(overwrite&&!confirm('Overwrite the '+(p.existing.rowCount||0)+' rows already imported for '+fmtDate(f.workDate)+'?\n\nThe day is deleted and re-inserted, so anyone dropped from a corrected re-send disappears too.')) return;
-
-  state.dailyBusy=true; render();
-  try{
-    const body={action:'commit',fileName:f.fileName,fileBase64:f.fileBase64,workDate:f.workDate,confirmOverwrite:overwrite};
-    if(crossDate) body.confirmDuplicateFile=true;
-    const json=await payrollPost(body);
-    // removed = people who were on the old file for this date and are not on the
-    // new one. Nothing else in the app would ever mention them again, so the
-    // count is said out loud here and left on screen in the panel below.
-    const removed=json.removed||0;
-    // held = rows stored but not counted: salaried staff, BBSI staff, and
-    // employee numbers the roster does not have (those raise a New employee
-    // alert on the Alerts tab).
-    const held=json.held||0;
-    const newEmployees=json.newEmployees||[];
-    state.dailyLastImport={workDate:f.workDate,inserted:json.inserted||0,replaced:json.replaced||0,removed,held,newEmployees};
-    toast((json.inserted||0)+' rows imported for '+fmtDate(f.workDate)+(json.replaced?(', '+json.replaced+' replaced'):'')
-      +(held?(', '+held+' held (not counted)'):'')
-      +(removed?(', '+removed+' employee'+(removed===1?'':'s')+' dropped from the day'):''),(removed||newEmployees.length)?'warning':'success');
-    if(typeof loadAlertCount==='function') loadAlertCount();
-    state.dailyPreview=null; state.dailyPreviewFile=null; state.dailyDupAck=false;
-    state.otReport=null;  // the week that just changed has to be refetched
-    await loadDailyDays();
-  }catch(err){
-    toast('Import failed: '+err.message,'error');
-  }
-  // An import used to send the manager email from here, in the browser, when
-  // autoSend was on. It was the only automatic sender and it quietly stopped
-  // being reachable: hours arrive by email now, collected hourly by the
-  // payroll-email-ingest function, and nothing about that path opens a browser
-  // or runs this file. The checkbox stayed on and the email stopped going out.
-  //
-  // The automatic send is now netlify/functions/ot-weekly-email.js — a Monday
-  // schedule over the week that just finished, which cannot be bypassed by a
-  // change to how the data arrives. Nothing replaces it here on purpose: two
-  // automatic senders covering different weeks is worse than one.
-  //
-  // The "Email managers" button on the OT Report tab is untouched, so a
-  // corrected import can still be sent out by hand straight away.
-  state.dailyBusy=false; render();
-}
+// The upload that used to be here — one file, one date, preview and commit —
+// moved to the Timeclock tab (src/js/timeclock.js) on 2026-11-24, when uploads
+// replaced the email import. That screen takes several files at once, makes
+// every date a confirmed choice, refuses a weekly file filed as a day, and
+// carries the weekly reconciliation. One door, so one set of guard rails.
 
 async function loadDailyDays(){
   if(!state.dailyFrom||!state.dailyTo){state.dailyTo=isoToday();state.dailyFrom=isoShift(state.dailyTo,-30);}
@@ -321,107 +242,6 @@ const dailyStyle=`<style>
   td.num,th.num{text-align:right}
 </style>`;
 
-function renderDailyPreview(){
-  const p=state.dailyPreview;
-  if(!p) return '';
-  const v=p.validation||{errors:[],warnings:[]};
-  const errors=v.errors||[], warnings=v.warnings||[];
-  const dup=p.duplicateFileHash;
-  const crossDate=!!(dup&&!dup.sameDate);
-  const blocked=errors.length>0||(crossDate&&!state.dailyDupAck);
-  const counts=p.counts||{}, totals=p.totals||{};
-  const depts=p.departments||[];
-  const empCount=depts.reduce((s,d)=>s+(d.employees||0),0);
-  const btnLabel=p.existing?('Overwrite '+(p.existing.rowCount||0)+' existing rows'):('Import '+(counts.imported||0)+' rows');
-  return `
-    <div class="modal-bg" onclick="if(event.target===this)cancelDailyPreview()">
-      <div class="modal" style="max-width:920px">
-        <div class="modal-title" style="padding:20px 28px 0;flex-shrink:0">
-          <span>Import preview — ${fmtDate(p.workDate)} · ${esc(p.dayName||dayNameOf(p.workDate))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px">${esc(p.fileName||'')}${p.sheetName?' · sheet “'+esc(p.sheetName)+'”':''}</div></span>
-          <button class="close-btn" onclick="cancelDailyPreview()">×</button>
-        </div>
-        <div class="modal-body" style="padding:20px 24px">
-
-          ${p.existing?`<div class="dh-flag"><strong>${fmtDate(p.workDate)} already has ${p.existing.rowCount||0} imported rows</strong>
-            (source ${esc(p.existing.source||'unknown')}, imported ${fmtStamp(p.existing.createdAt)}${(p.existing.batchCount||1)>1?', across '+p.existing.batchCount+' separate imports':''}).
-            Importing deletes the day and re-inserts it, so anyone dropped from a corrected re-send disappears too.</div>`:''}
-          ${dup?(dup.sameDate
-            ? `<div class="dh-warn"><strong>These exact bytes are already imported under this same date</strong> (${dup.rowCount||0} rows, imported ${fmtStamp(dup.createdAt)}). Re-uploading the same file for the same day is harmless — it replaces the day with identical rows, and nothing extra is asked of you.</div>`
-            : `<div class="dh-flag"><strong>These exact bytes are already imported under ${fmtDate(dup.workDate)}</strong>
-                (${dup.rowCount||0} rows, imported ${fmtStamp(dup.createdAt)}). Filing the same file under ${fmtDate(p.workDate)} as well counts that one day's payroll twice — in this week's report and in every report built on it afterwards.
-                If ${fmtDate(dup.workDate)} was the wrong date, close this and use <strong>Correct date</strong> on the imported days list instead of importing the file a second time.
-                <label class="dh-ack"><input type="checkbox" ${state.dailyDupAck?'checked':''} onchange="ackDuplicateFile(this.checked)">
-                <span>I have checked both dates. ${fmtDate(dup.workDate)} and ${fmtDate(p.workDate)} are genuinely two different work days that happen to have identical payroll files — import this one as well.</span></label></div>`):''}
-          ${errors.length?`<div class="dh-flag"><strong>Cannot import:</strong><ul style="margin:6px 0 0 18px">${errors.map(e=>'<li>'+esc(e)+'</li>').join('')}</ul></div>`:''}
-          ${warnings.length?`<div class="dh-warn"><strong>Worth checking:</strong><ul style="margin:6px 0 0 18px">${warnings.map(w=>'<li>'+esc(w)+'</li>').join('')}</ul></div>`:''}
-
-          <div class="dh-stat">
-            <div><div class="k">Rows to import</div><div class="v">${counts.imported||0}</div><div style="font-size:11px;color:var(--muted)">of ${counts.totalRows||0} in the file</div></div>
-            <div><div class="k">Employees</div><div class="v">${empCount}</div></div>
-            <div><div class="k">Regular hours</div><div class="v">${fmtHrs(totals.regularHours)}</div></div>
-            <div><div class="k">OT hours</div><div class="v">${fmtHrs(totals.otHours)}</div></div>
-            <div><div class="k">Total hours</div><div class="v">${fmtHrs(totals.totalHours)}</div></div>
-          </div>
-
-          <div class="dh-note"><strong>${counts.salariedSkipped||0} salaried row${(counts.salariedSkipped||0)===1?'':'s'} skipped.</strong>
-            Salaried staff are excluded by design, so every figure in this system — hours, earnings, OT and the percentages built on them — is hourly payroll only.
-            ${(counts.salariedWithHoursSkipped||0)>0?`<strong>${counts.salariedWithHoursSkipped} of them carried hours or earnings and were skipped too</strong> &mdash; flagged salaried_with_hours in the anomalies below, because a salaried row with activity on it means the payroll file changed shape.`:''}</div>
-
-          ${(p.anomalies||[]).length?`<div class="dh-flag" style="margin-top:12px"><strong>${p.anomalies.length} anomal${p.anomalies.length===1?'y':'ies'} in this file:</strong>
-            <table style="width:100%;font-size:11px;margin-top:6px">
-              ${p.anomalies.map(a=>`<tr><td style="padding:2px 6px 2px 0;white-space:nowrap">${esc(a.name||('#'+a.employeeNumber))}</td><td style="padding:2px 6px 2px 0;font-weight:700">${esc(a.type)}</td><td style="padding:2px 0;white-space:normal">${esc(a.detail||'')}</td></tr>`).join('')}
-            </table></div>`:''}
-
-          <div class="section-head" style="margin-top:16px"><span>By department</span></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Department</th><th class="num">Employees</th><th class="num">Reg hrs</th><th class="num">OT hrs</th><th class="num">Total hrs</th></tr></thead>
-              <tbody>
-                ${depts.length?depts.map(d=>`<tr${(d.department===null||d.department==='Unassigned')?' style="background:#fef5e8"':''}>
-                  <td style="font-weight:600">${esc(d.department||'Unassigned')}</td>
-                  <td class="num">${d.employees||0}</td>
-                  <td class="num">${fmtHrs(d.regularHours)}</td>
-                  <td class="num">${fmtHrs(d.otHours)}</td>
-                  <td class="num">${fmtHrs(d.totalHours)}</td>
-                </tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px">No rows</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-
-          ${(p.sample||[]).length?`
-          <div class="section-head" style="margin-top:16px"><span>First ${p.sample.length} rows</span></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Emp #</th><th>Name</th><th>Department</th><th class="num">Reg</th><th class="num">OT</th><th class="num">Total hrs</th><th>Flags</th></tr></thead>
-              <tbody>${p.sample.map(s=>`<tr>
-                <td>${esc(s.employeeNumber)}</td>
-                <td style="font-weight:600">${esc(s.name||'')}</td>
-                <td${s.department?'':' style="color:#9a600a"'}>${esc(s.department||'Unassigned')}</td>
-                <td class="num">${fmtHrs(s.regularHours)}</td>
-                <td class="num">${fmtHrs(s.otHours)}</td>
-                <td class="num">${fmtHrs(s.totalHours)}</td>
-                <td style="font-size:10px">${(s.flags||[]).map(f=>'<span class="dh-chip">'+esc(f)+'</span>').join('')}</td>
-              </tr>`).join('')}</tbody>
-            </table>
-          </div>`:''}
-
-          ${(p.unmatched||[]).length?`<div class="dh-warn"><strong>${p.unmatched.length} employee number(s) are not on the roster:</strong>
-            ${p.unmatched.map(u=>`<span class="dh-chip">#${esc(u.employeeNumber)} ${esc([u.firstName,u.lastName].filter(Boolean).join(' '))}</span>`).join('')}
-            <div style="font-size:11px;margin-top:4px">Their hours import, but they carry no name and no department until the employee # is on the roster. Edit the matching person on the Employees tab and set their Employee #.</div>
-            <div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="goToTab('employees')">Set employee # on the Employees tab</button></div></div>`:''}
-          ${(p.missingDepartment||[]).length?`<div class="dh-warn"><strong>${p.missingDepartment.length} matched employee(s) have no payroll department</strong> — their rows import as Unassigned:
-            ${p.missingDepartment.map(m=>`<span class="dh-chip">${esc(m.name||('#'+m.employeeNumber))}</span>`).join('')}
-            <div style="font-size:11px;margin-top:4px">Edit each of them on the Employees tab and set a Department, then re-stamp this date — the department on a daily row is a snapshot taken at import.</div>
-            <div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="goToTab('employees')">Set department on the Employees tab</button></div></div>`:''}
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-outline" onclick="cancelDailyPreview()">Cancel</button>
-          <button class="btn btn-primary" ${blocked||state.dailyBusy?'disabled style="opacity:.5;cursor:not-allowed"':''} onclick="${blocked?'':'commitDailyImport()'}">${state.dailyBusy?'Working…':btnLabel}</button>
-        </div>
-      </div>
-    </div>`;
-}
-
 function renderDailyHours(){
   const days=state.dailyDays||[];
   const pending=state.dailyPending;
@@ -430,29 +250,12 @@ function renderDailyHours(){
   const isActionable=e=>e.actionable!==undefined?!!e.actionable:(e.status==='pending_review'||e.status==='error');
   const pendAct=pending?pending.filter(isActionable):[];
   const pendLog=pending?pending.filter(e=>!isActionable(e)):[];
-  const li=state.dailyLastImport;
   const rr=state.restampResult;
 
   const upload=`
-    <div class="section-head"><span>Import hours file</span></div>
-    <div class="dh-panel">
-      <div class="dh-row">
-        <div class="dh-field" style="flex:1;min-width:260px">
-          <label>Hours file (.xlsx)</label>
-          <input type="file" id="dhFile" accept=".xlsx">
-        </div>
-        <div class="dh-field">
-          <label>Work date this file covers</label>
-          <input type="date" id="dhDate" value="${state.dailyWorkDate||''}" oninput="state.dailyWorkDate=this.value">
-        </div>
-        <button class="btn btn-primary" ${state.dailyBusy?'disabled style="opacity:.5"':''} onclick="previewDailyFile()">${state.dailyBusy?'Working…':'Preview import'}</button>
-      </div>
-      ${li?`<div class="${li.removed?'dh-flag':'dh-ok'}" style="margin-top:12px${li.removed?'':';padding:8px 12px'}">
-        <strong>Last import — ${fmtDate(li.workDate)}:</strong> ${li.inserted} row${li.inserted===1?'':'s'} written${li.replaced?', '+li.replaced+' replaced':''}${li.removed
-          ? `, and <strong>${li.removed} employee${li.removed===1?'':'s'} removed from the day</strong> — ${li.removed===1?'that person was':'those people were'} on the earlier file for ${fmtDate(li.workDate)} and ${li.removed===1?'is':'are'} not on this one, so ${li.removed===1?'their':'their'} hours and earnings are gone from ${fmtDate(li.workDate)} and from every report that covers it.`
-          : '. Nobody was dropped from the day.'}${li.held
-          ? ` ${li.held} row${li.held===1?' was':'s were'} held — stored, not counted: salaried staff, BBSI staff${(li.newEmployees||[]).length?', and <strong>'+li.newEmployees.length+' employee number'+(li.newEmployees.length===1?'':'s')+' not on the roster</strong> ('+li.newEmployees.map(n=>esc('#'+n.employeeNumber+(n.name?' '+n.name:''))).join(', ')+') — see Alerts':''}.`
-          : ''}</div>`:''}
+    <div class="dh-panel" data-upload-moved>
+      Daily and weekly timeclock files are uploaded on the <a href="#" onclick="goToTab('timeclock');return false"><strong>Timeclock</strong></a> tab.
+      This page lists what is stored for each day.
     </div>`;
 
   const st=countDayStates();
@@ -601,5 +404,5 @@ function renderDailyHours(){
           </table></div>`:''}`}
     </div>`;
 
-  return dailyStyle+upload+list+admin+(state.dailyPreview?renderDailyPreview():'');
+  return dailyStyle+upload+list+admin;
 }

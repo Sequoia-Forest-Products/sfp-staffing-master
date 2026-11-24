@@ -16,7 +16,7 @@ const { verifySession, getCookies } = require('./session-lib');
 const { runAlertEvaluation } = require('./alerts-engine');
 const { TYPES } = require('./alerts-lib');
 const { normalizeEmpNumber } = require('./payroll-lib');
-const { DAILY_FILE, WEEKLY_FILE, ALERT_THRESHOLDS } = require('./timeclock-config');
+const { DAILY_UPLOAD, WEEKLY_UPLOAD, ALERT_THRESHOLDS } = require('./timeclock-config');
 
 const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 const ok = body => ({ statusCode: 200, headers, body: JSON.stringify({ ok: true, ...body }) });
@@ -93,7 +93,7 @@ exports.handler = async (event) => {
       if (q.count) return ok({ openCount });
       return ok({
         alerts, openCount, evaluation, types: TYPES,
-        config: { daily: DAILY_FILE, weekly: WEEKLY_FILE, thresholds: ALERT_THRESHOLDS }
+        config: { daily: DAILY_UPLOAD, weekly: WEEKLY_UPLOAD, thresholds: ALERT_THRESHOLDS }
       });
     }
     if (event.httpMethod !== 'POST') return fail(405, 'Method not allowed.');

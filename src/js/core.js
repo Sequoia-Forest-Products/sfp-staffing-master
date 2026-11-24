@@ -101,10 +101,13 @@ let state = {
   // not a toast that vanishes, and not only the console.
   settingsUnavailable:false, settingsUnavailableReason:'', settingsLocalOnly:false,
   otEmailSending:false,
-  dailyWorkDate:'', dailyPreview:null, dailyPreviewFile:null, dailyDupAck:false, dailyLastImport:null,
   dailyDays:[], dailyFrom:'', dailyTo:'', dailyLoading:false, dailyLoaded:false,
   // dailyMenu holds the work date whose ... menu is open, or null.
   dailyMenu:null, dailyDeliveryUnavailable:false, dailyRosterUnavailable:false,
+  // Timeclock tab (timeclock.js): mode, overview, the daily files being
+  // uploaded, the selected week and its weekly file.
+  tcMode:'daily', tcOverview:null, tcLoading:false, tcError:'', tcBusy:false, tcFiles:[],
+  tcWeekStart:'', tcWeek:null, tcWeekLoading:false, tcWeekly:null,
   dailyBusy:false, dailyPending:null, restampFrom:'', restampTo:'', restampResult:null,
   otReport:null, otReportWeeks:[], otReportWeek:'', otReportLoading:false, otReportError:'',
   otReportTruncated:false, otReportWindow:null,
@@ -833,6 +836,7 @@ function switchTab(tab,el){
     const view=costsSubView(state.costsView);
     if(view.load) view.load();
   }
+  if(tab==='timeclock') loadTimeclock();
   // Re-evaluates on open, so what the tab shows is the state of the data now
   // rather than as of the last hourly run.
   if(tab==='alerts') loadAlerts(true);
@@ -856,6 +860,7 @@ function render(){
   else if(state.tab==='points')el.innerHTML=renderPoints();
   else if(state.tab==='overtime')el.innerHTML=renderOvertime();
   else if(state.tab==='settings')el.innerHTML=renderSettingsTab();
+  else if(state.tab==='timeclock')el.innerHTML=renderTimeclock();
   else if(state.tab==='alerts')el.innerHTML=renderAlertsTab();
   // ANY OTHER KEY BOUNCES, rather than leaving the tab content as it was with
   // nothing explaining why. 'overhead' is the one that exists: it was a tab

@@ -23,7 +23,7 @@
 //
 // Every threshold is in timeclock-config.js. None is written here.
 
-const { DAILY_FILE, WEEKLY_FILE, ALERT_THRESHOLDS, TIME_ZONE } = require('./timeclock-config');
+const { DAILY_UPLOAD, WEEKLY_UPLOAD, ALERT_THRESHOLDS, TIME_ZONE } = require('./timeclock-config');
 const { normalizeEmpNumber } = require('./payroll-lib');
 const { isSalaried, isActive } = require('./wage-sync');
 
@@ -34,8 +34,17 @@ const TYPES = {
   thin_day:            { label: 'Thin day',            severity: 'warning'  },
   zero_hour_rows:      { label: 'Zero-hour rows',      severity: 'warning'  },
   active_no_hours:     { label: 'Active, no hours',    severity: 'info'     },
-  weekly_variance:     { label: 'Weekly variance',     severity: 'warning'  }
+  weekly_variance:     { label: 'Weekly variance',     severity: 'warning'  },
+  // Manual uploads (2026-11-24). These replace the two email-arrival alerts.
+  daily_upload_missing:  { label: 'Daily upload missing',  severity: 'critical' },
+  weekly_upload_missing: { label: 'Weekly upload missing', severity: 'critical' },
+  weekly_unreconciled:   { label: 'Week not reconciled',   severity: 'warning'  }
 };
+
+// The email-arrival alerts. The email import is off, so nothing raises these
+// any more; a live one is resolved on the next evaluation, saying why.
+const RETIRED_TYPES = ['daily_file_missing', 'weekly_file_missing'];
+const RETIRED_REASON = 'email import switched off — replaced by manual upload alerts';
 
 // Types the evaluator owns: it may open AND auto-resolve these.
 const EVALUATED_TYPES = Object.keys(TYPES).filter(t => t !== 'weekly_variance');
@@ -65,6 +74,13 @@ function isoDow(iso) {
   const d = new Date(iso + 'T00:00:00Z').getUTCDay();
   return d === 0 ? 7 : d;
 }
+function dailyDueDate(iso) {
+  const dow = isoDow(iso);
+  return addDays(iso, dow === 5 ? 3 : dow === 6 ? 2 : 1);
+}
+const DAY_ABBR = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function dayLabel(iso) { return `${DAY_ABBR[isoDow(iso) - 1]} ${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`; }
+function hourLabel(h) { return h === 12 ? 'noon' : h < 12 ? `${h}:00 AM` : `${h - 12}:00 PM`; }
 function median(values) {
   if (!values.length) return null;
   const s = [...values].sort((a, b) => a - b);
@@ -84,8 +100,7 @@ function median(values) {
 //   dailyRows       daily_hours rows from (window start - 4 weeks) to yesterday
 //   hoursDays       hours_days rows over the same range
 //   deliveredDates  dates a payroll email was imported for (processed_emails)
-//   weeklyImports   hours_imports with source 'weekly' created since the start
-//                   of LAST week
+//   timeclockWeeks  timeclock_weeks rows (weekly files uploaded by hand)
 //   liveAlerts      alerts with status open/acknowledged
 function evaluateConditions({
   now = new Date(),
@@ -95,7 +110,7 @@ function evaluateConditions({
   dailyRows = [],
   hoursDays = [],
   deliveredDates = [],
-  weeklyImports = [],
+  timeclockWeeks = [],
   liveAlerts = [],
   config = ALERT_THRESHOLDS
 } = {}) {
@@ -144,43 +159,69 @@ function evaluateConditions({
     });
   }
 
-  // ---- Daily file missing ----
-  // A day is owed once it is over and, for yesterday, once it is past the
-  // grace hour. A day is delivered if any import covers it (hours_days) or an
-  // email for it was imported (a "nobody has any time" day writes no rows).
+  // Thin day needs to know a day arrived at all: an upload covers it
+  // (hours_days), or — for days before the email import was switched off — an
+  // email for it was imported.
   const delivered = new Set([...dayStatus.keys(), ...deliveredDates.map(d => String(d).slice(0, 10))]);
-  for (let d = windowStart; d <= yesterday; d = addDays(d, 1)) {
-    if (d === yesterday && clock.hour < DAILY_FILE.missingAfterHour) continue;
-    if (delivered.has(d)) continue;
+  const pastDue = (dueDate, hour) => today > dueDate || (today === dueDate && clock.hour >= hour);
+
+  // ---- Daily upload missing ----
+  // Every calendar day is owed, uploaded on the next weekday: Monday's upload
+  // covers Friday, Saturday and Sunday. Owed from noon Pacific on its due day.
+  // Uploaded means replace_hours() ran for it (an hours_days row) — a file in
+  // which nobody worked still writes one.
+  const dailyFrom = windowStart > DAILY_UPLOAD.firstWorkDate ? windowStart : DAILY_UPLOAD.firstWorkDate;
+  for (let d = dailyFrom; d <= yesterday; d = addDays(d, 1)) {
+    const due = dailyDueDate(d);
+    if (!pastDue(due, DAILY_UPLOAD.dueHour)) continue;
+    if (dayStatus.has(d)) continue;
     conditions.push({
-      type: 'daily_file_missing', alert_key: d, work_date: d,
-      title: `No daily file for ${d}`,
-      details: { expectedBy: `${DAILY_FILE.missingAfterHour}:00 AM Pacific on ${addDays(d, 1)}`,
-        action: 'Ask BBSI to re-send the daily Work Summary Payroll file for this day, or import it by hand on Daily Hours.' }
+      type: 'daily_upload_missing', alert_key: d, work_date: d,
+      title: `No upload for ${dayLabel(d)}`,
+      details: { workDate: d, dueBy: `${hourLabel(DAILY_UPLOAD.dueHour)} Pacific on ${dayLabel(due)}`,
+        action: 'Download the day from TimeNet and upload it on the Timeclock tab (Daily).' }
     });
   }
 
-  // ---- Weekly file missing ----
-  // Only for the week that has just finished: the brief's weekly file is new,
-  // so weeks before it was promised are not alerted on retroactively.
-  const thisMonday = addDays(today, -(clock.dow - WEEKLY_FILE.dayOfWeek));
-  const lastMonday = addDays(thisMonday, -7);
-  const pastGrace = clock.dow > WEEKLY_FILE.dayOfWeek ||
-    (clock.dow === WEEKLY_FILE.dayOfWeek && clock.hour >= WEEKLY_FILE.missingAfterHour);
-  if (pastGrace && lastMonday >= WEEKLY_FILE.firstWeekStart) {
-    // Arrived = a weekly import created this week, or one covering last week.
-    const arrived = weeklyImports.some(i =>
-      (i.created_at && pacificParts(new Date(i.created_at), tz).date >= thisMonday) ||
-      (String(i.work_date_from).slice(0, 10) <= lastMonday && String(i.work_date_to).slice(0, 10) >= addDays(lastMonday, 6)));
-    if (!arrived) {
-      conditions.push({
-        type: 'weekly_file_missing', alert_key: lastMonday, work_date: lastMonday,
-        title: `No weekly file for the week of ${lastMonday}`,
-        details: { weekStart: lastMonday, weekEnd: addDays(lastMonday, 6),
-          expectedBy: `${WEEKLY_FILE.missingAfterHour}:00 AM Pacific on ${thisMonday}`,
-          action: 'Until it arrives, last week is provisional: open punches still read 0.00.' }
-      });
-    }
+  // ---- Weekly upload missing ----
+  const weeksIn = new Map(timeclockWeeks.map(w => [String(w.week_start).slice(0, 10), w]));
+  const lastDone = addDays(addDays(today, -(clock.dow - 1)), -7);
+  for (let w = WEEKLY_UPLOAD.firstWeekStart; w <= lastDone; w = addDays(w, 7)) {
+    const due = addDays(w, 7 + (WEEKLY_UPLOAD.dueDayOfWeek - 1));
+    if (!pastDue(due, WEEKLY_UPLOAD.dueHour)) continue;
+    if (weeksIn.has(w)) continue;
+    conditions.push({
+      type: 'weekly_upload_missing', alert_key: w, work_date: w,
+      title: `No weekly file for ${dayLabel(w)} – ${dayLabel(addDays(w, 6))}`,
+      details: { weekStart: w, weekEnd: addDays(w, 6),
+        dueBy: `${hourLabel(WEEKLY_UPLOAD.dueHour)} Pacific on ${dayLabel(due)}`,
+        action: 'Upload the weekly Work Summary Payroll file on the Timeclock tab (Weekly reconciliation).' }
+    });
+  }
+
+  // ---- Week not reconciled ----
+  // A weekly file is in and somebody's daily sum still differs from it. Clears
+  // when the re-uploaded days close the gaps, or a person accepts what is left.
+  for (const w of timeclockWeeks) {
+    const c = w.comparison;
+    if (w.status !== 'open' || !c || !Array.isArray(c.variances) || !c.variances.length) continue;
+    const ws = String(w.week_start).slice(0, 10);
+    const people = c.variances.map(v => ({
+      employeeNumber: v.employeeNumber, name: v.name || null,
+      hoursDiff: v.diff ? v.diff.total : null, dollarsDiff: v.dollarsDiff == null ? null : v.dollarsDiff
+    }));
+    const named = people.slice(0, 4).map(p => `${p.name || '#' + p.employeeNumber} ` +
+      `${p.hoursDiff > 0 ? '+' : ''}${round2(p.hoursDiff)} h`).join(', ');
+    conditions.push({
+      type: 'weekly_unreconciled', alert_key: ws, work_date: ws,
+      title: `Week of ${dayLabel(ws)}: ${people.length} ${people.length === 1 ? 'person' : 'people'} off the weekly file — ` +
+        named + (people.length > 4 ? `, +${people.length - 4} more` : ''),
+      details: { weekStart: ws, weekEnd: addDays(ws, 6), people,
+        hoursOff: c.totals ? c.totals.absHoursOff : null, dollarsDiff: c.totals ? c.totals.dollarsDiff : null,
+        daysNotUploaded: c.daysNotUploaded || [],
+        action: 'Find the days in TimeNet and re-upload them on the Timeclock tab — the comparison re-runs on each upload. ' +
+                'Or accept the remaining variances there, with a note.' }
+    });
   }
 
   // ---- Thin day ----
@@ -202,7 +243,7 @@ function evaluateConditions({
     // threshold — a provisional day that happens to fill up is not trusted.
     if (thin || (wasLive && dayStatus.get(d) !== 'reconciled')) {
       if (!thin && !wasLive) continue;
-      if (!delivered.has(d) && count === 0) continue;   // that is Daily file missing, not thin
+      if (!delivered.has(d) && count === 0) continue;   // that is Daily upload missing, not thin
       conditions.push({
         type: 'thin_day', alert_key: d, work_date: d,
         title: `${d} has ${count} hourly row${count === 1 ? '' : 's'} against a usual ${med}`,
@@ -309,7 +350,8 @@ function planAlertChanges({ conditions = [], liveAlerts = [], now = new Date() }
     const c = want.get(key);
     if (!c) {
       resolve.push({ id: a.id, type: a.type, alert_key: a.alert_key,
-        resolved_reason: 'condition cleared', resolved_at: now.toISOString() });
+        resolved_reason: RETIRED_TYPES.includes(a.type) ? RETIRED_REASON : 'condition cleared',
+        resolved_at: now.toISOString() });
     } else if (JSON.stringify(c.details) !== JSON.stringify(a.details) || c.title !== a.title) {
       update.push({ id: a.id, title: c.title, details: c.details, severity: c.severity });
     }
@@ -328,6 +370,8 @@ function planAlertChanges({ conditions = [], liveAlerts = [], now = new Date() }
 module.exports = {
   TYPES,
   EVALUATED_TYPES,
+  RETIRED_TYPES,
+  dailyDueDate,
   evaluateConditions,
   varianceAlert,
   planAlertChanges,

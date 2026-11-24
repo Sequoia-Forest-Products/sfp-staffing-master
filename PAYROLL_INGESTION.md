@@ -1,5 +1,31 @@
 # Daily Hours, Payroll Email Ingestion, and the OT Report
 
+> **2026-11-24 — the email import is OFF. Files are uploaded by hand on the Timeclock tab.**
+>
+> BBSI's Work Summary Payroll report has no date in it, and the daily and weekly versions
+> have the same nine columns. The ingester guessed each file's date from when the email
+> arrived, which is how two Monday weekly files were stored as single days (11/15, 11/22).
+>
+> * `payroll-email-ingest` and `payroll-missed-check` are unscheduled in `netlify.toml`, and
+>   both return without reading mail or writing anything unless
+>   `PAYROLL_EMAIL_IMPORT_ENABLED=true`. The rest of this document describes that pipeline
+>   as it was; it is kept until the manual path has run for a while.
+> * **Daily** (Timeclock tab → Daily uploads): every weekday, for the prior day; Monday
+>   covers Fri, Sat and Sun. Each file's date is suggested (file name, else yesterday;
+>   Monday → Fri/Sat/Sun) and confirmed per file. Commit goes through `replace_hours()`:
+>   the day is replaced in one transaction and marked provisional. A file with anyone over
+>   24 hours, or a total far above any recent day, is refused as a weekly file.
+> * **Weekly** (Timeclock tab → Weekly reconciliation): Wednesdays, for the previous
+>   Mon–Sun. Stored as week totals per person in `timeclock_week_totals`
+>   (`SCHEMA_TIMECLOCK_UPLOADS.sql`) and **never** written to day rows. It is compared with
+>   the sum of each person's daily rows; re-uploading a corrected day re-runs the
+>   comparison. A week is reconciled when everyone is within 0.02 hours, or accepted with a
+>   note.
+> * Alerts: Daily upload missing (noon Pacific on the due weekday), Weekly upload missing
+>   (noon Pacific Wednesday), Week not reconciled. Daily/Weekly *file* missing are retired.
+> * Only the uploaders in `timeclock-config.js` (Peter, Axeri; `TIMECLOCK_UPLOADERS`
+>   overrides) can commit. Everyone else can view.
+
 Everything the mill's OT reporting sits on: a per-day hours table, a way to get data
 into it (by hand and automatically), and a weekly report on top.
 

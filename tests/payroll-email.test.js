@@ -113,7 +113,10 @@ function harness(messages, overrides = {}, runOpts = {}) {
     sendAlert:            async (subject, body) => { calls.alerts.push({ subject, body }); }
   }, overrides);
 
+  // The import is switched off in production (timeclock-config.js); these
+  // tests exercise the code that stays behind the switch, so they turn it on.
   return runPayrollIngest(Object.assign({
+    enabled: true,
     now: NOW,
     timeZone: TZ,
     deps,
@@ -486,6 +489,7 @@ function missedHarness(now, overrides = {}, runOpts = {}) {
   }, overrides);
 
   return runMissedDeliveryCheck(Object.assign({
+    enabled: true,
     now: new Date(now), timeZone: TZ, lookbackDays: 1, deps, log: () => {}
   }, runOpts)).then(result => ({ result, calls }));
 }
@@ -1007,6 +1011,7 @@ test('a GET that would import or send is refused', async () => {
 
 test('the browser dry run still works over GET', async () => {
   process.env.PAYROLL_TRIGGER_SECRET = 'test-secret';
+  process.env.PAYROLL_EMAIL_IMPORT_ENABLED = 'true';
   delete process.env.PAYROLL_IMAP_USER;
   delete process.env.PAYROLL_IMAP_PASSWORD;
   try {
@@ -1021,7 +1026,70 @@ test('the browser dry run still works over GET', async () => {
     assert.match(res.body, /PAYROLL_IMAP_USER/);
   } finally {
     delete process.env.PAYROLL_TRIGGER_SECRET;
+    delete process.env.PAYROLL_EMAIL_IMPORT_ENABLED;
   }
+});
+
+// ---------------------------------------------------------------------------
+// The switch. The email import is OFF unless PAYROLL_EMAIL_IMPORT_ENABLED is
+// exactly 'true': a run reads no mail and writes nothing.
+// ---------------------------------------------------------------------------
+
+function throwingDeps(touched) {
+  const bomb = name => async () => { touched.push(name); throw new Error(name + ' must not be called'); };
+  return {
+    getProcessedEmail: bomb('getProcessedEmail'), upsertProcessedEmail: bomb('upsertProcessedEmail'),
+    replaceHours: bomb('replaceHours'), upsertDailyHours: bomb('upsertDailyHours'),
+    fetchEmployees: bomb('fetchEmployees'), fetchDailyHours: bomb('fetchDailyHours'),
+    fetchDeliveriesForDates: bomb('fetchDeliveriesForDates'), listProcessedEmails: bomb('listProcessedEmails'),
+    sendAlert: bomb('sendAlert'), evaluateAlerts: bomb('evaluateAlerts')
+  };
+}
+
+test('with the switch unset, the email ingest reads nothing and writes nothing', async () => {
+  delete process.env.PAYROLL_EMAIL_IMPORT_ENABLED;
+  const touched = [];
+  const result = await runPayrollIngest({
+    now: NOW, timeZone: TZ, deps: throwingDeps(touched), log: () => {},
+    fetchMessages: async () => { touched.push('fetchMessages'); return []; }
+  });
+  assert.strictEqual(result.status, 'disabled');
+  assert.strictEqual(result.failed, false);
+  assert.deepStrictEqual(touched, [], 'no mailbox read, no ledger, no database write');
+});
+
+test('with the switch unset, the missed-delivery check sends nothing', async () => {
+  for (const value of [undefined, 'false', 'yes', '1']) {
+    if (value === undefined) delete process.env.PAYROLL_EMAIL_IMPORT_ENABLED;
+    else process.env.PAYROLL_EMAIL_IMPORT_ENABLED = value;
+    const touched = [];
+    const result = await runMissedDeliveryCheck({ now: NOW, timeZone: TZ, deps: throwingDeps(touched), log: () => {} });
+    assert.strictEqual(result.status, 'disabled', String(value));
+    assert.deepStrictEqual(touched, []);
+  }
+  delete process.env.PAYROLL_EMAIL_IMPORT_ENABLED;
+});
+
+test('the manual trigger cannot import while the switch is off, even with send=true', async () => {
+  process.env.PAYROLL_TRIGGER_SECRET = 'test-secret';
+  delete process.env.PAYROLL_EMAIL_IMPORT_ENABLED;
+  try {
+    const res = await testEndpoint({
+      httpMethod: 'POST',
+      headers: { 'x-payroll-secret': 'test-secret' },
+      queryStringParameters: { send: 'true' }
+    });
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(JSON.parse(res.body).status, 'disabled');
+  } finally {
+    delete process.env.PAYROLL_TRIGGER_SECRET;
+  }
+});
+
+test('netlify.toml schedules neither the email ingest nor the missed-delivery check', () => {
+  const toml = require('fs').readFileSync(require('path').join(__dirname, '..', 'netlify.toml'), 'utf8');
+  assert.doesNotMatch(toml, /\[functions\."payroll-email-ingest"\]/);
+  assert.doesNotMatch(toml, /\[functions\."payroll-missed-check"\]/);
 });
 
 test('an unauthorised call is still 401 before anything else', async () => {

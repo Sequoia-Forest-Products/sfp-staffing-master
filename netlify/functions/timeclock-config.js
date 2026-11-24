@@ -59,4 +59,70 @@ const ALERT_THRESHOLDS = {
   evaluateLookbackDays: 45
 };
 
-module.exports = { TIME_ZONE, DAILY_FILE, WEEKLY_FILE, ALERT_THRESHOLDS };
+// ---------------------------------------------------------------------------
+// MANUAL UPLOADS (from 2026-11-24). The email import is off.
+// ---------------------------------------------------------------------------
+//
+// BBSI's Work Summary Payroll report has no date in it, and the daily and
+// weekly versions have identical columns. The email importer guessed each
+// file's date from when it arrived, which is how two weekly files were stored
+// as single days (11/15, 11/22). Files are now uploaded by a person who states
+// what each one covers. DAILY_FILE and WEEKLY_FILE above describe the old email
+// delivery and are read only by payroll-email-lib, which is switched off below.
+
+// The switch for the old email import. OFF unless the environment says
+// exactly 'true'. Off means runPayrollIngest and runMissedDeliveryCheck return
+// without reading the mailbox or writing anything; the code stays in place.
+const emailImportEnabled = () =>
+  String(process.env.PAYROLL_EMAIL_IMPORT_ENABLED || '').trim().toLowerCase() === 'true';
+
+// Daily: every calendar day is uploaded, on the next weekday. Monday's upload
+// covers Friday, Saturday and Sunday. A day with no upload by noon Pacific on
+// the day it was due raises Daily upload missing.
+const DAILY_UPLOAD = {
+  dueHour: 12,
+  // The first day owed by upload. Everything before it was delivered by email
+  // or by the corrected BBSI backfill (9/9–11/15), so it is never alerted on.
+  firstWorkDate: '2026-11-16'
+};
+
+// Weekly: the previous Monday–Sunday, by noon Pacific Wednesday.
+const WEEKLY_UPLOAD = {
+  dueDayOfWeek: 3,       // Wednesday (1 = Monday ... 7 = Sunday)
+  dueHour: 12,
+  firstWeekStart: '2026-11-16',
+  // A person's daily sum matches the weekly file when every one of regular,
+  // overtime and total is within this many hours.
+  toleranceHours: 0.02
+};
+
+// What makes a file uploaded as a DAILY look like a WEEKLY one. Either refuses.
+const DAILY_GUARD = {
+  // Nobody works more than 24 hours in a day.
+  maxPersonHours: 24,
+  // The file's total hours against the largest day in the trailing window.
+  totalMultiple: 1.5,
+  lookbackDays: 56,
+  // With no history to compare against: a normal day is ~560 hours, a week
+  // ~2,000.
+  fallbackMaxTotal: 1000
+};
+
+// Who may upload and commit. Everyone else on the access list can view.
+// TIMECLOCK_UPLOADERS (comma-separated) overrides the list without a deploy.
+const DEFAULT_UPLOADERS = ['peter.stroble@sequoiafp.com', 'axeri.ramirez@sequoiafp.com'];
+function uploaders() {
+  const env = String(process.env.TIMECLOCK_UPLOADERS || '').trim();
+  const list = env ? env.split(',') : DEFAULT_UPLOADERS;
+  return list.map(e => String(e).trim().toLowerCase()).filter(Boolean);
+}
+function canUpload(email) {
+  const e = String(email || '').trim().toLowerCase();
+  return !!e && uploaders().includes(e);
+}
+
+module.exports = {
+  TIME_ZONE, DAILY_FILE, WEEKLY_FILE, ALERT_THRESHOLDS,
+  DAILY_UPLOAD, WEEKLY_UPLOAD, DAILY_GUARD,
+  emailImportEnabled, uploaders, canUpload
+};

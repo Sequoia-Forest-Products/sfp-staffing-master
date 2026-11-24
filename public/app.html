@@ -206,6 +206,10 @@
            first step of the same job — hours are imported, then reported on —
            and it leads the sub-nav for that reason. -->
       <button class="sfp-tab" data-tab="overtime" onclick="switchTab('overtime',this)">Overtime</button>
+      <!-- Timeclock: where the daily and weekly BBSI files are uploaded, by hand,
+           with the date or week each covers stated by the person uploading. It
+           replaced the email import on 2026-11-24. See src/js/timeclock.js. -->
+      <button class="sfp-tab" data-tab="timeclock" onclick="switchTab('timeclock',this)">Timeclock</button>
       <!-- Points is top-level again as of 2026-09-15. Attendance points and
            disciplinary flags are not overtime and never were — they sat under
            that tab because Phase C needed somewhere to put them when it

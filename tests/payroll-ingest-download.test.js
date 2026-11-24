@@ -195,6 +195,7 @@ test('a skipped download is never reported as an empty attachment', async () => 
   // and the classify phase. "carried no bytes" would be a lie about the
   // vendor's file and would send somebody looking at the wrong thing.
   const result = await runPayrollIngest({
+    enabled: true,
     now: new Date('2026-08-20T14:00:00Z'),
     timeZone: 'America/Los_Angeles',
     dryRun: true,
