@@ -20,6 +20,8 @@ const {
 } = require('./payroll-lib');
 const { classifyRows } = require('./hours-import-lib');
 const { verifySession, getCookies } = require('./session-lib');
+const { canUpload, DAILY_GUARD } = require('./timeclock-config');
+const { weeklyLook } = require('./timeclock-upload-lib');
 
 const TIME_ZONE = process.env.PAYROLL_TIME_ZONE || DEFAULT_TIME_ZONE;
 
@@ -208,6 +210,15 @@ async function commit(body) {
   const classified = classifyRows({
     rows: result.rows, salariedRows: result.salariedRows, employees, exclusions
   });
+
+  // A weekly file is never a day. Same test as the Timeclock tab's daily
+  // upload, so neither door lets one in: anyone above 24 hours refuses it.
+  const look = weeklyLook({ rows: result.rows, salariedRows: result.salariedRows,
+    config: { ...DAILY_GUARD, fallbackMaxTotal: Infinity } });
+  if (look.overPeople.length) {
+    throw new BadRequest(`This looks like a WEEKLY file, not a day: ${look.reasons.join(' ')} ` +
+      `Upload it on the Timeclock tab under Weekly reconciliation instead.`);
+  }
 
   if (!classified.counted.length && !classified.held.length && result.counts.totalRows > 0) {
     throw new BadRequest(
@@ -615,6 +626,10 @@ const ACTIONS = {
   preview, commit, days, restamp, correctDate, deleteDay, pending, resolveEmail
 };
 
+// Writing hours is for the timeclock uploaders only (timeclock-config.js).
+// Everyone else on the access list can still read every day.
+const UPLOADER_ACTIONS = new Set(['commit', 'correctDate', 'deleteDay']);
+
 // ============================================================
 // HANDLER
 // ============================================================
@@ -648,6 +663,10 @@ exports.handler = async (event) => {
   const run = Object.prototype.hasOwnProperty.call(ACTIONS, action) ? ACTIONS[action] : null;
   if (!run) {
     return fail(400, `Unknown action ${JSON.stringify(action)}. Expected one of: ${Object.keys(ACTIONS).join(', ')}.`);
+  }
+
+  if (UPLOADER_ACTIONS.has(action) && !canUpload(session.email)) {
+    return fail(403, 'Only the timeclock uploaders (Peter and Axeri) can change imported hours.');
   }
 
   try {

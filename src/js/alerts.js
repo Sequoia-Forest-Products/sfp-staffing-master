@@ -134,6 +134,8 @@ function alertDetail(a){
   if(a.type==='zero_hour_rows'&&Array.isArray(d.employees)) lines.push(d.employees.slice(0,12).map(e=>esc((e.name||'')+' #'+e.employeeNumber)).join(', ')+(d.employees.length>12?' and '+(d.employees.length-12)+' more':''));
   if(a.type==='active_no_hours') lines.push(`${esc(d.department||'No department')} · no counted hours ${fmtDate(d.from)} – ${fmtDate(d.to)}.`);
   if(a.type==='weekly_variance') lines.push(`Labor cost ${costMoneyOr(d.dollarsBefore)} → ${costMoneyOr(d.dollarsAfter)} (${d.dollarsChange>=0?'+':''}${costMoneyOr(d.dollarsChange)}${d.pct!=null?', '+esc(d.pct)+'%':''}); hours ${d.hoursChange>=0?'+':''}${esc(d.hoursChange)}; ${esc(d.fixedPunches)} fixed punch${d.fixedPunches===1?'':'es'}.`);
+  if(a.type==='daily_upload_missing'||a.type==='weekly_upload_missing') lines.push('Due by '+esc(d.dueBy)+'.');
+  if(a.type==='weekly_unreconciled'&&Array.isArray(d.people)) lines.push(d.people.slice(0,12).map(p=>esc((p.name||'')+' #'+p.employeeNumber+' '+(p.hoursDiff>0?'+':'')+p.hoursDiff+' h'+(p.dollarsDiff!=null?' ('+costMoneyOr(p.dollarsDiff)+')':''))).join(', ')+(d.people.length>12?' and '+(d.people.length-12)+' more':'')+(d.daysNotUploaded&&d.daysNotUploaded.length?'. Not uploaded yet: '+d.daysNotUploaded.map(x=>fmtDateShort(x)).join(', '):''));
   if(d.action) lines.push(esc(d.action));
   return lines.map(l=>`<div class="al-detail">${l}</div>`).join('');
 }
@@ -149,6 +151,8 @@ function alertCard(a,types){
   const actions=[];
   if(a.status==='open') actions.push(`<button class="btn btn-outline btn-sm" onclick="ackAlert('${jsStr(a.id)}')">Acknowledge</button>`);
   if(a.type==='new_employee'&&a.status!=='resolved') actions.push(`<button class="btn btn-outline btn-sm" onclick="markBbsiStaff('${jsStr(a.employee_number)}')">BBSI staff</button>`);
+  if((a.type==='weekly_unreconciled'||a.type==='weekly_upload_missing')&&a.status!=='resolved'&&a.details&&a.details.weekStart) actions.push(`<button class="btn btn-outline btn-sm" onclick="openTimeclockWeek('${jsStr(a.details.weekStart)}')">Open week</button>`);
+  if(a.type==='daily_upload_missing'&&a.status!=='resolved') actions.push(`<button class="btn btn-outline btn-sm" onclick="goToTab('timeclock')">Upload</button>`);
   if(a.type==='weekly_variance'&&a.details&&a.details.importId) actions.push(`<button class="btn btn-outline btn-sm" onclick="showVariance('${jsStr(a.details.importId)}')">Variance</button>`);
   return `<div class="al-card sev-${esc(a.severity)} st-${esc(a.status)}" data-alert-type="${esc(a.type)}">
     <div class="al-head">
@@ -224,8 +228,8 @@ function renderAlertsTab(){
     <div class="al-list">${shown.length?shown.map(a=>alertCard(a,types)).join(''):'<div class="al-empty">Nothing here. Every condition is clear.</div>'}</div>
     ${varianceBlock(state.alertsVariance)}
     ${reconciliationsBlock(state.alertsReconciliations)}
-    <div class="dh-note">Daily file expected by ${esc(cfg.daily&&cfg.daily.expectedHour)}:00 AM Pacific, missing after ${esc(cfg.daily&&cfg.daily.missingAfterHour)}:00.
-      Weekly file expected Mondays by ${esc(cfg.weekly&&cfg.weekly.expectedHour)}:00 AM, missing after ${esc(cfg.weekly&&cfg.weekly.missingAfterHour)}:00.
+    <div class="dh-note">Daily upload due by ${esc(cfg.daily&&cfg.daily.dueHour)}:00 Pacific on the next weekday (Monday covers Friday–Sunday).
+      Weekly file due Wednesdays by ${esc(cfg.weekly&&cfg.weekly.dueHour)}:00 Pacific; a week is reconciled when every person is within ${esc(cfg.weekly&&cfg.weekly.toleranceHours)} hours.
       Thin day: below ${Math.round((th.thinDayRatio||0)*100)}% of the trailing ${esc(th.thinDayLookbackWeeks)}-week median for that weekday.
       Weekly variance: more than ${esc(th.weeklyVariancePct)}% or $${esc(th.weeklyVarianceDollars)}.
       Active, no hours: none in the last ${esc(th.noHoursLookbackDays)} days.

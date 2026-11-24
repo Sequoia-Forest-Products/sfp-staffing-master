@@ -361,15 +361,18 @@ test('the Classification column is gone from the tab', () => {
   assert.doesNotMatch(html, /Scheduled Mon/);
 });
 
-test('the import banner is gone and the date picker keeps a plain label', () => {
+test('the import banner is gone, and the upload itself moved to the Timeclock tab', () => {
   const ctx = sandbox();
   const html = renderTab(ctx, []);
   assert.doesNotMatch(html, /contains no date/);
   assert.doesNotMatch(html, /Nothing is hunting for one/);
   assert.doesNotMatch(html, /both are normal work days/);
-  assert.match(html, /Work date this file covers/);
-  assert.match(html, /Import hours file/);
-  assert.match(html, /Hours file \(\.xlsx\)/);
+  // One upload door, with the guard rails: no file input and no commit here.
+  assert.doesNotMatch(html, /type="file"/);
+  assert.doesNotMatch(html, /Import hours file/);
+  assert.strictEqual(typeof ctx.commitDailyImport, 'undefined');
+  assert.strictEqual(typeof ctx.previewDailyFile, 'undefined');
+  assert.match(html, /goToTab\('timeclock'\)/);
 });
 
 test('an empty day is a row in the table, and says which kind of empty', () => {

@@ -89,38 +89,102 @@ test('a number marked as BBSI staff moves to external and raises nothing', async
 });
 
 // ---------------------------------------------------------------------------
-// Missing files
+// Missing uploads (manual uploads replaced the email import, 2026-11-24)
 // ---------------------------------------------------------------------------
 
-test('Daily file missing: not before 9:00 AM Pacific, yes after, and not once delivered', () => {
-  const s = steady();
-  const days = s.days.filter(d => d.work_date !== '2026-11-04');
-  const before = evaluateConditions({ now: AT('08:59'), employees: s.employees, dailyRows: s.rows, hoursDays: days });
-  assert.ok(!types(before).includes('daily_file_missing'));
-  const after = evaluateConditions({ now: AT('09:00'), employees: s.employees, dailyRows: s.rows, hoursDays: days });
-  assert.deepStrictEqual(ofType(after, 'daily_file_missing').map(c => c.alert_key), ['2026-11-04']);
-  const delivered = evaluateConditions({ now: AT('09:00'), employees: s.employees, dailyRows: s.rows, hoursDays: days,
-    deliveredDates: ['2026-11-04'] });
-  assert.ok(!types(delivered).includes('daily_file_missing'), 'a "nobody had time" day is delivered too');
+// Every day from 11/16 (the first owed by upload) up to the given date,
+// except the ones listed, as uploaded hours_days rows.
+function uploadedDays(through, { except = [] } = {}) {
+  const out = [];
+  for (let d = '2026-11-16'; d <= through; d = addDays(d, 1)) {
+    if (!except.includes(d)) out.push({ work_date: d, status: 'provisional' });
+  }
+  return out;
+}
+const upload = (conds, t) => ofType(conds, t).map(c => c.alert_key);
+
+test('Daily upload missing: a weekday is due noon Pacific the next weekday, and clears once uploaded', () => {
+  const wed = hhmm => AT(hhmm, '2026-11-18');
+  const days = uploadedDays('2026-11-17', { except: ['2026-11-17'] });
+  assert.deepStrictEqual(upload(evaluateConditions({ now: wed('11:59'), hoursDays: days }), 'daily_upload_missing'), []);
+  assert.deepStrictEqual(upload(evaluateConditions({ now: wed('12:00'), hoursDays: days }), 'daily_upload_missing'),
+    ['2026-11-17']);
+  const done = evaluateConditions({ now: wed('12:00'), hoursDays: uploadedDays('2026-11-17') });
+  assert.deepStrictEqual(upload(done, 'daily_upload_missing'), [], 'an hours_days row is the upload');
+
+  // The open alert resolves on the next evaluation.
+  const plan = planAlertChanges({ conditions: done,
+    liveAlerts: [{ id: 'm1', type: 'daily_upload_missing', alert_key: '2026-11-17', status: 'open', title: 't', details: {} }],
+    now: wed('12:05') });
+  assert.deepStrictEqual(plan.resolve.map(r => r.id), ['m1']);
 });
 
-test('Weekly file missing is never raised for a week before the weekly file existed', () => {
-  // Thursday 11/5: last week is 10/26, which no weekly file was ever promised for.
-  const s = steady();
-  const conds = evaluateConditions({ now: AT('10:00'), employees: s.employees, dailyRows: s.rows, hoursDays: s.days });
+test('Daily upload missing: Friday, Saturday and Sunday are all due Monday noon', () => {
+  const mon = hhmm => AT(hhmm, '2026-11-23');
+  const days = uploadedDays('2026-11-19');            // Mon–Thu in, Fri–Sun not
+  assert.deepStrictEqual(upload(evaluateConditions({ now: mon('11:59'), hoursDays: days }), 'daily_upload_missing'), [],
+    'nothing from the weekend is owed before Monday noon');
+  assert.deepStrictEqual(upload(evaluateConditions({ now: mon('12:00'), hoursDays: days }), 'daily_upload_missing'),
+    ['2026-11-20', '2026-11-21', '2026-11-22']);
+  // Sunday is not owed on Sunday or Saturday either.
+  assert.deepStrictEqual(upload(evaluateConditions({ now: AT('15:00', '2026-11-22'), hoursDays: days }), 'daily_upload_missing'), []);
+});
+
+test('Daily upload missing is never raised for a day before uploads began', () => {
+  // No hours_days at all: only days from 11/16 are owed.
+  const conds = evaluateConditions({ now: AT('12:30', '2026-11-18'), hoursDays: [] });
+  assert.deepStrictEqual(upload(conds, 'daily_upload_missing'), ['2026-11-16', '2026-11-17']);
+});
+
+test('Weekly upload missing: the previous Mon–Sun is due Wednesday noon Pacific, until a weekly file is in', () => {
+  const wed = hhmm => AT(hhmm, '2026-11-25');
+  const base = { hoursDays: uploadedDays('2026-11-24') };
+  assert.deepStrictEqual(upload(evaluateConditions({ ...base, now: AT('15:00', '2026-11-24') }), 'weekly_upload_missing'), []);
+  assert.deepStrictEqual(upload(evaluateConditions({ ...base, now: wed('11:59') }), 'weekly_upload_missing'), []);
+  assert.deepStrictEqual(upload(evaluateConditions({ ...base, now: wed('12:00') }), 'weekly_upload_missing'), ['2026-11-16']);
+  const arrived = evaluateConditions({ ...base, now: wed('12:30'),
+    timeclockWeeks: [{ week_start: '2026-11-16', status: 'open', comparison: null }] });
+  assert.deepStrictEqual(upload(arrived, 'weekly_upload_missing'), []);
+});
+
+test('Weekly upload missing is never raised for a week before uploads began', () => {
+  const conds = evaluateConditions({ now: AT('12:30', '2026-11-18'), hoursDays: uploadedDays('2026-11-17') });
+  assert.deepStrictEqual(upload(conds, 'weekly_upload_missing'), [], 'the week of 11/9 was reconciled by the backfill');
+});
+
+test('Week not reconciled: an open week with variances names the people and hours; reconciled or accepted clears it', () => {
+  const week = status => ({ week_start: '2026-11-16', status, comparison: {
+    totals: { absHoursOff: 12.5, dollarsDiff: 300 }, daysNotUploaded: [],
+    variances: [
+      { employeeNumber: '0319', name: 'Miguel Acosta Ruiz', diff: { total: 10 }, dollarsDiff: 245 },
+      { employeeNumber: '0063', name: 'Ana Reyes', diff: { total: -2.5 }, dollarsDiff: -55 }
+    ] } });
+  const now = AT('13:00', '2026-11-25');
+  const open = ofType(evaluateConditions({ now, hoursDays: uploadedDays('2026-11-24'), timeclockWeeks: [week('open')] }),
+    'weekly_unreconciled');
+  assert.strictEqual(open.length, 1);
+  assert.strictEqual(open[0].alert_key, '2026-11-16');
+  assert.match(open[0].title, /2 people/);
+  assert.match(open[0].title, /Miguel Acosta Ruiz \+10 h/);
+  assert.match(open[0].title, /Ana Reyes -2\.5 h/);
+  assert.deepStrictEqual(open[0].details.people.map(p => p.hoursDiff), [10, -2.5]);
+  for (const st of ['reconciled', 'accepted']) {
+    const c = evaluateConditions({ now, hoursDays: uploadedDays('2026-11-24'), timeclockWeeks: [week(st)] });
+    assert.deepStrictEqual(ofType(c, 'weekly_unreconciled'), [], st);
+  }
+});
+
+test('the email-arrival alerts are never raised now, and live ones are resolved saying why', () => {
+  // A day with no upload and no email, on the old 9 AM clock and the new one.
+  const conds = evaluateConditions({ now: AT('13:00', '2026-11-25'), hoursDays: [] });
+  assert.ok(!types(conds).includes('daily_file_missing'));
   assert.ok(!types(conds).includes('weekly_file_missing'));
-});
-
-test('Weekly file missing: Monday 11:00 AM Pacific, for last week, until a weekly import exists', () => {
-  const s = steady();
-  const mon = d => AT(d, '2026-11-09');
-  const base = { employees: s.employees, dailyRows: s.rows, hoursDays: s.days };
-  assert.ok(!types(evaluateConditions({ ...base, now: mon('10:59') })).includes('weekly_file_missing'));
-  const missing = ofType(evaluateConditions({ ...base, now: mon('11:00') }), 'weekly_file_missing');
-  assert.deepStrictEqual(missing.map(c => c.alert_key), ['2026-11-02']);
-  const arrived = evaluateConditions({ ...base, now: mon('11:30'),
-    weeklyImports: [{ created_at: '2026-11-09T18:05:00Z', work_date_from: '2026-11-02', work_date_to: '2026-11-08' }] });
-  assert.ok(!types(arrived).includes('weekly_file_missing'));
+  const plan = planAlertChanges({ conditions: conds, now: AT('13:00', '2026-11-25'), liveAlerts: [
+    { id: 'd1', type: 'daily_file_missing', alert_key: '2026-11-19', status: 'open', title: 't', details: {} },
+    { id: 'w1', type: 'weekly_file_missing', alert_key: '2026-11-16', status: 'open', title: 't', details: {} }
+  ] });
+  assert.deepStrictEqual(plan.resolve.map(r => r.id).sort(), ['d1', 'w1']);
+  for (const r of plan.resolve) assert.match(r.resolved_reason, /email import switched off/);
 });
 
 // ---------------------------------------------------------------------------
@@ -290,6 +354,7 @@ function memoryDb({ employees = [], exclusions = [], held = [], alerts = [], row
     fetchHoursDays: async () => state.days,
     fetchDeliveriesForDates: async () => [],
     fetchImports: async () => [],
+    fetchTimeclockWeeks: async () => [],
     fetchAlerts: async () => state.alerts.filter(a => a.status !== 'resolved'),
     insertAlert: async r => { const a = { id: 'n' + state.alerts.length, ...r }; state.alerts.push(a); return a; },
     updateAlert: async (id, patch) => { const a = state.alerts.find(x => x.id === id); Object.assign(a, patch); return [a]; }

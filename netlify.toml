@@ -43,47 +43,32 @@
 [functions."birthday-notifications"]
   schedule = "30 13 * * 1-4"
 
-# Payroll email ingestion — hourly, every day.
+# Payroll email ingestion and its missed-delivery check — UNSCHEDULED.
 #
-# The daily file is due at 8:00 AM Pacific (15:00 UTC in summer, 16:00 in
-# winter) and the weekly file Mondays at 10:00 AM Pacific; see
-# netlify/functions/timeclock-config.js. Polling hourly means a delayed file
-# still lands the same day, and it is the only way a UTC cron can follow
-# daylight saving. Each run searches only the "payroll import"
-# Gmail label over a rolling 7-day window and skips any Message-ID already in
-# processed_emails, so the repeat runs are cheap and re-processing is harmless.
+# Switched off 2026-11-24. BBSI's Work Summary Payroll report has no date in
+# it, and the daily and weekly versions have identical columns. The ingester
+# guessed each file's date from when the email arrived, which is how two weekly
+# files were stored as single days (11/15 and 11/22). Files are now uploaded by
+# a person on the Timeclock tab, who states the day or week each one covers.
 #
-# Weekends are included deliberately: maintenance crews work Fri-Sun, so those
-# days produce real payroll data.
-#
-# :15 rather than :00 keeps this off the top-of-hour rush the birthday job and
-# everyone else's crons sit on.
-[functions."payroll-email-ingest"]
-  schedule = "15 * * * *"
+# payroll-email-ingest and payroll-missed-check have no schedule, so Netlify
+# never runs them. Their code stays, and also refuses to do anything unless
+# PAYROLL_EMAIL_IMPORT_ENABLED is exactly 'true' (timeclock-config.js), so a
+# manual "Run now" or the payroll-email-test trigger writes nothing either.
+# To bring it back: set that variable and restore the two schedule lines
+# ("15 * * * *" and "0 19 * * *").
 
-# Missed-delivery check — once daily at 19:00 UTC (12:00 PM PDT / 11:00 AM PST),
-# well after the 8:00 AM delivery and its 9:00 AM missing-file alert, so a
-# merely late report is not emailed as a missing one. The Alerts tab raises
-# Daily file missing from 9:00 AM Pacific (alerts-evaluate, below).
-#
-# Nobody touches these emails by hand, so nobody would notice if they stopped
-# arriving. This is the only thing that surfaces a broken pipeline. It escalates
-# on EVERY missing day: BBSI sends the report seven days a week, so a Saturday
-# with no data is a failed delivery rather than a quiet weekend. The daily
-# schedule below already covers all seven.
 # Alerts — every hour at :20, five minutes after the ingest's :15.
 #
 # Re-evaluates every condition on the Alerts tab: new employee numbers,
-# thin days, zero-hour rows, active people with no hours, and the two
-# missing-file alerts. Those two are why this is scheduled at all — a file that
-# does NOT arrive produces no event, only a clock. Hourly because a UTC cron
-# cannot follow daylight saving; alerts-lib decides whether 9:00 AM (daily) or
-# Monday 11:00 AM (weekly) Pacific has passed.
+# thin days, zero-hour rows, active people with no hours, and the upload
+# alerts (daily upload missing, weekly upload missing, week not reconciled).
+# The missing-upload alerts are why this is scheduled at all — an upload that
+# does NOT happen produces no event, only a clock. Hourly because a UTC cron
+# cannot follow daylight saving; alerts-lib decides whether noon Pacific on
+# the due day has passed.
 [functions."alerts-evaluate"]
   schedule = "20 * * * *"
-
-[functions."payroll-missed-check"]
-  schedule = "0 19 * * *"
 
 # Weekly manager overtime email — Monday, 19:30 UTC.
 #

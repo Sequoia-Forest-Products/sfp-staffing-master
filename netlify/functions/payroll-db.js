@@ -803,8 +803,71 @@ function updateAlert(id, patch) {
     { body: { ...patch, updated_at: new Date().toISOString() } });
 }
 
+// ============================================================
+// WEEKLY RECONCILIATION FILES (SCHEMA_TIMECLOCK_UPLOADS.sql)
+// ============================================================
+//
+// The weekly file is week totals per person, tied to its week, and is NEVER
+// written to day rows. replace_week_totals() swaps a week's file in one
+// transaction and resets its status for the comparison that follows.
+
+async function replaceWeekTotals({ week, rows = [] }) {
+  const result = await request('POST', 'rpc/replace_week_totals', {
+    body: { p_week: week, p_rows: rows }
+  });
+  return result.rows;
+}
+
+function fetchTimeclockWeeks({ from, to } = {}) {
+  const f = ['select=*'];
+  if (from) f.push(`week_start=gte.${encode(from)}`);
+  if (to) f.push(`week_start=lte.${encode(to)}`);
+  f.push('order=week_start.desc');
+  return requestRows('GET', `timeclock_weeks?${f.join('&')}`);
+}
+
+function fetchTimeclockWeek(weekStart) {
+  return requestRows('GET', `timeclock_weeks?select=*&week_start=eq.${encode(weekStart)}&limit=1`)
+    .then(r => r[0] || null);
+}
+
+function fetchWeekTotals(weekStart) {
+  return requestRows('GET',
+    `timeclock_week_totals?select=*&week_start=eq.${encode(weekStart)}&order=employee_number.asc`);
+}
+
+// Which week a given weekly file is already stored under, if any.
+function findWeekByFileHash(fileHash) {
+  if (!fileHash) return Promise.resolve([]);
+  return requestRows('GET',
+    `timeclock_weeks?select=week_start,file_name,uploaded_at&file_hash=eq.${encode(fileHash)}`);
+}
+
+function updateTimeclockWeek(weekStart, patch) {
+  return requestRows('PATCH', `timeclock_weeks?week_start=eq.${encode(weekStart)}`,
+    { body: { ...patch, updated_at: new Date().toISOString() } });
+}
+
+// Day status only — never the rows. A reconciled week marks its uploaded days
+// reconciled; a week that re-opens puts them back to provisional.
+function setDaysStatus(dates, status) {
+  if (!dates || !dates.length) return Promise.resolve([]);
+  const list = dates.map(encode).join(',');
+  return requestRows('PATCH', `hours_days?work_date=in.(${list})`, {
+    body: { status, reconciled_at: status === 'reconciled' ? new Date().toISOString() : null,
+            updated_at: new Date().toISOString() }
+  });
+}
+
 module.exports = {
   replaceHours,
+  replaceWeekTotals,
+  fetchTimeclockWeeks,
+  fetchTimeclockWeek,
+  fetchWeekTotals,
+  findWeekByFileHash,
+  updateTimeclockWeek,
+  setDaysStatus,
   fetchHeldRows,
   reattributeHeld,
   fetchExclusions,
