@@ -260,8 +260,17 @@ function composeMessage(todayPeople, upcomingPeople) {
     const names       = upcomingPeople.map(p => p.full).join(' & ');
     const birthdayEN  = upcomingPeople.length === 1 ? 'a birthday' : 'birthdays';
     const birthdayES  = upcomingPeople.length === 1 ? 'un cumpleaños' : 'cumpleaños';
-    englishParts.push(`We also have ${names} celebrating ${birthdayEN} over the upcoming weekend!`);
-    spanishParts.push(`¡También tenemos a ${names} celebrando ${birthdayES} durante el próximo fin de semana!`);
+    // "We also have…" only reads right after a today sentence. On a Thursday
+    // with nobody celebrating that day, the weekend sentence opens the text.
+    if (todayPeople.length > 0) {
+      englishParts.push(`We also have ${names} celebrating ${birthdayEN} over the upcoming weekend!`);
+      spanishParts.push(`¡También tenemos a ${names} celebrando ${birthdayES} durante el próximo fin de semana!`);
+    } else {
+      const verbEN = upcomingPeople.length === 1 ? 'is' : 'are';
+      const verbES = upcomingPeople.length === 1 ? 'celebra' : 'celebran';
+      englishParts.push(`${names} ${verbEN} celebrating ${birthdayEN} over the upcoming weekend!`);
+      spanishParts.push(`¡${names} ${verbES} ${birthdayES} durante el próximo fin de semana!`);
+    }
   }
 
   const subject = `Happy Birthday / ¡Feliz Cumpleaños! - ${allFirstNames.join(' & ')}`;
