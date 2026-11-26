@@ -197,8 +197,11 @@ test('Thursday picks up a Saturday birthday as upcoming', async () => {
   const { subject, body } = sends[0];
   assert.strictEqual(subject, 'Happy Birthday / ¡Feliz Cumpleaños! - Cara');
   // One upcoming person — singular "a birthday" / "un cumpleaños".
-  assert.ok(body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
-  assert.ok(body.includes('¡También tenemos a Cara Lopez celebrando un cumpleaños durante el próximo fin de semana!'));
+  // Nobody on the Thursday itself, so the weekend sentence opens the text.
+  assert.ok(body.startsWith('Cara Lopez is celebrating a birthday over the upcoming weekend!'));
+  assert.ok(body.includes('¡Cara Lopez celebra un cumpleaños durante el próximo fin de semana!'));
+  assert.ok(!body.includes('We also have') && !body.includes('También tenemos'),
+    '"also" only makes sense after a today sentence');
   assert.ok(!body.includes('Birthday today'), 'nobody has a birthday on the Thursday itself');
   assert.ok(!sends.some(s => s.to === tb(3)), 'Cara must not receive her own message');
 });
@@ -208,12 +211,13 @@ test('multiple upcoming people use the plural birthday wording', async () => {
 
   assert.deepStrictEqual(result.people, ['Cara', 'Dan']); // Sat Mar 14 + Sun Mar 15
   const { body } = sends[0];
-  assert.ok(body.includes(
-    'We also have Cara Lopez & Dan Whitfield celebrating birthdays over the upcoming weekend!'
+  assert.ok(body.startsWith(
+    'Cara Lopez & Dan Whitfield are celebrating birthdays over the upcoming weekend!'
   ));
   assert.ok(body.includes(
-    '¡También tenemos a Cara Lopez & Dan Whitfield celebrando cumpleaños durante el próximo fin de semana!'
+    '¡Cara Lopez & Dan Whitfield celebran cumpleaños durante el próximo fin de semana!'
   ));
+  assert.ok(!body.includes('We also have') && !body.includes('También tenemos'));
   const to = sends.map(s => s.to);
   assert.ok(!to.includes(tb(3)) && !to.includes(tb(4)));
 });
@@ -226,7 +230,8 @@ test('a Friday birthday is announced by the Thursday run', async () => {
   const { result, sends } = await harness('2026-03-12T13:30:00Z', roster);
 
   assert.deepStrictEqual(result.people, ['Cara']);
-  assert.ok(sends[0].body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
+  assert.ok(sends[0].body.startsWith('Cara Lopez is celebrating a birthday over the upcoming weekend!'));
+  assert.ok(!sends[0].body.includes('We also have'));
   assert.strictEqual(sends[0].to, tb(5));
 });
 
@@ -240,7 +245,9 @@ test('today and upcoming birthdays combine into one message', async () => {
 
   assert.strictEqual(sends.length, 1);
   assert.ok(sends[0].body.includes("It is Ana Reyes's Birthday today!"));
-  assert.ok(sends[0].body.includes('We also have Cara Lopez celebrating a birthday over the upcoming weekend!'));
+  // With someone celebrating today, the weekend sentence keeps "We also have".
+  assert.ok(sends[0].body.includes("It is Ana Reyes's Birthday today! We also have Cara Lopez celebrating a birthday over the upcoming weekend!"));
+  assert.ok(sends[0].body.includes('¡Hoy es el cumpleaños de Ana Reyes! ¡También tenemos a Cara Lopez celebrando un cumpleaños durante el próximo fin de semana!'));
   assert.strictEqual(sends[0].to, tb(5));
 });
 
